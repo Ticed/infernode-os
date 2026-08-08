@@ -1,0 +1,17 @@
+provider=ElevenLabs
+voice_id=21m00Tcm4TlvDq8ikWAM
+model_id=eleven_multilingual_v2
+seed=8675309
+sample_rate=16000
+channels=1
+sample_format=s16le
+leading_silence_ms=250
+trailing_silence_ms=1200
+speech_end_ms=2013
+api_pcm_ms=2043
+duration_ms=3493
+expected_keywords=cancel,pending,message
+min_partials=1
+sha256=75da8240bc7529dc90e5bb649f720a67af6f9856d395e6471f4784f1dc61387b
+generated_utc=2026-08-08T09:39:23+00:00
+generator=tools/generate-elevenlabs-speech-fixtures.py
