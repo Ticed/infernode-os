@@ -1,0 +1,7 @@
+# Direct conversion inputs validated for the pinned parakeet.cpp v0.5.0 path.
+# Transitive dependencies remain platform-resolved; the manifest SHA-256 is
+# the final authority for accepting a generated deployment artifact.
+nemo_toolkit[asr]==2.7.3
+gguf==0.17.1
+numpy==1.26.4
+huggingface_hub==0.34.4

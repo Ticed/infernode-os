@@ -329,9 +329,9 @@ cache-aware streaming transducer that emits `<EOU>`/`<EOB>` tokens: **the
 model decides when the utterance is over**.
 
 - Source: `tools/parakeet_stream.cpp` (tracked here), compiled by the
-  installer against a clone of upstream
-  [parakeet.cpp](https://github.com/mudler/parakeet.cpp) (committed API
-  only: `ModelLoader`, `StreamingMel`, `StreamingSession`).
+  installer against the exact upstream revision recorded in
+  `tools/parakeet-eou.manifest` (committed API only: `ModelLoader`,
+  `StreamingMel`, `StreamingSession`).
 - Input: s16le PCM on **stdin only** — the shim's capture pump feeds it
   (`micmode device`, `capturerate 16000`), which is what makes remote-mic
   topologies pure namespace composition. There is deliberately no
@@ -343,10 +343,19 @@ model decides when the utterance is over**.
   stops emitting after an EOU otherwise (verified against upstream's own
   file-streaming path), and the reset also bounds hypothesis growth over
   an hours-long session.
-- The streaming EOU model is not yet published as GGUF; the installer
-  probes `PARAKEET_EOU_MODEL`, its own models dir, and dev checkouts, and
-  prints conversion instructions when none is found (whisper remains the
-  fallback in that case).
+- The installer downloads the published F16 EOU GGUF from the immutable
+  repository revision in `tools/parakeet-eou.manifest`, then verifies its
+  byte length and SHA-256 before use. Explicit or pre-existing model files
+  must match that manifest unless the development-only
+  `PARAKEET_ALLOW_UNVERIFIED_MODEL=1` override is set.
+- `tools/convert-parakeet-eou.sh` provides the auditable source path. It
+  downloads and verifies the pinned NVIDIA `.nemo` checkpoint, checks out
+  the pinned `parakeet.cpp` converter, creates a CPython 3.10 environment with
+  the direct package versions in `tools/parakeet-convert-requirements.txt`,
+  emits F16 GGUF, and accepts the result only when it matches the deployment
+  manifest. Transitive Python resolution is platform-specific, so the output
+  checksum—not environment similarity—is the acceptance authority. Use
+  `--verify FILE` to check an already downloaded artifact without converting.
 
 Shim configuration is unchanged: the adapter is a drop-in for the
 `whisperstreambin` slot because it accepts the same
