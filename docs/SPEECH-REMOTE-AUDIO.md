@@ -35,9 +35,10 @@ Phase 2 comprises:
    reconnects, latency, microphone capture, and playback.
 2. Turn the existing launch scripts into a repeatable remote deployment recipe
    with explicit helper/model prerequisites and observable failure states.
-3. Add a reproducible, pinned Parakeet EOU conversion helper plus checksum
-   manifest. Uploading the GGUF remains a separate credential/hosting gate;
-   clean installs continue to use Whisper until a published model exists.
+3. Maintain a reproducible, pinned Parakeet EOU conversion helper and checksum
+   manifest. The published F16 GGUF is fetched from an immutable repository
+   revision and verified before use; Whisper remains the runtime fallback when
+   the verified artifact or native build is unavailable.
 4. Replace Phase 1's daemon-local one-follow-up latch with server-owned bounded
    queue state, visible depth, and queued-turn cancel/replace behavior.
 5. Consider native 24000/48000 Hz audio only after topology validation; 22050
@@ -64,7 +65,18 @@ feature can merge into `dev`.
 - The loadable `SpeechEngine` `.dis` contract and provider reference module are
   available in-tree.
 - `/lib/voice/speech-terminal`, `speech-engine`, and `speech-capture` automate
-  the current export, import, provider, and ctl wiring.
+  the current export, import, provider, and ctl wiring, including bounded
+  startup retries, observable state, and terminal/capture remount recovery.
+- `remote_speech_topology_test` exercises provider and fake-audio TCP mounts,
+  bounded initial failure, disconnect/remount, playback, and stdin capture in
+  one emulator. It proves the namespace/dataflow contract, not real-host
+  latency or device permissions.
+- `tools/parakeet-eou.manifest` pins the converter, source checkpoint, and
+  published F16 GGUF. The installer and `tools/convert-parakeet-eou.sh` reject
+  artifacts whose size or SHA-256 does not match the manifest.
+- `luciuisrv` owns the one-entry follow-up queue and exposes queue depth plus
+  queued-turn cancel/replace files; `voicemode` no longer treats a local latch
+  as the queue authority.
 
 ### Deferred Human Gates
 
@@ -168,7 +180,12 @@ buffer caps), mounts the exported provider, selects it in `/n/speech/ctl`, and
 keeps `duplex half`. The engine script imports the terminal device tree, starts
 an isolated `speechshim9p` mount, selects device-fed PCM, and exports the
 provider contract. Optional port and mount arguments are documented in each
-script's usage header.
+script's usage header. Initial network mounts retry once per second for 30
+attempts by default (the attempt count is an optional argument). The terminal
+then monitors the provider mount and remounts it after a disconnect. Its
+current state is readable at `/tmp/speech-terminal.state`; the engine writes
+startup and listener state to `/tmp/speech-engine.state`. Both paths can be
+overridden by the final optional argument.
 
 ### 3. Remote capture device (e.g. Infernode on an Android phone)
 
@@ -198,6 +215,30 @@ On the processing host, the import and ctl writes are automated as:
 ```sh
 sh /lib/voice/speech-capture tcp!<phone-ip>!17010
 ```
+
+The capture script uses the same bounded initial retry and background remount
+behaviour. Its state is readable at `/tmp/speech-capture.state` (or the fourth
+argument), so a missing device, a disconnect, and a successful reconnect are
+observable without scraping process output. A fifth argument can override the
+default `/n/speech/ctl` path for isolated tests or alternate speech stacks.
+
+### Automated Loopback Coverage
+
+`remote_speech_topology_test` runs a hardware-free, one-emulator TCP loopback.
+It exports a deterministic fake audio file over one 9P listener, routes a
+`speechshim9p` provider through that mount, exports the provider over a second
+listener, and mounts it as a remote client. The test proves playback and
+device-fed capture cross both mounts, an unused endpoint fails within a bound,
+and the provider works after a raw client disconnect and remount. It also runs
+the real `speech-capture` launcher, removes and restores its exported fake
+audio endpoint, and proves its watcher observes the failure, remounts, reapplies
+capture routing, and reports the recovered state. It is included in
+`tools/speech-regress.sh`.
+
+This is network transport and namespace-composition evidence, not the deferred
+two-host acceptance gate: it does not exercise separate emulator kernels,
+physical audio devices, host permissions, real network loss, terminal-provider
+watcher recovery, or listener-process restart.
 
 ### Why It Works
 

@@ -144,6 +144,14 @@ testSpeechTerminalShape(t: ref T)
 		"speech-terminal selects the mounted provider");
 	t.assert(contains(s, "echo 'duplex half' > /n/speech/ctl"),
 		"speech-terminal preserves the half-duplex default");
+	t.assert(contains(s, "watchprovider"),
+		"speech-terminal monitors and remounts a disconnected provider");
+	t.assert(contains(s, "connected provider"),
+		"speech-terminal exposes its connection state");
+	t.assert(contains(s, "mounttries=30"),
+		"speech-terminal bounds its initial mount attempts");
+	t.assert(contains(s, "rm -f $statefile"),
+		"speech-terminal replaces state records without stale suffixes");
 }
 
 testSpeechEngineShape(t: ref T)
@@ -157,8 +165,16 @@ testSpeechEngineShape(t: ref T)
 		"speech-engine routes playback and default capture through imported audio");
 	t.assert(contains(s, "echo 'micmode device' > $provider/ctl"),
 		"speech-engine enables namespace-backed PCM capture");
+	t.assert(contains(s, "listen -As $addr"),
+		"speech-engine keeps the provider listener attached for runtime state");
 	t.assert(contains(s, "export $provider"),
 		"speech-engine exports the provider contract");
+	t.assert(contains(s, "failed provider listener"),
+		"speech-engine exposes a runtime listener failure");
+	t.assert(contains(s, "mounttries=30"),
+		"speech-engine bounds its initial terminal mount attempts");
+	t.assert(contains(s, "rm -f $statefile"),
+		"speech-engine replaces state records without stale suffixes");
 }
 
 testSpeechCaptureShape(t: ref T)
@@ -166,10 +182,18 @@ testSpeechCaptureShape(t: ref T)
 	s := script_contents(t, "/lib/voice/speech-capture");
 	t.assert(contains(s, "mount -A $capture $capturemnt"),
 		"speech-capture imports a remote device tree");
-	t.assert(contains(s, "echo 'capturedev '$capturemnt'/audio' > /n/speech/ctl"),
+	t.assert(contains(s, "ctlfile=/n/speech/ctl"),
+		"speech-capture defaults to the installed speech control file");
+	t.assert(contains(s, "echo 'capturedev '$capturemnt'/audio' > $ctlfile"),
 		"speech-capture changes capture without changing playback");
-	t.assert(contains(s, "echo 'micmode device' > /n/speech/ctl"),
+	t.assert(contains(s, "echo 'micmode device' > $ctlfile"),
 		"speech-capture enables device-fed helpers");
+	t.assert(contains(s, "watchcapture"),
+		"speech-capture monitors and remounts a disconnected audio export");
+	t.assert(contains(s, "connected capture"),
+		"speech-capture exposes its connection state");
+	t.assert(contains(s, "rm -f $statefile"),
+		"speech-capture replaces state records without stale suffixes");
 }
 
 testSpeechTestUsesInstalledCtl(t: ref T)

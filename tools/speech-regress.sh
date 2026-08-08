@@ -48,6 +48,7 @@ fi
 # now cross those boundaries.
 SUITES="
 speechshim_test
+remote_speech_topology_test
 speech9p_voice_test
 speech_wake_test
 speech_listen_test
@@ -96,16 +97,16 @@ npass=0
 nskip=0
 
 run_suite() {
-  local name=$1 limit=$2
+  local name=$1 limit=$2 args=${3:-}
   local log=$logdir/$name.log status ok=0
 
   printf '== %s ' "$name"
   if [ "$verbose" = 1 ]; then
     echo
-    timeout "$limit" "$EMU" -r. "/tests/$name.dis" 2>&1 | tee "$log"
+    timeout "$limit" "$EMU" -r. "/tests/$name.dis" $args 2>&1 | tee "$log"
     status=${PIPESTATUS[0]}
   else
-    timeout "$limit" "$EMU" -r. "/tests/$name.dis" >"$log" 2>&1
+    timeout "$limit" "$EMU" -r. "/tests/$name.dis" $args >"$log" 2>&1
     status=$?
   fi
 
@@ -133,8 +134,11 @@ run_suite() {
 
 for t in $SUITES; do
   limit=240
+  args=""
+  [ "$t" = remote_speech_topology_test ] && limit=15
+  [ "$t" = remote_speech_topology_test ] && args="-p $((20000 + $$ % 10000))"
   [ "$t" = speech_kokoro_test ] && limit=120
-  run_suite "$t" "$limit"
+  run_suite "$t" "$limit" "$args"
 done
 
 run_host_test() {
@@ -173,6 +177,8 @@ run_host_test speech_e2e_test.sh
 run_host_test voice_ui_contract_test.sh
 run_host_test parakeet_turn_gate_test.sh
 run_host_test elevenlabs_speech_e2e_test.sh
+run_host_test remote_speech_scripts_test.sh
+run_host_test parakeet_distribution_test.sh
 
 # The download test is hermetic: it sources the installer with a fake curl.
 run_host_test speech_installer_download_test.sh
