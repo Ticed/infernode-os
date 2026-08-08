@@ -114,6 +114,7 @@ Qconvvoiceinput: con 36;	# conversation/voiceinput, voice-originated input
 Qconvdraft:	con 37;	# conversation/draft, replaceable non-submitting text
 Qconvcontrol:	con 38;	# conversation/control, active-turn voice controls
 Qconvdraftstatus: con 39;	# conversation/draft-status, pending-turn presentation
+Qvoicecontrol:	con 40;	# /voice-control, semantic on/off/toggle commands
 
 # --- QID encoding ---
 # 64-bit path: [activity_id:16][sub_id:16][unused:24][filetype:8]
@@ -247,6 +248,7 @@ nact: int;
 nextactid: int;
 currentact: int;		# id of current activity
 inputmode: string;		# "k" keyboard, "v" voice
+lastvoicecontrol: string;	# last semantic control command and resulting mode
 
 # Available resources catalog (loaded once at init from /lib/veltro/resources/)
 catalog: array of ref CatalogEntry;
@@ -387,6 +389,7 @@ init(nil: ref Draw->Context, args: list of string)
 	nextactid = 0;
 	currentact = -1;
 	inputmode = "k";
+	lastvoicecontrol = "mode=k action=init source=server";
 	vers = 0;
 
 	# Load available resources catalog from /lib/veltro/resources/
@@ -884,6 +887,8 @@ doread(srv: ref Styxserver, m: ref Tmsg.Read, c: ref Fid)
 		srv.reply(styxservers->readbytes(m, array of byte (string currentact + "\n")));
 	Qinputmode =>
 		srv.reply(styxservers->readbytes(m, array of byte (inputmode + "\n")));
+	Qvoicecontrol =>
+		srv.reply(styxservers->readbytes(m, array of byte (lastvoicecontrol + "\n")));
 
 	Qactlabel =>
 		a := findactivity(actid);
@@ -1167,6 +1172,43 @@ dowrite(srv: ref Styxserver, m: ref Tmsg.Write, c: ref Fid)
 		}
 		inputmode = data;
 		vers++;
+		pushglobalevent("input-mode " + inputmode);
+		srv.reply(ref Rmsg.Write(m.tag, len m.data));
+	Qvoicecontrol =>
+		(ntok, toks) := sys->tokenize(data, " \t");
+		if(ntok < 1 || ntok > 2) {
+			srv.reply(ref Rmsg.Error(m.tag,
+				"voice-control must be on|off|toggle [source=name]"));
+			break;
+		}
+		action := hd toks;
+		source := "unspecified";
+		if(ntok == 2) {
+			sourcearg := hd tl toks;
+			if(!hasprefix(sourcearg, "source=") || len sourcearg <= len "source=") {
+				srv.reply(ref Rmsg.Error(m.tag,
+					"voice-control source must be source=name"));
+				break;
+			}
+			source = sourcearg[len "source=":];
+		}
+		if(action == "on")
+			inputmode = "v";
+		else if(action == "off")
+			inputmode = "k";
+		else if(action == "toggle") {
+			if(inputmode == "v")
+				inputmode = "k";
+			else
+				inputmode = "v";
+		} else {
+			srv.reply(ref Rmsg.Error(m.tag,
+				"voice-control action must be on, off, or toggle"));
+			break;
+		}
+		lastvoicecontrol = "mode=" + inputmode + " action=" + action + " source=" + source;
+		vers++;
+		pushglobalevent("voice-control " + lastvoicecontrol);
 		pushglobalevent("input-mode " + inputmode);
 		srv.reply(ref Rmsg.Write(m.tag, len m.data));
 
@@ -2087,6 +2129,8 @@ dirgen(p: big): (ref Sys->Dir, string)
 		return (dir(Qid(p, vers, Sys->QTFILE), "toast", big 0, 8r666), nil);
 	Qinputmode =>
 		return (dir(Qid(p, vers, Sys->QTFILE), "input-mode", big 0, 8r666), nil);
+	Qvoicecontrol =>
+		return (dir(Qid(p, vers, Sys->QTFILE), "voice-control", big 0, 8r666), nil);
 	Qactdir =>
 		return (dir(Qid(p, vers, Sys->QTDIR), "activity", big 0, 8r755), nil);
 	Qactcurrent =>
@@ -2194,6 +2238,8 @@ navigator(navops: chan of ref Navop)
 					n.path = MKPATH(0, 0, Qtoast);
 				"input-mode" =>
 					n.path = MKPATH(0, 0, Qinputmode);
+				"voice-control" =>
+					n.path = MKPATH(0, 0, Qvoicecontrol);
 				"activity" =>
 					n.path = MKPATH(0, 0, Qactdir);
 				"catalog" =>
@@ -2443,6 +2489,7 @@ navigator(navops: chan of ref Navop)
 					MKPATH(0, 0, Qnotification),
 					MKPATH(0, 0, Qtoast),
 					MKPATH(0, 0, Qinputmode),
+					MKPATH(0, 0, Qvoicecontrol),
 					MKPATH(0, 0, Qactdir),
 					MKPATH(0, 0, Qcatalogdir),
 				};

@@ -179,11 +179,14 @@ fi
 
 grep -q '"model":"ci-voice-e2e"' "$state/requests.jsonl" || \
 	fail "explicit OpenAI model did not reach the local endpoint"
-[ "$(wc -l < "$state/requests.jsonl" | tr -d ' ')" = 1 ] || \
-	fail "voice turn did not produce exactly one LLM request"
+[ "$(wc -l < "$state/requests.jsonl" | tr -d ' ')" = 2 ] || \
+fail "voice turn plus keyboard-recovery turn did not produce two LLM requests"
+grep -q 'Keyboard recovery marker' "$state/requests.jsonl" || \
+fail "keyboard input did not recover after voice-mode exit"
 grep -q 'local LLM working' "$state/say.log" || \
 	fail "assistant response was not sent through speech9p"
 
 echo "PASS: composed voice turn used the explicit local OpenAI endpoint"
 echo "PASS: streaming transcript submitted once and response reached TTS"
+echo "PASS: controls, Escape cancellation, and keyboard recovery were captured"
 echo "PASS"

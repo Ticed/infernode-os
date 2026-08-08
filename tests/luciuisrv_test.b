@@ -335,6 +335,7 @@ testRootDirread(t: ref T)
 	t.assertsne(root, "error:timeout", "root readdir must terminate (INFR-127)");
 	t.assert(hassubstr(root, " ctl"), "root listing includes ctl");
 	t.assert(hassubstr(root, " event"), "root listing includes event");
+	t.assert(hassubstr(root, " voice-control"), "root listing includes voice-control");
 	t.assert(hassubstr(root, " activity"), "root listing includes activity");
 	t.assert(hassubstr(root, " catalog"), "root listing includes catalog");
 
@@ -1051,6 +1052,37 @@ testVoiceInputMode(t: ref T)
 	t.assertseq(strip(readfile(modefile)), "v", "input-mode reads voice mode");
 	t.asserteq(writefile(modefile, "k"), 1, "can switch back to keyboard mode");
 	t.assertseq(strip(readfile(modefile)), "k", "input-mode reads keyboard mode");
+}
+
+testVoiceControl(t: ref T)
+{
+	control := TESTMNT + "/voice-control";
+	mode := TESTMNT + "/input-mode";
+
+	t.assert(writefile(control, "on source=compose-button") > 0,
+		"compose button can enter voice mode");
+	t.assertseq(strip(readfile(mode)), "v", "semantic on selects voice mode");
+	t.assert(hassubstr(readfile(control), "action=on source=compose-button"),
+		"voice-control records the entry source");
+
+	t.assert(writefile(control, "toggle source=ctrl-space") > 0,
+		"Ctrl-Space can toggle voice mode");
+	t.assertseq(strip(readfile(mode)), "k", "semantic toggle returns to keyboard");
+	t.assert(hassubstr(readfile(control), "mode=k action=toggle source=ctrl-space"),
+		"voice-control records the toggle result");
+
+	t.assert(writefile(control, "on source=escape-v") > 0,
+		"Esc-V can enter voice mode");
+	t.assert(writefile(control, "off source=escape") > 0,
+		"Escape can leave voice mode");
+	t.assertseq(strip(readfile(mode)), "k", "semantic off restores keyboard mode");
+	t.assert(hassubstr(readfile(control), "action=off source=escape"),
+		"voice-control records prompt Escape exit");
+
+	t.assert(writefile(control, "invalid source=test") < 0,
+		"invalid semantic action is rejected");
+	t.assert(writefile(control, "on bad-source") < 0,
+		"malformed source attribution is rejected");
 }
 
 testVoiceInput(t: ref T)
@@ -1928,6 +1960,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("ConvCtlBadWrite", testConvCtlBadWrite);
 	run("ConvClear", testConvClear);
 	run("VoiceInputMode", testVoiceInputMode);
+	run("VoiceControl", testVoiceControl);
 	run("VoiceInput", testVoiceInput);
 	run("VoiceInputFIFO", testVoiceInputFIFO);
 	run("ConversationControl", testConversationControl);
