@@ -72,7 +72,6 @@ wakecooldown := 1500;
 gracems := 3000;		# grace window before a final is submitted; 0 = immediate
 confidencethreshold := 650;	# thousandths; confidence metadata is optional
 pendingconfirm := "";
-busyqueued := 0;		# at most one voice follow-up while the activity is busy
 
 testmode := 0;
 echoback := 0;
@@ -238,6 +237,20 @@ voiceinput(actid: int, text: string): int
 {
 	path := sys->sprint("%s/activity/%d/conversation/voiceinput", ui, actid);
 	return writefile(path, text);
+}
+
+voiceapproval(actid: int, decision: string): int
+{
+	path := sys->sprint("%s/activity/%d/conversation/voiceapproval", ui, actid);
+	return writefile(path, decision);
+}
+
+voicequeuefull(actid: int): int
+{
+	path := sys->sprint("%s/activity/%d/conversation/voicequeue", ui, actid);
+	status := readfile(path);
+	return status != nil && hasprefix(strip(status),
+		"depth=1 capacity=1 state=full");
 }
 
 draftinput(actid: int, text: string): int
@@ -571,13 +584,13 @@ handlecontrol(actid: int, text: string): int
 		setinputmode("k");
 		return 1;
 	}
-	if(lower == "approve" || lower == "allow" ||
-	   (lower == "yes" && approvalpending(actid))) {
-		voiceinput(actid, "Allow");
+	if(approvalpending(actid) &&
+	   (lower == "approve" || lower == "allow" || lower == "yes")) {
+		voiceapproval(actid, "Allow");
 		return 1;
 	}
-	if(lower == "deny" || (lower == "no" && approvalpending(actid))) {
-		voiceinput(actid, "Deny");
+	if(approvalpending(actid) && (lower == "deny" || lower == "no")) {
+		voiceapproval(actid, "Deny");
 		return 1;
 	}
 	return 0;
@@ -700,26 +713,22 @@ submitfinal(actid: int, text: string)
 		spawn saytts(saytext);
 	} else {
 		busy := agentbusy(actid);
-		if(!busy)
-			busyqueued = 0;
-		if(busy && busyqueued) {
-			log("busy: discarding additional queued voice turn: " + text);
-			ctxqueued(actid, 1);
-			chime("done");
-			return;
-		}
 		ctxstatus(actid, "processing");
 		# A follow-up against a busy activity takes conversational
 		# control at the next safe model/tool boundary, then remains
 		# queued on voiceinput as the next turn in the same session.
-		if(busy && !approvalpending(actid))
-			controlinput(actid, "refine");
 		if(voiceinput(actid, text) < 0) {
-			ctxstatus(actid, "error");
+			if(voicequeuefull(actid)) {
+				log("server rejected full voice follow-up queue: " + text);
+				ctxqueued(actid, 1);
+				chime("done");
+			} else
+				ctxstatus(actid, "error");
 			return;
 		}
 		if(busy) {
-			busyqueued = 1;
+			if(!approvalpending(actid))
+				controlinput(actid, "refine");
 			ctxqueued(actid, 0);
 		}
 	}
@@ -730,7 +739,6 @@ voiceloop()
 {
 	log("voice mode on");
 	pendingconfirm = "";
-	busyqueued = 0;
 	pendingsend := "";
 	drainresults();
 	actid := currentactivity();
@@ -761,7 +769,6 @@ voiceloop()
 				cancelspeech();
 				chime("off");
 				micoff();
-				busyqueued = 0;
 				ctxstatus(actid, "idle");
 				log("voice mode off");
 				return;

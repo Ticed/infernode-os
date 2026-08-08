@@ -102,8 +102,10 @@ Phase 1 structure (1.0–1.6) is implemented. The branch now has:
   `conversation/draft-status`, and rendered as a bordered, visibly unsent user
   turn. Typed compose text remains visible but locked until voice mode exits.
 - A FIFO `conversation/control` path for spoken cancel, pause, resume, status,
-  and mid-turn refinements. Tool approvals consume the same voice input path,
-  fail closed, and remain cancellable.
+  and mid-turn refinements. Spoken tool approvals use the dedicated
+  `conversation/voiceapproval` path; the server accepts only explicit
+  `Allow`/`Deny` while the activity is blocked. They fail closed and remain
+  cancellable without releasing a queued refinement into the approval gate.
 - Low-confidence STT confirmation with a visual prompt and spoken read-back;
   the threshold defaults to 650 permille and is configurable with
   `voicemode -q`.

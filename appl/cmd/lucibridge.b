@@ -58,6 +58,7 @@ speakgen := 0;
 
 # Persistent input readers and cooperative active-turn control.
 inputc: chan of (int, string);
+approvalc: chan of string;
 turngen := 0;
 turnpaused := 0;
 turnactive := 0;
@@ -449,6 +450,26 @@ inputreader(path: string, isvoice: int, ch: chan of (int, string))
 	}
 }
 
+# Dedicated spoken approval reader. Unlike normal voiceinput, this channel is
+# valid only while luciuisrv reports the activity blocked at an approval gate.
+approvalreader(path: string, ch: chan of string)
+{
+	for(;;) {
+		fd := sys->open(path, Sys->OREAD);
+		if(fd == nil) {
+			sys->sleep(500);
+			continue;
+		}
+		decision := blockread(fd);
+		fd = nil;
+		if(decision == nil) {
+			sys->sleep(100);
+			continue;
+		}
+		ch <-= decision;
+	}
+}
+
 controlreader(path: string)
 {
 	for(;;) {
@@ -719,8 +740,9 @@ pretoolapproval(toolname, args: string, gen: int): string
 	log("pretool: awaiting approval for " + toolname);
 	setstatus("blocked");
 	seturgency(2);
-	# Use the already-running shared readers so typed buttons and spoken
-	# Allow/Deny reach the same gate; a second direct reader races them.
+	# Typed buttons stay on the shared keyboard reader. Spoken Allow/Deny use
+	# their own gated server channel so a queued refinement cannot be mistaken
+	# for an approval when status changes working -> blocked.
 	response := "";
 	done := 0;
 	while(!done) {
@@ -728,6 +750,8 @@ pretoolapproval(toolname, args: string, gen: int): string
 		spawn approvaltick(tick);
 		alt {
 		(nil, response) = <-inputc =>
+			done = 1;
+		response = <-approvalc =>
 			done = 1;
 		<-tick =>
 			if(gen != turngen) {
@@ -2334,9 +2358,12 @@ init(nil: ref Draw->Context, args: list of string)
 
 	inputpath := sys->sprint("/mnt/ui/activity/%d/conversation/input", actid);
 	voiceinputpath := sys->sprint("/mnt/ui/activity/%d/conversation/voiceinput", actid);
+	approvalpath := sys->sprint("/mnt/ui/activity/%d/conversation/voiceapproval", actid);
 	inputc = chan of (int, string);
+	approvalc = chan of string;
 	spawn inputreader(inputpath, 0, inputc);
 	spawn inputreader(voiceinputpath, 1, inputc);
+	spawn approvalreader(approvalpath, approvalc);
 	spawn controlreader(sys->sprint("/mnt/ui/activity/%d/conversation/control", actid));
 
 	log(sys->sprint("ready — activity %d, session %s, max %d steps, %d existing msgs",

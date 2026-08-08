@@ -345,6 +345,11 @@ testRootDirread(t: ref T)
 	t.assert(hassubstr(conv, " ctl"), "conversation listing includes ctl");
 	t.assert(hassubstr(conv, " input"), "conversation listing includes input");
 	t.assert(hassubstr(conv, " voiceinput"), "conversation listing includes voiceinput");
+	t.assert(hassubstr(conv, " voicequeue"), "conversation listing includes voicequeue");
+	t.assert(hassubstr(conv, " voicequeue-ctl"),
+		"conversation listing includes voicequeue-ctl");
+	t.assert(hassubstr(conv, " voiceapproval"),
+		"conversation listing includes voiceapproval");
 	t.assert(hassubstr(conv, " control"), "conversation listing includes control: " + conv);
 	t.assert(hassubstr(conv, " draft"), "conversation listing includes draft");
 }
@@ -1101,7 +1106,7 @@ testVoiceInput(t: ref T)
 		"voiceinput read should return queued voice-originated text");
 }
 
-testVoiceInputFIFO(t: ref T)
+testVoiceQueue(t: ref T)
 {
 	if(actid < 0) {
 		t.skip("no activity");
@@ -1109,18 +1114,212 @@ testVoiceInputFIFO(t: ref T)
 	}
 
 	voicefile := actbase() + "/conversation/voiceinput";
+	status := actbase() + "/conversation/voicequeue";
+	ctl := actbase() + "/conversation/voicequeue-ctl";
+	(okstatus, nil) := sys->stat(status);
+	(okctl, nil) := sys->stat(ctl);
+	t.assert(okstatus >= 0, "conversation/voicequeue should exist");
+	t.assert(okctl >= 0, "conversation/voicequeue-ctl should exist");
+	# Inferno's Styx server permits the open and enforces access when the
+	# operation is attempted, so verify the 9P read/write result directly.
+	t.assert(writefile(status, "forbidden") < 0, "voicequeue rejects writes");
+	t.assert(readfile(ctl) == nil, "voicequeue-ctl rejects reads");
+
+	t.assertseq(strip(readfile(status)), "depth=0 capacity=1 state=empty",
+		"voice queue starts empty");
 	t.asserteq(writefile(voicefile, "first voice turn"), len "first voice turn",
-		"first voice write");
-	t.asserteq(writefile(voicefile, "second voice turn"), len "second voice turn",
-		"second voice write");
-	t.asserteq(writefile(voicefile, "third voice turn"), len "third voice turn",
-		"third voice write");
+		"0->1 voice queue transition accepts one turn");
+	t.assertseq(strip(readfile(status)), "depth=1 capacity=1 state=full",
+		"voice queue reports its authoritative full state");
+	overflowfd := sys->open(voicefile, Sys->OWRITE);
+	overflowdata := array of byte "overflow voice turn";
+	overflow := sys->write(overflowfd, overflowdata, len overflowdata);
+	overflowerr := sys->sprint("%r");
+	t.assert(overflow < 0, "ordinary voiceinput rejects overflow at the 9P write");
+	t.assertseq(overflowerr, "voice follow-up queue full",
+		"overflow returns a clear 9P error");
 	t.assertseq(strip(readfile(voicefile)), "first voice turn",
-		"voiceinput preserves FIFO order for first turn");
-	t.assertseq(strip(readfile(voicefile)), "second voice turn",
-		"voiceinput preserves FIFO order for second turn");
-	t.assertseq(strip(readfile(voicefile)), "third voice turn",
-		"voiceinput preserves FIFO order for third turn");
+		"overflow does not replace the queued turn");
+	t.assertseq(strip(readfile(status)), "depth=0 capacity=1 state=empty",
+		"dequeue naturally returns queue state to empty");
+
+	t.asserteq(writefile(voicefile, "cancel me"), len "cancel me",
+		"queue a turn for cancellation");
+	t.asserteq(writefile(ctl, "cancel"), len "cancel",
+		"voicequeue cancel succeeds");
+	t.assertseq(strip(readfile(status)), "depth=0 capacity=1 state=empty",
+		"cancel clears the queued turn");
+
+	t.asserteq(writefile(voicefile, "original turn"), len "original turn",
+		"queue a turn for replacement");
+	t.asserteq(writefile(ctl, "replace corrected turn"), len "replace corrected turn",
+		"voicequeue replace succeeds");
+	t.assertseq(strip(readfile(voicefile)), "corrected turn",
+		"replace changes the one queued turn in place");
+	t.assertseq(strip(readfile(status)), "depth=0 capacity=1 state=empty",
+		"reading the replacement completes the 0->1->0 lifecycle");
+	t.assert(writefile(ctl, "replace impossible") < 0,
+		"replace rejects an empty queue");
+	t.assert(writefile(ctl, "unknown") < 0,
+		"voicequeue-ctl rejects unknown controls");
+}
+
+testVoiceQueuePendingReader(t: ref T)
+{
+	if(actid < 0) {
+		t.skip("no activity");
+		return;
+	}
+
+	voicefile := actbase() + "/conversation/voiceinput";
+	status := actbase() + "/conversation/voicequeue";
+	ctl := actbase() + "/conversation/voicequeue-ctl";
+	activitystatus := actbase() + "/status";
+	t.assert(writefile(activitystatus, "working") > 0,
+		"activity enters busy state before lucibridge waits");
+
+	readc := chan[1] of string;
+	spawn eventreader(voicefile, readc);
+	sys->sleep(100);
+	t.assert(writefile(voicefile, "pending-reader turn") > 0,
+		"first follow-up is accepted with a reader already pending");
+	t.assertseq(strip(readfile(status)), "depth=1 capacity=1 state=full",
+		"pending reader cannot bypass authoritative queue depth");
+
+	earlyc := chan[1] of int;
+	spawn timerwait(earlyc, 200);
+	premature := 0;
+	alt {
+	<-readc =>
+		premature = 1;
+	<-earlyc =>
+		;
+	}
+	t.assert(!premature, "busy pending reader does not receive the queued turn");
+	t.assert(writefile(voicefile, "overflow behind pending reader") < 0,
+		"pending reader cannot expand effective capacity beyond one");
+
+	t.assert(writefile(ctl, "cancel") > 0,
+		"cancel controls the queued item despite the pending reader");
+	t.assertseq(strip(readfile(status)), "depth=0 capacity=1 state=empty",
+		"cancel leaves the pending reader waiting and empties the queue");
+	t.assert(writefile(voicefile, "replace original") > 0,
+		"queue can accept a new item after cancel");
+	t.assert(writefile(ctl, "replace pending-reader replacement") > 0,
+		"replace controls the queued item despite the pending reader");
+	t.assertseq(strip(readfile(status)), "depth=1 capacity=1 state=full",
+		"replacement remains server-owned while activity is busy");
+
+	t.assert(writefile(activitystatus, "idle") > 0,
+		"idle transition releases the queued follow-up");
+	delivered := "";
+	timeoutc := chan[1] of int;
+	spawn timerwait(timeoutc, 1000);
+	alt {
+	delivered = <-readc =>
+		;
+	<-timeoutc =>
+		delivered = "error:timeout";
+	}
+	t.assertseq(strip(delivered), "pending-reader replacement",
+		"pending reader receives only the replacement at the turn boundary");
+	t.assertseq(strip(readfile(status)), "depth=0 capacity=1 state=empty",
+		"boundary delivery completes the authoritative 1->0 transition");
+}
+
+testVoiceApproval(t: ref T)
+{
+	if(actid < 0) {
+		t.skip("no activity");
+		return;
+	}
+
+	voicefile := actbase() + "/conversation/voiceinput";
+	approvalfile := actbase() + "/conversation/voiceapproval";
+	status := actbase() + "/conversation/voicequeue";
+	activitystatus := actbase() + "/status";
+	t.assert(writefile(activitystatus, "working") > 0,
+		"activity starts in processing state");
+	refinementc := chan[1] of string;
+	spawn eventreader(voicefile, refinementc);
+	sys->sleep(100);
+	t.assert(writefile(voicefile, "queued refinement") > 0,
+		"normal voice refinement queues while working");
+	t.assertseq(strip(readfile(status)), "depth=1 capacity=1 state=full",
+		"working refinement occupies the sole queue slot");
+	t.assert(writefile(activitystatus, "blocked") > 0,
+		"activity enters approval state");
+	earlyc := chan[1] of int;
+	spawn timerwait(earlyc, 200);
+	premature := 0;
+	alt {
+	<-refinementc =>
+		premature = 1;
+	<-earlyc =>
+		;
+	}
+	t.assert(!premature,
+		"working->blocked does not release refinement into the approval gate");
+	t.assertseq(strip(readfile(status)), "depth=1 capacity=1 state=full",
+		"queued refinement remains server-owned across working->blocked");
+
+	allowc := chan[1] of string;
+	spawn eventreader(approvalfile, allowc);
+	sys->sleep(100);
+	t.assert(writefile(approvalfile, "invalid") < 0,
+		"blocked voiceapproval rejects anything except explicit Allow/Deny");
+	t.assert(writefile(approvalfile, "Allow") > 0,
+		"spoken approval uses the dedicated blocked channel");
+	allow := "";
+	allowtimeout := chan[1] of int;
+	spawn timerwait(allowtimeout, 1000);
+	alt {
+	allow = <-allowc =>
+		;
+	<-allowtimeout =>
+		allow = "error:timeout";
+	}
+	t.assertseq(strip(allow), "Allow",
+		"approval reader receives Allow without consuming refinement");
+	t.assertseq(strip(readfile(status)), "depth=1 capacity=1 state=full",
+		"approval delivery leaves normal refinement queued");
+	denyc := chan[1] of string;
+	spawn eventreader(approvalfile, denyc);
+	sys->sleep(100);
+	t.assert(writefile(approvalfile, "Deny") > 0,
+		"explicit spoken denial also uses the dedicated blocked channel");
+	deny := "";
+	denytimeout := chan[1] of int;
+	spawn timerwait(denytimeout, 1000);
+	alt {
+	deny = <-denyc =>
+		;
+	<-denytimeout =>
+		deny = "error:timeout";
+	}
+	t.assertseq(strip(deny), "Deny", "approval reader receives explicit Deny");
+	t.assertseq(strip(readfile(status)), "depth=1 capacity=1 state=full",
+		"denial delivery also leaves normal refinement queued");
+
+	t.assert(writefile(activitystatus, "working") > 0,
+		"approval completion resumes processing");
+	t.assert(writefile(approvalfile, "Deny") < 0,
+		"nonblocked approval writes are rejected");
+	t.assert(writefile(activitystatus, "idle") > 0,
+		"idle boundary releases the queued refinement");
+	delivered := "";
+	timeoutc := chan[1] of int;
+	spawn timerwait(timeoutc, 1000);
+	alt {
+	delivered = <-refinementc =>
+		;
+	<-timeoutc =>
+		delivered = "error:timeout";
+	}
+	t.assertseq(strip(delivered), "queued refinement",
+		"normal refinement reaches its reader only after processing completes");
+	t.assertseq(strip(readfile(status)), "depth=0 capacity=1 state=empty",
+		"released refinement returns queue to empty");
 }
 
 testConversationControl(t: ref T)
@@ -1652,6 +1851,9 @@ testAutocenterNonCurrent(t: ref T)
 
 teardown()
 {
+	# Theme tests exercise the repository-backed default; restore it so the
+	# regression suite never leaves a tracked fixture dirty.
+	writefile(TESTMNT + "/ctl", "theme brimstone");
 	sys->unmount(nil, TESTMNT);
 }
 
@@ -1962,7 +2164,9 @@ init(nil: ref Draw->Context, args: list of string)
 	run("VoiceInputMode", testVoiceInputMode);
 	run("VoiceControl", testVoiceControl);
 	run("VoiceInput", testVoiceInput);
-	run("VoiceInputFIFO", testVoiceInputFIFO);
+	run("VoiceQueue", testVoiceQueue);
+	run("VoiceQueuePendingReader", testVoiceQueuePendingReader);
+	run("VoiceApproval", testVoiceApproval);
 	run("ConversationControl", testConversationControl);
 	run("ConversationDraft", testConversationDraft);
 

@@ -169,6 +169,9 @@ mkmock()
 	createfile(MOCKUI + "/activity/0/status", "working");
 	createfile(MOCKUI + "/activity/0/conversation/ctl", "");
 	createfile(MOCKUI + "/activity/0/conversation/voiceinput", "");
+	createfile(MOCKUI + "/activity/0/conversation/voiceapproval", "");
+	createfile(MOCKUI + "/activity/0/conversation/voicequeue",
+		"depth=0 capacity=1 state=empty\n");
 	createfile(MOCKUI + "/activity/0/conversation/control", "");
 	createfile(MOCKUI + "/activity/0/conversation/draft", "");
 	createfile(MOCKUI + "/activity/0/conversation/draft-status", "");
@@ -381,11 +384,14 @@ testYesRequiresBlocked(t: ref T)
 		"daemon exits before blocked approval case");
 	createfile(MOCKUI + "/activity/0/status", "blocked");
 	createfile(MOCKUI + "/activity/0/conversation/voiceinput", "");
+	createfile(MOCKUI + "/activity/0/conversation/voiceapproval", "");
 	createfile(MOCKUI + "/activity/0/context/ctl", "");
 	createfile(MOCKSPEECH + "/listen", "final yes\n");
 	createfile(MOCKUI + "/input-mode", "v");
-	t.assert(waitfor(MOCKUI + "/activity/0/conversation/voiceinput", "Allow", 5000),
-		"bare yes maps to Allow only while activity is blocked");
+	t.assert(waitfor(MOCKUI + "/activity/0/conversation/voiceapproval", "Allow", 5000),
+		"bare yes maps to dedicated voice approval only while blocked");
+	t.assert(!hassubstr(readfile(MOCKUI + "/activity/0/conversation/voiceinput"),
+		"Allow"), "spoken approval does not enter the follow-up queue");
 }
 
 testNoDeniesBlockedApproval(t: ref T)
@@ -393,8 +399,8 @@ testNoDeniesBlockedApproval(t: ref T)
 	createfile(MOCKUI + "/activity/0/status", "blocked");
 	createfile(MOCKSPEECH + "/listen", "final no\n");
 	createfile(MOCKUI + "/input-mode", "v");
-	t.assert(waitfor(MOCKUI + "/activity/0/conversation/voiceinput", "Deny", 5000),
-		"bare no maps to Deny while activity is blocked");
+	t.assert(waitfor(MOCKUI + "/activity/0/conversation/voiceapproval", "Deny", 5000),
+		"bare no maps to dedicated voice denial while blocked");
 }
 
 testStatusSpeaksActivityState(t: ref T)
@@ -587,11 +593,11 @@ testGraceAppendMergesTurn(t: ref T)
 	t.assert(hassubstr(vi, "first part"), "merged turn keeps the first utterance");
 }
 
-testBusyFollowupQueueIsCapped(t: ref T)
+testServerVoiceQueueRejection(t: ref T)
 {
-	# The mock activity starts "working". One spoken follow-up may request
-	# refinement and enter voiceinput; further speech must not build an
-	# unbounded queue while that activity remains busy.
+	# The mock activity starts "working". Capacity belongs to luciuisrv, so
+	# the daemon accepts the first write and reacts to a later server-side
+	# rejection instead of maintaining its own busy/queued latch.
 	createfile(MOCKSPEECH + "/listen", "final first queued turn\n");
 	createfile(MOCKUI + "/input-mode", "v");
 	t.assert(waitfor(MOCKUI + "/activity/0/conversation/voiceinput",
@@ -600,22 +606,32 @@ testBusyFollowupQueueIsCapped(t: ref T)
 		"queued follow-up is visible on the voice resource");
 	t.assert(waitfor(MOCKUI + "/activity/0/conversation/control", "refine", 3000),
 		"first busy follow-up requests refinement");
-
 	createfile(MOCKSPEECH + "/listen", "");
-	createfile(MOCKUI + "/activity/0/conversation/voiceinput", "");
+	refines := countsubstr(readfile(MOCKUI + "/activity/0/conversation/control"),
+		"refine");
+
+	# A missing mock voiceinput makes the write fail while voicequeue reports
+	# the real server condition that caused it: the capacity-one queue is full.
+	sys->remove(MOCKUI + "/activity/0/conversation/voiceinput");
+	createfile(MOCKUI + "/activity/0/conversation/voicequeue",
+		"depth=1 capacity=1 state=full\n");
 	createfile(MOCKSPEECH + "/listen", "final second queued turn\n");
 	t.assert(waitfor(MOCKUI + "/activity/0/context/ctl",
-		"one turn queued", 5000), "additional busy follow-up reports the cap");
-	t.assert(waitnotfor(MOCKUI + "/activity/0/conversation/voiceinput",
-		"second queued turn", 1200), "additional busy follow-up is discarded");
-
-	# Once the activity becomes idle, the latch clears and a later turn is
-	# accepted normally.
+		"one turn queued", 5000), "server rejection visibly reports the full queue");
 	createfile(MOCKSPEECH + "/listen", "");
-	createfile(MOCKUI + "/activity/0/status", "idle");
-	createfile(MOCKSPEECH + "/listen", "final after idle\n");
+	t.asserteq(countsubstr(readfile(MOCKUI + "/activity/0/conversation/control"),
+		"refine"), refines, "rejected follow-up does not request refinement");
+
+	# Simulate server-side cancel/dequeue while the activity remains working.
+	# A later write must be attempted and accepted, proving there is no stale
+	# daemon-local busyqueued latch.
+	createfile(MOCKUI + "/activity/0/conversation/voiceinput", "");
+	createfile(MOCKUI + "/activity/0/conversation/voicequeue",
+		"depth=0 capacity=1 state=empty\n");
+	createfile(MOCKSPEECH + "/listen", "final after server dequeue\n");
 	t.assert(waitfor(MOCKUI + "/activity/0/conversation/voiceinput",
-		"after idle", 5000), "idle activity clears the queued-turn cap");
+		"after server dequeue", 5000),
+		"server empty state permits another busy follow-up without a local latch");
 }
 
 init(nil: ref Draw->Context, args: list of string)
@@ -664,8 +680,8 @@ init(nil: ref Draw->Context, args: list of string)
 		testGraceCancelDiscards);
 	runvm("GraceAppendMergesTurn", "-g" :: "600" :: "-w" :: "200" :: nil,
 		testGraceAppendMergesTurn);
-	runvm("BusyFollowupQueueIsCapped", "-w" :: "200" :: nil,
-		testBusyFollowupQueueIsCapped);
+	runvm("ServerVoiceQueueRejection", "-w" :: "200" :: nil,
+		testServerVoiceQueueRejection);
 
 	if(testing->summary(passed, failed, skipped) > 0)
 		raise "fail:tests failed";
