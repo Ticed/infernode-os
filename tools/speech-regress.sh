@@ -170,6 +170,9 @@ run_host_test() {
 # This is the blocking composed path: real Lucia/LLM/speech services with
 # deterministic loopback fixtures replacing only microphones and models.
 run_host_test speech_e2e_test.sh
+run_host_test voice_ui_contract_test.sh
+run_host_test parakeet_turn_gate_test.sh
+run_host_test elevenlabs_speech_e2e_test.sh
 
 # The download test is hermetic: it sources the installer with a fake curl.
 run_host_test speech_installer_download_test.sh

@@ -8,11 +8,13 @@
 >
 > **Phase 2 status.** The Mac-local voice mode
 > ([SPEECH-VOICE-ONLY-PHASE1.md](SPEECH-VOICE-ONLY-PHASE1.md)) is Phase 1.
-> Phase 2 starts after that release candidate passes its human exit checks.
-> The loadable `SpeechEngine` ABI, provider-backed module, namespace audio
-> routing, and `lib/voice/speech-*` launch scripts are already implemented;
-> Phase 2 is now the validation, hardening, and distribution milestone rather
-> than a green-field remote-audio implementation.
+> Phase 2 starts from the functionally frozen Phase 1 implementation once its
+> automated gates pass. Physical Mac/GUI acceptance may be deferred and combined
+> with Phase 2 acceptance; it remains mandatory before the overarching voice
+> feature merges into `dev`. The loadable `SpeechEngine` ABI, provider-backed
+> module, namespace audio routing, and `lib/voice/speech-*` launch scripts are
+> already implemented; Phase 2 is now the validation, hardening, and distribution
+> milestone rather than a green-field remote-audio implementation.
 >
 > **Security status: development only.** The current examples use anonymous
 > `listen -A` / `mount -A` connections and export the host's broad `/dev`
@@ -43,10 +45,10 @@ Phase 2 comprises:
 
 The exact wake phrase/model is intentionally not a Phase 2 acceptance item.
 
-Automated loopback and mock coverage must precede each topology change. The
-implementation stops for human acceptance when real two-host audio or GUI
-latency judgement is required; those items are not marked complete from
-non-interactive tests.
+Automated loopback and mock coverage must precede each topology change. Work on
+independent Phase 2 items continues when a particular gate reaches real
+two-host audio or subjective GUI/latency judgement. Those human-only gates stay
+open and are not marked complete from non-interactive tests.
 
 Completing the functional Phase 2 gates does not make this transport
 release-ready. A separate security-audit gate must verify authentication,
@@ -64,7 +66,11 @@ feature can merge into `dev`.
 - `/lib/voice/speech-terminal`, `speech-engine`, and `speech-capture` automate
   the current export, import, provider, and ctl wiring.
 
-### Remaining Human Gates
+### Deferred Human Gates
+
+These gates do not block starting or continuing independent Phase 2 work. They
+do block final Phase 2 acceptance and the overarching voice-feature merge into
+`dev`:
 
 - Real cross-host audio with two machines and their device/network permissions.
 - Jetson or equivalent remote helper/model installation and sustained use.

@@ -2582,7 +2582,7 @@ kbdproc()
 					# even while speech helpers are active. voicemode
 					# sees the input-mode broadcast and cancels TTS.
 					if(voicemodeon) {
-						writefile(mountpt + "/input-mode", "k");
+						writefile(mountpt + "/voice-control", "off source=escape");
 						continue;
 					}
 					escstate = 1;
@@ -2596,7 +2596,7 @@ kbdproc()
 					continue;
 				}
 				if(!voicemodeon && (c == 'v' || c == 'V')) {
-					writefile(mountpt + "/input-mode", "v");
+					writefile(mountpt + "/voice-control", "on source=escape-v");
 					continue;
 				}
 				# Bare ESC+char: deliver char as-is (fall through to route)

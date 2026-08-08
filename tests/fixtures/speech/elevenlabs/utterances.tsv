@@ -1,0 +1,5 @@
+# id	text	expected_keywords	min_partials
+calibration	The quick brown fox jumps over the lazy dog near the river bank.	fox,dog,river	3
+continuous	This continuous sentence stays in one turn while I keep speaking through the middle and only stop after the final word horizon.	continuous,middle,horizon	6
+voice_submit	Reply with exactly local LLM working.	reply,local,working	2
+voice_cancel	Cancel this pending voice message.	cancel,pending,message	1

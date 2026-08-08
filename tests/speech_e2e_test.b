@@ -136,6 +136,24 @@ waitcontains(path, sub: string, ms: int): int
 	return 0;
 }
 
+strip(s: string): string
+{
+	while(len s > 0 && (s[len s - 1] == '\n' || s[len s - 1] == '\r' ||
+			s[len s - 1] == ' ' || s[len s - 1] == '\t'))
+		s = s[0:len s - 1];
+	return s;
+}
+
+waitmode(want: string, ms: int): int
+{
+	for(waited := 0; waited < ms; waited += 25) {
+		if(strip(readfile("/mnt/ui/input-mode")) == want)
+			return 1;
+		sys->sleep(25);
+	}
+	return 0;
+}
+
 conversationrolecount(role, sub: string): int
 {
 	n := 0;
@@ -254,6 +272,10 @@ startstack(t: ref T)
 	t.assert(waitresource("label=Voice", 8000),
 		"lucibridge initialized its LLM session and speech resource");
 
+}
+
+startvoicemode(t: ref T)
+{
 	startmodule(t, "/dis/voicemode.dis", "voicemode",
 		"-g" :: "300" :: "-q" :: "650" :: "-t" :: "5000" ::
 		"-w" :: "50" :: "-u" :: "/mnt/ui" :: "-s" :: "/n/speech" :: nil);
@@ -264,13 +286,57 @@ testComposedTurn(t: ref T)
 {
 	startstack(t);
 
+	# Exercise the same semantic endpoint used by every visible entry surface.
+	# /voice-control is observable, so this remains headless while still proving
+	# the resulting UI mode and source attribution rather than source-text grep.
+	sources := "context-chip" :: "compose-button" :: "ctrl-space" ::
+		"escape-v" :: "alt-v" :: "slash-command" :: nil;
+	for(; sources != nil; sources = tl sources) {
+		source := hd sources;
+		t.assert(writefile("/mnt/ui/voice-control", "on source=" + source) > 0,
+			source + " enters voice mode");
+		t.assert(waitmode("v", 1000), source + " produced voice input mode");
+		t.assert(waitcontains("/mnt/ui/voice-control", "source=" + source, 1000),
+			source + " was captured by the UI server");
+		t.assert(writefile("/mnt/ui/voice-control", "off source=escape") > 0,
+			"Escape exits after " + source);
+		t.assert(waitmode("k", 1000), "keyboard restored after " + source);
+	}
+
+	# Start the resident daemon only after the pure entry/exit surface matrix.
+	# Rapidly arming real wake helpers is not part of that UI contract and would
+	# make the later cancellation scenario depend on discarded helper processes.
+	startvoicemode(t);
+
+	# Enter a final, wait until it is pending in the grace window, then model
+	# Lucifer's unconditional Escape path. The turn must never reach Lucia.
+	t.assert(writefile(infernostate + "/wake.next", "wake e2e 0.99\n") > 0,
+		"cancel wake event scripted");
+	t.assert(writefile(infernostate + "/listen.next",
+		"partial confidence=940 Cancel this pending voice message\n" +
+		"final confidence=940 Cancel this pending voice message.\n") > 0,
+		"cancel transcript scripted");
+	t.assert(writefile("/mnt/ui/voice-control", "on source=compose-button") > 0,
+		"voice mode entered for Escape cancellation");
+	t.assert(waitcontains("/mnt/ui/activity/0/conversation/draft-status",
+		"Sending", 5000), "voice turn reached grace window");
+	t.assert(writefile("/mnt/ui/voice-control", "off source=escape") > 0,
+		"Escape cancellation sent promptly");
+	t.assert(waitmode("k", 1000), "Escape restored keyboard mode promptly");
+	sys->sleep(500);
+	t.asserteq(conversationrolecount("human", "Cancel this pending voice message"), 0,
+		"Escape prevented the pending voice turn from submitting");
+	t.assertseq(strip(readfile("/mnt/ui/activity/0/conversation/draft")), "",
+		"Escape cleared the pending voice draft");
+
 	t.assert(writefile(infernostate + "/wake.next", "wake e2e 0.99\n") > 0,
 		"wake event scripted");
 	t.assert(writefile(infernostate + "/listen.next",
 		"partial confidence=940 Reply with exactly local LLM working\n" +
 		"final confidence=940 Reply with exactly: local LLM working.\n") > 0,
 		"streaming transcript scripted");
-	t.assert(writefile("/mnt/ui/input-mode", "v") > 0, "voice mode re-entered");
+	t.assert(writefile("/mnt/ui/voice-control", "on source=compose-button") > 0,
+		"voice mode re-entered");
 
 	t.assert(waitcontains("/mnt/ui/activity/0/conversation/draft",
 		"local LLM working", 5000), "live or final transcript reached Lucia draft");
@@ -285,9 +351,17 @@ testComposedTurn(t: ref T)
 	t.assert(waitresource("label=Voice", 3000),
 		"Voice lifecycle resource is present");
 
-	t.assert(writefile("/mnt/ui/input-mode", "k") > 0, "keyboard mode restored");
+	t.assert(writefile("/mnt/ui/voice-control", "off source=escape") > 0,
+		"keyboard mode restored");
 	t.assert(waitcontains("/n/speechshim/ctl", "mic off", 3000),
 		"microphone released after composed turn");
+
+	# A plain keyboard turn after voice exit proves that lucibridge is no longer
+	# gating typed input and the normal conversation path recovered.
+	t.assert(writefile("/mnt/ui/activity/0/conversation/input",
+		"Keyboard recovery marker.") > 0, "keyboard turn written after voice exit");
+	t.assert(waitconversationrole("human", "Keyboard recovery marker", 5000),
+		"keyboard input recovered after voice mode");
 }
 
 testNeedsWrapper(t: ref T)

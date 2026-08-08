@@ -46,6 +46,41 @@ jobs:
         fi
         echo "Ring-fence OK: no testing-only harness files outside tests/agent-harness/."
 
+  # Replays the committed ElevenLabs corpus through the real streaming model.
+  # The API is never called in CI; only the generated PCM and its hashes are
+  # committed. Caching keeps the Parakeet source, build, and model reusable.
+  speech-audio-e2e:
+    name: Speech Audio E2E (ElevenLabs → Parakeet)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      ROOT: ${{ github.workspace }}
+      INFERNODE_SPEECH_REAL_AUDIO_REQUIRED: 1
+
+    steps:
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+    - name: Cache Parakeet test runtime
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.local/share/infernode-speech
+        key: speech-parakeet-${{ runner.os }}-${{ hashFiles('tools/parakeet_stream.cpp', 'tools/parakeet_turn_gate.h', 'tools/install-speech-helpers.sh') }}
+        restore-keys: |
+          speech-parakeet-${{ runner.os }}-
+
+    - name: Build the Parakeet adapter and obtain its model
+      shell: bash
+      run: |
+        source tools/install-speech-helpers.sh
+        mkdir -p "$BIN" "$LIBEXEC" "$MODELS" "$PARAKEET_DIR"
+        install_parakeet
+        test "$PARAKEET_OK" = 1
+
+    - name: Replay ElevenLabs speech fixtures in real time
+      run: bash tests/host/elevenlabs_speech_e2e_test.sh
+
   # ─────────────────────────────────────────────
   # Linux AMD64: Full bootstrap build from source
   # ─────────────────────────────────────────────

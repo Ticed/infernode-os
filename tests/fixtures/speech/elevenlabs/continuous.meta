@@ -1,0 +1,17 @@
+provider=ElevenLabs
+voice_id=21m00Tcm4TlvDq8ikWAM
+model_id=eleven_multilingual_v2
+seed=8675309
+sample_rate=16000
+channels=1
+sample_format=s16le
+leading_silence_ms=250
+trailing_silence_ms=1200
+speech_end_ms=7765
+api_pcm_ms=7755
+duration_ms=9205
+expected_keywords=continuous,middle,horizon
+min_partials=6
+sha256=836c2fd0563ed35cef0213bfd00dfce80401afd0d1073ba106c99188f538cc3d
+generated_utc=2026-08-08T09:39:21+00:00
+generator=tools/generate-elevenlabs-speech-fixtures.py

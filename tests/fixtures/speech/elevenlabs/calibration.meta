@@ -1,0 +1,17 @@
+provider=ElevenLabs
+voice_id=21m00Tcm4TlvDq8ikWAM
+model_id=eleven_multilingual_v2
+seed=8675309
+sample_rate=16000
+channels=1
+sample_format=s16le
+leading_silence_ms=250
+trailing_silence_ms=1200
+speech_end_ms=4554
+api_pcm_ms=4644
+duration_ms=6094
+expected_keywords=fox,dog,river
+min_partials=3
+sha256=ae9488d0b55610bea4eafd7eae835b07ff95d6db62ce15937071392d49695d90
+generated_utc=2026-08-08T09:39:20+00:00
+generator=tools/generate-elevenlabs-speech-fixtures.py

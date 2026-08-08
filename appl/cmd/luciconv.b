@@ -284,7 +284,7 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 			} else
 			# Check the voice-mode toggle button first
 			if(micrect.dx() > 0 && micrect.contains(p.xy)) {
-				togglevoice();
+				togglevoice("compose-button");
 				redrawconv();
 			} else {
 				# Check for dialogue button clicks first
@@ -358,7 +358,7 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 		case k {
 		0 =>
 			# Ctrl+Space — toggle voice mode (same as Esc-V / Voice chip)
-			togglevoice();
+			togglevoice("ctrl-space");
 		1 =>
 			# Ctrl-A — beginning of line
 			inputpos = 0;
@@ -1291,16 +1291,16 @@ voiceactive(): int
 	return strip(readfile(mountpt_g + "/input-mode")) == "v";
 }
 
-togglevoice()
+togglevoice(source: string)
 {
-	path := mountpt_g + "/input-mode";
+	path := mountpt_g + "/voice-control";
 	ctl := sys->sprint("%s/activity/%d/context/ctl", mountpt_g, actid_g);
 	if(voiceactive()) {
-		writestring(path, "k");
+		writestring(path, "off source=" + source);
 		writestring(ctl, "resource upsert path=/n/speech label=Voice "
 			+ "type=audio status=idle via=voice-mode");
 	} else {
-		writestring(path, "v");
+		writestring(path, "on source=" + source);
 		writestring(ctl, "resource upsert path=/n/speech label=Voice "
 			+ "type=audio status=starting via=voice-mode");
 	}

@@ -1531,13 +1531,13 @@ handleslash(cmd: string): int
 		if(vcmd == "mode") {
 			if(varg == "on") {
 				autospeak = 1;
-				writefile("/mnt/ui/input-mode", "v");
+				writefile("/mnt/ui/voice-control", "on source=slash-command");
 				writefile(sys->sprint("/mnt/ui/activity/%d/context/ctl", actid),
 					"resource upsert path=/n/speech label=Voice type=audio status=waiting via=voice-mode");
 				ack = "voice mode: on";
 			} else if(varg == "off") {
 				cancelspeechqueue();
-				writefile("/mnt/ui/input-mode", "k");
+				writefile("/mnt/ui/voice-control", "off source=slash-command");
 				writefile(sys->sprint("/mnt/ui/activity/%d/context/ctl", actid),
 					"resource upsert path=/n/speech label=Voice type=audio status=idle via=voice-mode");
 				ack = "voice mode: off";
