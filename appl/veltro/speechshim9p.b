@@ -88,10 +88,9 @@ wakethreshold := "0.5";
 whispermodel := "";
 voice := "af_bella";
 # 22050, NOT Kokoro-native 24000: emu's devaudio only accepts the rates in
-# audio_rate_tbl {8000, 11025, 16000, 22050, 44100}. An unsupported rate is
-# rejected silently and playback runs at the 8000 default — Kokoro speech
-# comes out as 3x slow-motion. kokoro-cli resamples to --rate, so 22050 is
-# both accepted and near-native.
+# audio_rate_tbl {8000, 11025, 16000, 22050, 44100}. kokoro-cli resamples to
+# --rate, so 22050 is both accepted and near-native. The ctl and playback
+# paths below reject unsupported default-device rates explicitly.
 audrate := 22050;
 audiodev := "/dev/audio";
 capturedev := "";		# capture override; empty = audiodev
@@ -255,19 +254,48 @@ bindaudio()
 	audiobound = 1;
 }
 
-openaudioout(rate: int): ref Sys->FD
+defaultaudiorate(rate: int): int
 {
-	if(audiodev == "/dev/audio")
-		bindaudio();
-	ctl := sys->open(audiodev + "ctl", Sys->OWRITE);
-	if(ctl != nil) {
-		writectl(ctl, sys->sprint("out rate %d", rate));
-		writectl(ctl, "out chans 1");
-		writectl(ctl, "out bits 16");
-		writectl(ctl, "out enc pcm");
-		ctl = nil;
+	case rate {
+	8000 or 11025 or 16000 or 22050 or 44100 =>
+		return 1;
 	}
-	return sys->open(audiodev, Sys->OWRITE);
+	return 0;
+}
+
+openaudioout(rate: int): (ref Sys->FD, string)
+{
+	if(audiodev == "/dev/audio") {
+		if(!defaultaudiorate(rate))
+			return (nil, sys->sprint("error: /dev/audio does not support playback rate %d", rate));
+		bindaudio();
+	}
+	ctl := sys->open(audiodev + "ctl", Sys->OWRITE);
+	ctlopenerr := "";
+	if(ctl == nil)
+		ctlopenerr = sys->sprint("%r");
+	if(ctl != nil) {
+		cmds := array[] of {
+			sys->sprint("out rate %d", rate),
+			"out chans 1",
+			"out bits 16",
+			"out enc pcm"
+		};
+		for(i := 0; i < len cmds; i++) {
+			data := array of byte cmds[i];
+			if(sys->write(ctl, data, len data) != len data)
+				return (nil, sys->sprint("error: cannot configure %sctl (%s): %r",
+					audiodev, cmds[i]));
+		}
+		ctl = nil;
+	} else if(audiodev == "/dev/audio" || sys->stat(audiodev + "ctl").t0 >= 0) {
+		return (nil, sys->sprint("error: cannot open %sctl for playback configuration: %s",
+			audiodev, ctlopenerr));
+	}
+	fd := sys->open(audiodev, Sys->OWRITE);
+	if(fd == nil)
+		return (nil, sys->sprint("error: cannot open %s: %r", audiodev));
+	return (fd, nil);
 }
 
 # Start a host command; the process dies with the shim (killonclose) or on
@@ -676,7 +704,13 @@ dosay(text: string): string
 	sys->write(tofd, b, len b);
 	tofd = nil;
 
-	afd := openaudioout(audrate);
+	(afd, audioerr) := openaudioout(audrate);
+	if(afd == nil) {
+		killproc(p);
+		closeproc(p);
+		sayproc = nil;
+		return audioerr;
+	}
 
 	total := 0;
 	buf := array[8192] of byte;
@@ -691,8 +725,6 @@ dosay(text: string): string
 			status = "error: speech canceled";
 			break;
 		}
-		if(afd == nil)
-			continue;	# drain helper; no audio device
 		if(sys->write(afd, buf[0:n], n) < 0) {
 			status = sys->sprint("error: audio write failed: %r");
 			killproc(p);
@@ -706,8 +738,6 @@ dosay(text: string): string
 	if(status != "")
 		return status;
 	if(total == 0) {
-		if(afd == nil)
-			return sys->sprint("error: cannot open %s: %r", audiodev);
 		return "error: kokoro produced no audio";
 	}
 	return sys->sprint("ok: played %d bytes", total);
@@ -735,7 +765,7 @@ playnote(fd: ref Sys->FD, freq, ms: int)
 
 playchime(kind: string)
 {
-	afd := openaudioout(audrate);
+	(afd, err) := openaudioout(audrate);
 	if(afd != nil) {
 		case kind {
 		"wake" =>
@@ -752,7 +782,8 @@ playchime(kind: string)
 			playnote(afd, 659, 90);
 			playnote(afd, 523, 120);
 		}
-	}
+	} else
+		sys->fprint(stderr, "speechshim9p: chime: %s\n", err);
 	playing = 0;
 }
 
@@ -940,8 +971,12 @@ applyconfig(cmd: string): string
 		r := int val;
 		if(r < 8000 || r > 48000)
 			return "error: rate must be 8000-48000";
+		if(audiodev == "/dev/audio" && !defaultaudiorate(r))
+			return "error: /dev/audio rate must be one of 8000, 11025, 16000, 22050, 44100";
 		audrate = r;
 	"audiodev" =>
+		if(val == "/dev/audio" && !defaultaudiorate(audrate))
+			return sys->sprint("error: /dev/audio does not support configured rate %d", audrate);
 		audiodev = val;
 		resetcapture();
 	"capturedev" =>
@@ -1230,9 +1265,11 @@ Serve:
 			case path {
 			Qctl =>
 				result := applyconfig(string m.data);
-				srv.reply(ref Rmsg.Write(m.tag, len m.data));
-				if(hasprefix(result, "error:"))
+				if(hasprefix(result, "error:")) {
 					sys->fprint(stderr, "speechshim9p: %s\n", result);
+					srv.reply(ref Rmsg.Error(m.tag, result));
+				} else
+					srv.reply(ref Rmsg.Write(m.tag, len m.data));
 			Qsay =>
 				fs := getfidstate(m.fid);
 				fs.sayresp = nil;

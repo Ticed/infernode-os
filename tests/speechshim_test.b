@@ -30,6 +30,7 @@ SRCFILE: con "/tests/speechshim_test.b";
 SHIMPATH: con "/dis/veltro/speechshim9p.dis";
 MNT: con "/tmp/speechshim_test";
 PCMFILE: con "/tmp/speechshim_test_pcm";
+BADPCM: con "/tmp/speechshim_test_badpcm";
 WAKEPID: con "/tmp/speechshim_suppressed_wake.pid";
 
 passed := 0;
@@ -161,13 +162,90 @@ testAudioRouting(t: ref T)
 	t.assert(hassubstr(ctl, "audiodev /n/phone/audio"), "ctl reports audiodev");
 	t.assert(hassubstr(ctl, "capturerate 24000"), "ctl reports capturerate");
 
-	# Invalid values are logged, not applied (ctl writes always succeed).
-	writefile(MNT + "/ctl", "micmode banana");
+	# Invalid values fail their ctl writes and leave the prior state intact.
+	t.assert(writefile(MNT + "/ctl", "micmode banana") <= 0,
+		"invalid micmode rejected");
 	ctl = readfile(MNT + "/ctl");
 	t.assert(hassubstr(ctl, "micmode helper"), "invalid micmode not applied");
 
 	writefile(MNT + "/ctl", "audiodev /dev/audio");
 	writefile(MNT + "/ctl", "capturerate 16000");
+}
+
+testPlaybackRates(t: ref T)
+{
+	# Inferno's default audio device has a fixed rate table. Every advertised
+	# rate is accepted and an unsupported rate fails without changing state.
+	rates := array[] of {8000, 11025, 16000, 22050, 44100};
+	for(i := 0; i < len rates; i++) {
+		cmd := "rate " + string rates[i];
+		t.assert(writefile(MNT + "/ctl", cmd) == len cmd,
+			sys->sprint("/dev/audio accepts %d Hz", rates[i]));
+		t.assert(hassubstr(readfile(MNT + "/ctl"), cmd),
+			sys->sprint("ctl reports accepted %d Hz", rates[i]));
+	}
+
+	t.assert(writefile(MNT + "/ctl", "rate 24000") < 0,
+		"/dev/audio rejects unsupported 24000 Hz");
+	t.assert(hassubstr(readfile(MNT + "/ctl"), "rate 44100"),
+		"rejected default-device rate does not change configured rate");
+
+	# A namespaced/remote device may support rates outside #A's fixed table.
+	t.assert(writefile(MNT + "/ctl", "audiodev " + PCMFILE) > 0,
+		"non-default playback device accepted");
+	t.assert(writefile(MNT + "/ctl", "rate 24000") > 0,
+		"non-default playback device retains broader rate capability");
+	t.assert(writefile(MNT + "/ctl", "audiodev /dev/audio") < 0,
+		"cannot select /dev/audio while an unsupported rate is configured");
+	ctl := readfile(MNT + "/ctl");
+	t.assert(hassubstr(ctl, "audiodev " + PCMFILE),
+		"rejected device switch preserves the capable non-default device");
+	t.assert(hassubstr(ctl, "rate 24000"),
+		"rejected device switch preserves the configured remote rate");
+
+	writefile(MNT + "/ctl", "rate 22050");
+	writefile(MNT + "/ctl", "audiodev /dev/audio");
+}
+
+testPlaybackCtlFailure(t: ref T)
+{
+	# Leave repeated local runs deterministic even though the ctl fixture is
+	# deliberately created read-only.
+	sys->remove(BADPCM + "ctl");
+	sys->remove(BADPCM);
+	fd := sys->create(BADPCM, Sys->OWRITE, 8r644);
+	t.assert(fd != nil, "create fake playback device");
+	if(fd == nil)
+		return;
+	fd = nil;
+	ctlfd := sys->create(BADPCM + "ctl", Sys->OREAD, 8r444);
+	t.assert(ctlfd != nil, "create inaccessible fake playback ctl");
+	if(ctlfd == nil)
+		return;
+	ctlfd = nil;
+
+	t.assert(writefile(MNT + "/ctl", "audiodev " + BADPCM) > 0,
+		"fake playback device accepted");
+	t.assert(writefile(MNT + "/ctl",
+		"kokorobin /bin/sh -c \"printf 0123456789\"") > 0,
+		"configure fake synthesizer");
+	sayfd := sys->open(MNT + "/say", Sys->ORDWR);
+	t.assert(sayfd != nil, "say opens for ctl failure test");
+	if(sayfd != nil) {
+		b := array of byte "hello";
+		t.assert(sys->write(sayfd, b, len b) > 0, "say write accepted");
+		sys->seek(sayfd, big 0, Sys->SEEKSTART);
+		buf := array[512] of byte;
+		n := sys->read(sayfd, buf, len buf);
+		result := "";
+		if(n > 0)
+			result = string buf[0:n];
+		t.assert(hassubstr(result, "error: cannot open " + BADPCM + "ctl"),
+			"playback reports audio ctl configuration failure");
+	}
+
+	writefile(MNT + "/ctl", "kokorobin /bin/echo");
+	writefile(MNT + "/ctl", "audiodev /dev/audio");
 }
 
 testDuplexConfig(t: ref T)
@@ -178,7 +256,8 @@ testDuplexConfig(t: ref T)
 	ctl = readfile(MNT + "/ctl");
 	t.assert(hassubstr(ctl, "duplex half"), "ctl reports duplex half");
 	t.assert(writefile(MNT + "/ctl", "duplex full") > 0, "duplex full accepted");
-	writefile(MNT + "/ctl", "duplex banana");
+	t.assert(writefile(MNT + "/ctl", "duplex banana") <= 0,
+		"invalid duplex rejected");
 	ctl = readfile(MNT + "/ctl");
 	t.assert(hassubstr(ctl, "duplex full"), "invalid duplex not applied");
 }
@@ -487,6 +566,8 @@ init(nil: ref Draw->Context, args: list of string)
 	run("Files", testFiles);
 	run("Config", testConfig);
 	run("AudioRouting", testAudioRouting);
+	run("PlaybackRates", testPlaybackRates);
+	run("PlaybackCtlFailure", testPlaybackCtlFailure);
 	run("DuplexConfig", testDuplexConfig);
 	run("ChimeAccepted", testChimeAccepted);
 	run("WakeRestarts", testWakeRestarts);

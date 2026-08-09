@@ -126,7 +126,7 @@ write /n/speech/ctl <- pipermodel /opt/piper/models/en_US-lessac-medium.onnx
 | `provider` | provider mount root | The speech provider mount behind `listen`, `wake`, kokoro-engine `say`, and `cancel` (see the provider contract below). Default `/n/parakeet`; boot points it at `/n/speechshim`. |
 | `listenengine` | `whisper` or `parakeet` | Compatibility alias; both values consume the provider mount. |
 | `whisperstreambin` / `wakebin` / `kokorobin` / `wakeword` / `wakethreshold` | helper commands and wake tuning | Stored for introspection and forwarded to the provider's `ctl`; `speechshim9p` consumes them. `speech9p` itself runs no helpers. |
-| `audiodev` / `capturedev` / `micmode` / `capturerate` | audio routing (see SPEECH-REMOTE-AUDIO.md) | Forwarded to the provider's `ctl` unchanged. In `speechshim9p`: `audiodev` is the playback (and default capture) device path; `capturedev` overrides capture (`default` clears it); `micmode helper\|device` chooses whether the helper CLI grabs the host mic or the shim pumps PCM from the capture device into helper stdin; `capturerate` is the pump sample rate. |
+| `audiodev` / `capturedev` / `micmode` / `capturerate` | audio routing (see SPEECH-REMOTE-AUDIO.md) | Forwarded to the provider's `ctl` unchanged. In `speechshim9p`: `audiodev` is the playback (and default capture) device path; `/dev/audio` playback accepts only 8000, 11025, 16000, 22050, or 44100 Hz, while non-default devices may use any configured 8000–48000 Hz rate their own control endpoint supports. `capturedev` overrides capture (`default` clears it); `micmode helper\|device` chooses whether the helper CLI grabs the host mic or the shim pumps PCM from the capture device into helper stdin; `capturerate` remains independently configurable from 8000–48000 Hz for the capture/Parakeet resampling path. |
 | `duplex` | `full` or `half` | Forwarded to the provider's `ctl`. In `speechshim9p`, `half` suppresses wake/capture delivery while playback or chimes are active. |
 | `mic` | `on` or `off` | Forwarded to the provider's `ctl`. In `speechshim9p`, `off` kills the mic-side helpers (and the capture pump's device fd) and fails pending `listen`/`wake` reads with `error: mic off` instead of restarting them; the next read re-arms the microphone. `voicemode` writes `mic off` on voice-mode exit, so the mic is only open during a voice session. |
 | `listen` | `on` or `off` | Forwarded to the provider's `ctl`. In `speechshim9p`, `off` kills only the STT helper and fails a pending `listen` read with `error: listen off` instead of restarting it; wake stays armed, and the next `listen` read restarts STT. `voicemode` writes `listen off` at the end of every voice turn (final, error, or timeout), so speech between turns — ambient talk, the assistant's own TTS — cannot queue as stale records that replay into the next turn. |
@@ -571,6 +571,15 @@ exclusive-use. While speech9p holds it for playback, no other Inferno
 process can play. For STT under the cmd or local engines, the recording
 binary opens the host's mic *directly* (`ffmpeg` via avfoundation,
 `arecord` via ALSA) — `/dev/audio` is not used on those paths.
+
+`speechshim9p` validates the default device's fixed playback-rate table
+before starting playback. If an audio control endpoint exists, every format
+write must succeed before PCM is opened; a rejected rate or format therefore
+returns an explicit `error:` status instead of playing at a stale/default
+device rate. A namespaced non-default playback file may omit a sibling
+`audioctl`; if it provides one, the same fail-closed configuration rule
+applies. Capture rate selection and helper-side resampling are separate and
+are not restricted to the default playback table.
 
 ## 7. Veltro and lucibridge integration
 
