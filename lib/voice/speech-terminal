@@ -2,7 +2,10 @@
 # mount a remote speech provider, and select it for /n/speech.
 #
 # Usage:
-#   sh /lib/voice/speech-terminal tcp!engine!17019 [audio-port] [provider-mount] [mount-attempts] [state-file]
+#   run /lib/voice/speech-terminal tcp!engine!17019 [audio-port] [provider-mount] [mount-attempts] [state-file] [speech-ctl]
+#
+# Use sh's run builtin so the provider mount is installed in the caller's
+# namespace and remains visible to speech9p.
 
 load std
 load expr
@@ -12,6 +15,7 @@ audioport=$2
 provider=$3
 mounttries=$4
 statefile=$5
+ctlfile=$6
 if {~ $#engine 0} {
 	echo 'usage: voice/speech-terminal engine-provider-addr [audio-port] [provider-mount]' >[1=2]
 	exit usage
@@ -27,6 +31,9 @@ if {~ $#mounttries 0} {
 }
 if {~ $#statefile 0} {
 	statefile=/tmp/speech-terminal.state
+}
+if {~ $#ctlfile 0} {
+	ctlfile=/n/speech/ctl
 }
 
 fn setstate {
@@ -53,6 +60,31 @@ fn mountprovider {
 	}
 }
 
+# Keep redirection-open errors inside a child shell so an absent or rejected
+# ctl endpoint becomes a normal failure result instead of aborting this script.
+fn writectl {
+	ctlvalue=$1
+	ctlpath=$2
+	sh -c 'echo $ctlvalue > $ctlpath'
+}
+
+fn routeprovider {
+	result=configured
+	if {! writectl 'provider '^$provider $ctlfile} {
+		result=$ctlfile
+	}
+	if {~ $result configured} {
+		if {! writectl 'duplex half' $provider/ctl} {
+			result=$provider/ctl
+		}
+	}
+	if {~ $result configured} {
+		if {! writectl 'duplex half' $ctlfile} {
+			result=$ctlfile
+		}
+	}
+}
+
 fn watchprovider {
 	while {~ 1 1} {
 		sleep 1
@@ -61,9 +93,14 @@ fn watchprovider {
 			unmount $provider >[2] /dev/null
 			mountprovider
 			if {~ $result mounted} {
-				echo 'provider '$provider > /n/speech/ctl
-				echo 'duplex half' > /n/speech/ctl
-				setstate connected provider $engine
+				routeprovider
+				if {~ $result configured} {
+					setstate connected provider $engine
+				} {
+					setstate failed control $result
+					unmount $provider >[2] /dev/null
+					exit ctl
+				}
 			} {
 				setstate failed provider $engine
 				exit mount
@@ -90,8 +127,16 @@ if {! ~ $result mounted} {
 	exit mount
 }
 
-echo 'provider '$provider > /n/speech/ctl
-echo 'duplex half' > /n/speech/ctl
+routeprovider
+if {! ~ $result configured} {
+	echo 'voice/speech-terminal: speech routing failed:' $result >[1=2]
+	setstate failed control $result
+	unmount $provider >[2] /dev/null
+	if {ftest -e /prog/$terminal_pid} {
+		echo kill >/prog/$terminal_pid/ctl
+	}
+	exit ctl
+}
 setstate connected provider $engine
 watchprovider &
 watch_pid=$apid

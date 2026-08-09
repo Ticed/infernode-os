@@ -172,20 +172,26 @@ The same topology is automated by two launch scripts:
 sh /lib/voice/speech-engine tcp!<local-ip>!17010
 
 # Local terminal second:
-sh /lib/voice/speech-terminal tcp!<remote-ip>!17019
+run /lib/voice/speech-terminal tcp!<remote-ip>!17019
 ```
 
 The terminal script reuses `/lib/voice/listen` (including audio pre-warm and
 buffer caps), mounts the exported provider, selects it in `/n/speech/ctl`, and
-keeps `duplex half`. The engine script imports the terminal device tree, starts
+requires both the mounted provider and `speech9p` to accept `duplex half`
+before publishing a connected state. It must be entered with the Inferno
+shell's `run` builtin, not as a child `sh` process, so the provider mount stays
+in the current namespace and remains visible to `speech9p`. The engine script
+imports the terminal device tree, starts
 an isolated `speechshim9p` mount, selects device-fed PCM, and exports the
 provider contract. Optional port and mount arguments are documented in each
 script's usage header. Initial network mounts retry once per second for 30
 attempts by default (the attempt count is an optional argument). The terminal
 then monitors the provider mount and remounts it after a disconnect. Its
-current state is readable at `/tmp/speech-terminal.state`; the engine writes
-startup and listener state to `/tmp/speech-engine.state`. Both paths can be
-overridden by the final optional argument.
+current state is readable at `/tmp/speech-terminal.state`; an optional sixth
+argument overrides `/n/speech/ctl` for isolated tests or alternate speech
+stacks. The engine writes startup and listener state to
+`/tmp/speech-engine.state`. Both paths can be overridden by their documented
+state-file arguments.
 
 ### 3. Remote capture device (e.g. Infernode on an Android phone)
 
@@ -233,12 +239,17 @@ and the provider works after a raw client disconnect and remount. It also runs
 the real `speech-capture` launcher, removes and restores its exported fake
 audio endpoint, and proves its watcher observes the failure, remounts, reapplies
 capture routing, and reports the recovered state. It is included in
-`tools/speech-regress.sh`.
+`tools/speech-regress.sh`. The host-side `remote_speech_scripts_test.sh` runs
+the provider and terminal in separate emulator processes, kills the provider
+emulator so its TCP connection genuinely closes, restarts it on the same
+address, and proves the real `speech-terminal` watcher retries, remounts,
+reapplies provider selection and half-duplex routing through `speech9p`, and
+performs a provider operation without restarting the terminal emulator.
 
 This is network transport and namespace-composition evidence, not the deferred
-two-host acceptance gate: it does not exercise separate emulator kernels,
+two-host acceptance gate: both emulator kernels still run on one host, without
 physical audio devices, host permissions, real network loss, terminal-provider
-watcher recovery, or listener-process restart.
+recovery across separate machines, or host service-manager behaviour.
 
 ### Why It Works
 

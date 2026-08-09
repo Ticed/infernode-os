@@ -136,14 +136,22 @@ testTestToneShape(t: ref T)
 testSpeechTerminalShape(t: ref T)
 {
 	s := script_contents(t, "/lib/voice/speech-terminal");
+	t.assert(contains(s, "run /lib/voice/speech-terminal"),
+		"speech-terminal documents the namespace-preserving entrypoint");
 	t.assert(contains(s, "sh /lib/voice/listen"),
 		"speech-terminal exports local audio through voice/listen");
 	t.assert(contains(s, "mount -A $engine $provider"),
 		"speech-terminal mounts the remote provider");
-	t.assert(contains(s, "echo 'provider '$provider > /n/speech/ctl"),
+	t.assert(contains(s, "ctlfile=/n/speech/ctl") &&
+		contains(s, "writectl 'provider '^$provider $ctlfile"),
 		"speech-terminal selects the mounted provider");
-	t.assert(contains(s, "echo 'duplex half' > /n/speech/ctl"),
+	t.assert(contains(s, "writectl 'duplex half' $ctlfile"),
 		"speech-terminal preserves the half-duplex default");
+	t.assert(contains(s, "writectl 'duplex half' $provider/ctl"),
+		"speech-terminal requires the remote provider to accept half-duplex");
+	t.assert(contains(s, "fn routeprovider") &&
+		contains(s, "setstate failed control $result"),
+		"speech-terminal reports routing failure instead of connected");
 	t.assert(contains(s, "watchprovider"),
 		"speech-terminal monitors and remounts a disconnected provider");
 	t.assert(contains(s, "connected provider"),
