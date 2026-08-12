@@ -827,6 +827,95 @@ mntLlmWorker(result: chan of string)
 	result <-= "";
 }
 
+# The git service is a fixed tool-derived /n import. The git tool must see
+# /n/git without a raw path grant, while generic tools must not.
+testRestrictNsGitToolDerived(t: ref T)
+{
+	createdn := 0;
+	(ok, nil) := sys->stat("/n");
+	if(ok < 0) {
+		fd := sys->create("/n", Sys->OREAD, Sys->DMDIR | 8r755);
+		if(fd == nil) {
+			t.skip("cannot create /n test fixture");
+			return;
+		}
+		fd = nil;
+		createdn = 1;
+	}
+	createdgit := 0;
+	(ok, nil) = sys->stat("/n/git");
+	if(ok < 0) {
+		fd := sys->create("/n/git", Sys->OREAD, Sys->DMDIR | 8r755);
+		if(fd == nil) {
+			if(createdn)
+				sys->remove("/n");
+			t.skip("cannot create /n/git test fixture");
+			return;
+		}
+		fd = nil;
+		createdgit = 1;
+	}
+
+	result := chan of string;
+	spawn gitToolDerivedWorker(result);
+	r := <-result;
+	if(r == "") {
+		spawn gitGenericHiddenWorker(result);
+		r = <-result;
+	}
+
+	if(createdgit)
+		sys->remove("/n/git");
+	if(createdn)
+		sys->remove("/n");
+	if(r != "")
+		t.error(r);
+}
+
+gitToolDerivedWorker(result: chan of string)
+{
+	sys->pctl(Sys->FORKNS, nil);
+	caps := ref NsConstruct->Capabilities(
+		"git" :: nil,
+		nil, nil, nil,
+		0 :: 1 :: 2 :: nil,
+		nil, 0, 0, -1, nil
+	, nil);
+	err := nsconstruct->restrictns(caps);
+	if(err != nil) {
+		result <-= sys->sprint("restrictns (git tool) failed: %s", err);
+		return;
+	}
+	(gitok, nil) := sys->stat("/n/git");
+	if(gitok < 0) {
+		result <-= "/n/git missing for git tool without raw path grant";
+		return;
+	}
+	result <-= "";
+}
+
+gitGenericHiddenWorker(result: chan of string)
+{
+	sys->pctl(Sys->FORKNS, nil);
+	caps := ref NsConstruct->Capabilities(
+		"read" :: nil,
+		nil, nil, nil,
+		0 :: 1 :: 2 :: nil,
+		nil, 0, 0, -1, nil
+	, nil);
+	err := nsconstruct->restrictns(caps);
+	if(err != nil) {
+		result <-= sys->sprint("restrictns (generic tool) failed: %s", err);
+		return;
+	}
+	(gitok, nil) := sys->stat("/n/git");
+	if(gitok >= 0) {
+		result <-= "/n/git visible to generic tool without git capability";
+		return;
+	}
+	result <-= "";
+}
+
 
 # Combined /mnt grants must compose rather than replace one another.
 testRestrictNsMntCombined(t: ref T)
@@ -1602,8 +1691,41 @@ privilegedGrantPathsWorker(result: chan of string)
 		"/mnt/ui/activity/0/conversation/ctl",
 		"/mnt/ui/activity/0/context",
 		"/mnt/ui/activity/0/presentation",
+		"/mnt/factotum",
+		"/mnt/factotum/ctl",
+		"/mnt/cal",
+		"/mnt/cal/ctl",
+		"/mnt/cal/accounts",
+		"/mnt/cal/accounts/alice",
+		"/mnt/cal/accounts/alice/ctl",
+		"/llm",
+		"/llm/ctl",
+		"/mnt/audit",
+		"/mnt/audit/ctl",
+		"/mnt/audit/chain",
 		"/mnt/matrix",
 		"/mnt/matrix/composition",
+		"/n/git",
+		"/n/git/ctl",
+		"/mnt/gpu",
+		"/mnt/gpu/clone",
+		"/mnt/gpu/0/ctl",
+		"/mnt/web",
+		"/mnt/web/clone",
+		"/n/web",
+		"/n/web/clone",
+		"/mnt/wiki",
+		"/mnt/wiki/new",
+		"/n/wikia",
+		"/n/wikia/ctl",
+		"/mnt/keys",
+		"/mnt/keys/alice/secret",
+		"/mnt/keysrv",
+		"/mnt/keysrv/secret",
+		"/mnt/registry",
+		"/mnt/registry/new",
+		"/mnt/video",
+		"/mnt/video/0/ctl",
 		"/phone",
 		"/phone/sms",
 		"/mnt/msg/ctl",
@@ -2002,6 +2124,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("RestrictNsShell", testRestrictNsShell);
 	run("RestrictNsMnt", testRestrictNsMnt);
 	run("RestrictNsMntLlm", testRestrictNsMntLlm);
+	run("RestrictNsGitToolDerived", testRestrictNsGitToolDerived);
 	run("RestrictNsMntCombined", testRestrictNsMntCombined);
 	run("RestrictNsMcpDeny", testRestrictNsMcpDeny);
 	run("RestrictNsRace", testRestrictNsRace);

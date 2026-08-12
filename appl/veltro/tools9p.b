@@ -779,6 +779,7 @@ privilegedcontrolpath(path: string): int
 		"/tool/ctl",
 		"/mnt/toolctl",
 		"/mnt/toolctl/ctl",
+		"/mnt/factotum",
 		"/mnt/ui/ctl",
 		"/mnt/msg/ctl",
 		"/mnt/msg/pending",
@@ -800,6 +801,12 @@ privilegedcontrolpath(path: string): int
 	if(appipccontrolpath(path))
 		return 1;
 	if(uiagentcontrolpath(path))
+		return 1;
+	if(llmctlcontrolpath(path))
+		return 1;
+	if(auditcontrolpath(path))
+		return 1;
+	if(calendarcontrolpath(path))
 		return 1;
 	if(fixedservicecontrolpath(path))
 		return 1;
@@ -849,9 +856,50 @@ uiagentcontrolpath(path: string): int
 	return path == "/mnt/ui" || prefix(path, "/mnt/ui/");
 }
 
+llmctlcontrolpath(path: string): int
+{
+	# /llm/ctl switches host LLM backends through llmctl9p. Keep that Settings
+	# control surface out of caller-supplied path grants.
+	return path == "/llm" || path == "/llm/ctl" || prefix(path, "/llm/ctl/");
+}
+
+auditcontrolpath(path: string): int
+{
+	# /mnt/audit/log is the append-only subject capability. A raw root or chain
+	# grant leaks log history; ctl can force signed checkpoints.
+	return path == "/mnt/audit" ||
+		path == "/mnt/audit/ctl" || prefix(path, "/mnt/audit/ctl/") ||
+		path == "/mnt/audit/chain" || prefix(path, "/mnt/audit/chain/");
+}
+
+calendarcontrolpath(path: string): int
+{
+	# Calendar depth grants may name exact read/query subtrees, but broad roots
+	# expose writable ctl files that configure accounts and CalDAV operations.
+	if(path == "/mnt/cal" || path == "/mnt/cal/ctl" || path == "/mnt/cal/accounts")
+		return 1;
+	if(prefix(path, "/mnt/cal/accounts/")) {
+		if(componentcount(path) <= 4)
+			return 1;
+		if(pathhascomponent(path, "ctl"))
+			return 1;
+	}
+	return 0;
+}
+
 fixedservicecontrolpath(path: string): int
 {
 	return path == "/mnt/matrix" || prefix(path, "/mnt/matrix/") ||
+		path == "/n/git" || prefix(path, "/n/git/") ||
+		path == "/mnt/gpu" || prefix(path, "/mnt/gpu/") ||
+		path == "/mnt/web" || prefix(path, "/mnt/web/") ||
+		path == "/n/web" || prefix(path, "/n/web/") ||
+		path == "/mnt/wiki" || prefix(path, "/mnt/wiki/") ||
+		path == "/n/wikia" || prefix(path, "/n/wikia/") ||
+		path == "/mnt/keys" || prefix(path, "/mnt/keys/") ||
+		path == "/mnt/keysrv" || prefix(path, "/mnt/keysrv/") ||
+		path == "/mnt/registry" || prefix(path, "/mnt/registry/") ||
+		path == "/mnt/video" || prefix(path, "/mnt/video/") ||
 		path == "/phone" || prefix(path, "/phone/");
 }
 

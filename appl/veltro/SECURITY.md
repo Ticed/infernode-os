@@ -76,7 +76,10 @@ when interactive factotum/secstore unlock is unavailable. Trusted bootstrap code
 should provision those values into factotum when possible. Agent namespaces
 allowlist only `VELTRO_SESSION` under `/env`, so host credential variables never
 become agent capabilities. Runtime agent tools consume credentials through
-factotum only; plaintext key files under `/lib/veltro` are prohibited.
+factotum only; plaintext key files under `/lib/veltro` are prohibited. Raw
+`/mnt/factotum` path grants are also prohibited: fixed-function credential
+tools may receive factotum from trusted namespace construction, but generic
+path grants must not hand the credential service to arbitrary tools.
 
 Three harness entry points apply namespace restriction:
 
@@ -150,7 +153,7 @@ tool grants.
 | 1 | `/dis` | `lib/`, `veltro/` (+ `sh.dis` if exec or shellcmds granted, + named cmds if shellcmds granted) | 0 | Runtime + agent modules only |
 | 2 | `/dis/veltro/tools` | Only granted tool .dis files (if caps.tools is set) | 0 | Per-agent tool allowlist |
 | 3 | `/dev` | `cons`, `null` | 0 | Minimum devices |
-| 4 | `/n` | `llm/` (if mounted), `mcp/` (if mc9p), `speech/` (if speech9p), `git/` (if git9p), `local/` (only if caps.paths grants subpaths) | 0 | Network/service mounts |
+| 4 | `/n` | `speech/` (if explicitly path-granted), `git/` (only for the `git` tool), `wallet/` (if explicitly path-granted), `wikia/` (only for the `wiki` tool), `local/` (only if caps.paths grants subpaths) | 0 | Foreign imports |
 | 5 | `/n/local` | Only granted subpaths (recursive restrictdir) | 0 | Host filesystem drill-down |
 | 6 | `/lib` | `veltro/` | 0 | Agent config, tools, reminders |
 | 7 | `/` | `dev`, `dis`, `env`, `lib`, `n`, `prog`, `tmp`, `tool` (+ `net`/`net.alt` only for fixed-function network tools; `chan` only if `caps.xenith`) | 0 | Hide project files, descriptors, node identity state, and ambient network access |
@@ -673,10 +676,21 @@ be explicit:
   namespace surface supports that distinction.
 
 The same rule applies to other fixed-function service trees. `/mnt/matrix` is
-derived only from the `matrix` tool, and `/phone` only from `sms`, `dial`, or
-`contacts`; neither is a caller-supplied path capability. This prevents generic
-filesystem or shell tools from driving Matrix composition controls, sending an
-SMS, or initiating a call through a raw namespace grant.
+derived only from the `matrix` tool, `/n/git` only from the `git` tool,
+`/mnt/gpu` only from `gpu` or local `vision`, `/n/wikia` only from `wiki`,
+`/mnt/video` only from video presentation tools, and `/phone` only from `sms`,
+`dial`, or `contacts`.
+Legacy authority roots such as `/mnt/keys`, `/mnt/keysrv`, and
+`/mnt/registry` are also never caller-supplied path capabilities. `/llm/ctl`
+is likewise Settings/admin
+authority over the host LLM backend, so raw grants of `/llm` or `/llm/ctl` are
+rejected while exact status-only reads can remain ordinary filesystem reads.
+Audit subjects should receive the exact append-only `/mnt/audit/log` endpoint,
+not `/mnt/audit`, `/mnt/audit/chain`, or
+`/mnt/audit/ctl`; the broad root leaks log history and the control file can
+force checkpoint signing. This prevents generic filesystem or shell tools from
+driving Matrix composition controls, video transport controls, SMS, calls, or
+backend switches and audit-control operations through a raw namespace grant.
 
 The profile invariant test currently fails on:
 
