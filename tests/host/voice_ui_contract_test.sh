@@ -51,8 +51,27 @@ require_literal appl/cmd/luciconv.b 'Rect((x, basey - h), (x + barw, basey))' \
   'microphone meter no longer uses bottom-up bars'
 require_literal appl/cmd/luciconv.b 'Rect((x, centery - h), (x + barw, centery + h + 1))' \
   'playback meter no longer uses its distinct symmetric shape'
+require_literal appl/cmd/luciconv.b 'conversation/voicequeue' \
+  'Lucia does not consume the authoritative queued-follow-up state'
+require_literal appl/cmd/luciconv.b 'Queued follow-up - not sent' \
+  'queued voice text is not presented as an explicitly unsent turn'
+require_literal appl/cmd/luciconv.b 'if(action == "Cancel")' \
+  'queued follow-up has no queue-scoped cancel action'
+require_literal appl/cmd/luciconv.b 'queuebuttonclick("Save replacement")' \
+  'queued follow-up has no atomic replacement action'
+require_literal appl/cmd/luciconv.b 'queueeditbuf: string;' \
+  'queue replacement is not isolated from the typed compose buffer'
+require_literal appl/cmd/luciconv.b 'state=disconnected\n' \
+  'queue disconnects do not clear or label stale UI state'
+for state in queued delivering delivered rejected cancelled replaced; do
+  require_literal appl/cmd/luciuisrv.b "voicequeuestate = \"$state\"" \
+    "server queue lifecycle omits $state"
+done
+require_literal appl/cmd/luciconv.b 'queuestate, queuedepth, queuecapacity' \
+  'Lucia does not render authoritative queue state and capacity together'
 
 echo 'PASS: every voice entry and exit surface uses one semantic control path'
 echo 'PASS: production compose guard prevents key-driven draft mutation in voice mode'
 echo 'PASS: standard voice UI renders distinct live input and playback meters'
+echo 'PASS: Lucia exposes the bounded queued follow-up with cancel and atomic replace'
 echo 'PASS'

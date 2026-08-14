@@ -24,6 +24,9 @@ implement Luciuisrv;
 #                   ctl              write new messages
 #                   input            user text (blocking read)
 #                   voiceinput       voice-originated text (blocking read)
+#                   voicequeue       read-only bounded queue state and text
+#                   voicequeue-ctl   cancel or atomically replace queued text
+#                   voiceapproval    blocked Allow/Deny input (blocking read)
 #                   control          cancel/pause/resume/refine (blocking read)
 #                   draft            replaceable, non-submitting text
 #                   0, 1, 2...       numbered message files
@@ -209,6 +212,8 @@ Activity: adt {
 	nmsg:	int;
 	inputq:	list of string;
 	voiceinputq: list of string;
+	voicequeuestate: string;	# empty | queued | delivering | delivered | rejected | cancelled | replaced
+	voicequeuetext: string;	# last queue item; status-only, never consumed by reads
 	voiceapprovalq: list of string;
 	controlq: list of string;
 	draft:	string;
@@ -437,7 +442,7 @@ newactivity(label: string): ref Activity
 	a := ref Activity(
 		id, label, "active",
 		0,					# urgency
-		array[32] of ref ConvMsg, 0, nil, nil, nil, nil, "", "", # conversation
+		array[32] of ref ConvMsg, 0, nil, nil, "empty", "", nil, nil, "", "", # conversation
 		"", array[16] of ref Artifact, 0,	# presentation
 		array[16] of ref Resource, 0,		# resources
 		array[8] of ref Gap, 0,			# gaps
@@ -689,8 +694,11 @@ deliverqueuedvoice(a: ref Activity)
 	while(p != nil) {
 		next := p.next;
 		if(p.ft == Qconvvoiceinput && p.actid == a.id) {
-			data := array of byte (hd a.voiceinputq + "\n");
+			text := hd a.voiceinputq;
+			data := array of byte (text + "\n");
 			a.voiceinputq = tl a.voiceinputq;
+			a.voicequeuestate = "delivering";
+			a.voicequeuetext = text;
 			if(prev == nil)
 				pending = next;
 			else
@@ -993,8 +1001,11 @@ doread(srv: ref Styxserver, m: ref Tmsg.Read, c: ref Fid)
 		if(a.voiceinputq == nil || activitybusy(a)) {
 			addpending(m.fid, m.tag, Qconvvoiceinput, actid, m);
 		} else {
-			data := array of byte (hd a.voiceinputq + "\n");
+			text := hd a.voiceinputq;
+			data := array of byte (text + "\n");
 			a.voiceinputq = tl a.voiceinputq;
+			a.voicequeuestate = "delivering";
+			a.voicequeuetext = text;
 			vers++;
 			pushevent(actid, "voicequeue");
 			srv.reply(styxservers->readbytes(m, data));
@@ -1019,13 +1030,14 @@ doread(srv: ref Styxserver, m: ref Tmsg.Read, c: ref Fid)
 			break;
 		}
 		depth := 0;
-		state := "empty";
-		if(a.voiceinputq != nil) {
+		if(a.voiceinputq != nil)
 			depth = 1;
-			state = "full";
-		}
-		status := sys->sprint("depth=%d capacity=%d state=%s\n",
-			depth, VOICE_QUEUE_CAPACITY, state);
+		# Metadata is one attribute line; the queued transcript follows raw on
+		# the next line so spaces, equals signs, and quotes cannot be mistaken
+		# for status attributes by renderers.
+		status := sys->sprint("depth=%d capacity=%d state=%s\n%s\n",
+			depth, VOICE_QUEUE_CAPACITY, a.voicequeuestate,
+			a.voicequeuetext);
 		srv.reply(styxservers->readbytes(m, array of byte status));
 	Qconvcontrol =>
 		a := findactivity(actid);
@@ -1315,6 +1327,10 @@ dowrite(srv: ref Styxserver, m: ref Tmsg.Write, c: ref Fid)
 		a.status = data;
 		if(data != "blocked")
 			a.voiceapprovalq = nil;
+		if(a.voicequeuestate == "delivering" && activitybusy(a)) {
+			a.voicequeuestate = "delivered";
+			pushevent(actid, "voicequeue");
+		}
 		deliverqueuedvoice(a);
 		vers++;
 		pushevent(actid, "status");
@@ -1389,10 +1405,15 @@ dowrite(srv: ref Styxserver, m: ref Tmsg.Write, c: ref Fid)
 			break;
 		}
 		if(a.voiceinputq != nil) {
+			a.voicequeuestate = "rejected";
+			vers++;
+			pushevent(actid, "voicequeue");
 			srv.reply(ref Rmsg.Error(m.tag, "voice follow-up queue full"));
 			break;
 		}
 		a.voiceinputq = data :: nil;
+		a.voicequeuestate = "queued";
+		a.voicequeuetext = data;
 		vers++;
 		pushevent(actid, "voiceinput");
 		pushevent(actid, "voicequeue");
@@ -1447,9 +1468,14 @@ dowrite(srv: ref Styxserver, m: ref Tmsg.Write, c: ref Fid)
 			srv.reply(ref Rmsg.Error(m.tag, Enotfound));
 			break;
 		}
-		if(data == "cancel")
+		if(data == "cancel") {
+			if(a.voiceinputq == nil) {
+				srv.reply(ref Rmsg.Error(m.tag, "voice follow-up queue empty"));
+				break;
+			}
 			a.voiceinputq = nil;
-		else if(hasprefix(data, "replace ")) {
+			a.voicequeuestate = "cancelled";
+		} else if(hasprefix(data, "replace ")) {
 			text := data[len "replace ":];
 			if(text == "") {
 				srv.reply(ref Rmsg.Error(m.tag,
@@ -1461,6 +1487,8 @@ dowrite(srv: ref Styxserver, m: ref Tmsg.Write, c: ref Fid)
 				break;
 			}
 			a.voiceinputq = text :: nil;
+			a.voicequeuestate = "replaced";
+			a.voicequeuetext = text;
 		} else {
 			srv.reply(ref Rmsg.Error(m.tag,
 				"voicequeue-ctl must be cancel or replace <text>"));
@@ -1658,6 +1686,7 @@ globalctl(data: string): string
 		activities[idx].pendingevent = nil;
 		activities[idx].inputq = nil;
 		activities[idx].voiceinputq = nil;
+		activities[idx].voicequeuestate = "disconnected";
 		activities[idx].voiceapprovalq = nil;
 		activities[idx].controlq = nil;
 		vers++;

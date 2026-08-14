@@ -1116,6 +1116,7 @@ testVoiceQueue(t: ref T)
 	voicefile := actbase() + "/conversation/voiceinput";
 	status := actbase() + "/conversation/voicequeue";
 	ctl := actbase() + "/conversation/voicequeue-ctl";
+	activitystatus := actbase() + "/status";
 	(okstatus, nil) := sys->stat(status);
 	(okctl, nil) := sys->stat(ctl);
 	t.assert(okstatus >= 0, "conversation/voicequeue should exist");
@@ -1129,8 +1130,9 @@ testVoiceQueue(t: ref T)
 		"voice queue starts empty");
 	t.asserteq(writefile(voicefile, "first voice turn"), len "first voice turn",
 		"0->1 voice queue transition accepts one turn");
-	t.assertseq(strip(readfile(status)), "depth=1 capacity=1 state=full",
-		"voice queue reports its authoritative full state");
+	t.assertseq(strip(readfile(status)),
+		"depth=1 capacity=1 state=queued\nfirst voice turn",
+		"voice queue reports its authoritative queued text");
 	overflowfd := sys->open(voicefile, Sys->OWRITE);
 	overflowdata := array of byte "overflow voice turn";
 	overflow := sys->write(overflowfd, overflowdata, len overflowdata);
@@ -1138,26 +1140,44 @@ testVoiceQueue(t: ref T)
 	t.assert(overflow < 0, "ordinary voiceinput rejects overflow at the 9P write");
 	t.assertseq(overflowerr, "voice follow-up queue full",
 		"overflow returns a clear 9P error");
+	t.assertseq(strip(readfile(status)),
+		"depth=1 capacity=1 state=rejected\nfirst voice turn",
+		"rejection is visible without replacing the queued turn");
 	t.assertseq(strip(readfile(voicefile)), "first voice turn",
 		"overflow does not replace the queued turn");
-	t.assertseq(strip(readfile(status)), "depth=0 capacity=1 state=empty",
-		"dequeue naturally returns queue state to empty");
+	t.assertseq(strip(readfile(status)),
+		"depth=0 capacity=1 state=delivering\nfirst voice turn",
+		"dequeue exposes the delivering transition");
+	t.assert(writefile(activitystatus, "working") > 0,
+		"consumer processing marks the delivered turn busy");
+	t.assertseq(strip(readfile(status)),
+		"depth=0 capacity=1 state=delivered\nfirst voice turn",
+		"busy acknowledgement exposes the delivered transition");
+	t.assert(writefile(activitystatus, "idle") > 0,
+		"activity returns idle for the remaining queue controls");
 
 	t.asserteq(writefile(voicefile, "cancel me"), len "cancel me",
 		"queue a turn for cancellation");
 	t.asserteq(writefile(ctl, "cancel"), len "cancel",
 		"voicequeue cancel succeeds");
-	t.assertseq(strip(readfile(status)), "depth=0 capacity=1 state=empty",
-		"cancel clears the queued turn");
+	t.assertseq(strip(readfile(status)),
+		"depth=0 capacity=1 state=cancelled\ncancel me",
+		"cancel clears only the queued turn and records its transition");
 
 	t.asserteq(writefile(voicefile, "original turn"), len "original turn",
 		"queue a turn for replacement");
 	t.asserteq(writefile(ctl, "replace corrected turn"), len "replace corrected turn",
 		"voicequeue replace succeeds");
+	t.assertseq(strip(readfile(status)),
+		"depth=1 capacity=1 state=replaced\ncorrected turn",
+		"replace is atomic and retains capacity one");
 	t.assertseq(strip(readfile(voicefile)), "corrected turn",
 		"replace changes the one queued turn in place");
-	t.assertseq(strip(readfile(status)), "depth=0 capacity=1 state=empty",
-		"reading the replacement completes the 0->1->0 lifecycle");
+	t.assertseq(strip(readfile(status)),
+		"depth=0 capacity=1 state=delivering\ncorrected turn",
+		"reading the replacement begins delivery");
+	t.assert(writefile(ctl, "cancel") < 0,
+		"cancel rejects an already-delivering turn");
 	t.assert(writefile(ctl, "replace impossible") < 0,
 		"replace rejects an empty queue");
 	t.assert(writefile(ctl, "unknown") < 0,
@@ -1183,7 +1203,8 @@ testVoiceQueuePendingReader(t: ref T)
 	sys->sleep(100);
 	t.assert(writefile(voicefile, "pending-reader turn") > 0,
 		"first follow-up is accepted with a reader already pending");
-	t.assertseq(strip(readfile(status)), "depth=1 capacity=1 state=full",
+	t.assertseq(strip(readfile(status)),
+		"depth=1 capacity=1 state=queued\npending-reader turn",
 		"pending reader cannot bypass authoritative queue depth");
 
 	earlyc := chan[1] of int;
@@ -1201,13 +1222,15 @@ testVoiceQueuePendingReader(t: ref T)
 
 	t.assert(writefile(ctl, "cancel") > 0,
 		"cancel controls the queued item despite the pending reader");
-	t.assertseq(strip(readfile(status)), "depth=0 capacity=1 state=empty",
+	t.assertseq(strip(readfile(status)),
+		"depth=0 capacity=1 state=cancelled\npending-reader turn",
 		"cancel leaves the pending reader waiting and empties the queue");
 	t.assert(writefile(voicefile, "replace original") > 0,
 		"queue can accept a new item after cancel");
 	t.assert(writefile(ctl, "replace pending-reader replacement") > 0,
 		"replace controls the queued item despite the pending reader");
-	t.assertseq(strip(readfile(status)), "depth=1 capacity=1 state=full",
+	t.assertseq(strip(readfile(status)),
+		"depth=1 capacity=1 state=replaced\npending-reader replacement",
 		"replacement remains server-owned while activity is busy");
 
 	t.assert(writefile(activitystatus, "idle") > 0,
@@ -1223,7 +1246,8 @@ testVoiceQueuePendingReader(t: ref T)
 	}
 	t.assertseq(strip(delivered), "pending-reader replacement",
 		"pending reader receives only the replacement at the turn boundary");
-	t.assertseq(strip(readfile(status)), "depth=0 capacity=1 state=empty",
+	t.assertseq(strip(readfile(status)),
+		"depth=0 capacity=1 state=delivering\npending-reader replacement",
 		"boundary delivery completes the authoritative 1->0 transition");
 }
 
@@ -1245,7 +1269,8 @@ testVoiceApproval(t: ref T)
 	sys->sleep(100);
 	t.assert(writefile(voicefile, "queued refinement") > 0,
 		"normal voice refinement queues while working");
-	t.assertseq(strip(readfile(status)), "depth=1 capacity=1 state=full",
+	t.assertseq(strip(readfile(status)),
+		"depth=1 capacity=1 state=queued\nqueued refinement",
 		"working refinement occupies the sole queue slot");
 	t.assert(writefile(activitystatus, "blocked") > 0,
 		"activity enters approval state");
@@ -1260,7 +1285,8 @@ testVoiceApproval(t: ref T)
 	}
 	t.assert(!premature,
 		"working->blocked does not release refinement into the approval gate");
-	t.assertseq(strip(readfile(status)), "depth=1 capacity=1 state=full",
+	t.assertseq(strip(readfile(status)),
+		"depth=1 capacity=1 state=queued\nqueued refinement",
 		"queued refinement remains server-owned across working->blocked");
 
 	allowc := chan[1] of string;
@@ -1281,7 +1307,8 @@ testVoiceApproval(t: ref T)
 	}
 	t.assertseq(strip(allow), "Allow",
 		"approval reader receives Allow without consuming refinement");
-	t.assertseq(strip(readfile(status)), "depth=1 capacity=1 state=full",
+	t.assertseq(strip(readfile(status)),
+		"depth=1 capacity=1 state=queued\nqueued refinement",
 		"approval delivery leaves normal refinement queued");
 	denyc := chan[1] of string;
 	spawn eventreader(approvalfile, denyc);
@@ -1298,7 +1325,8 @@ testVoiceApproval(t: ref T)
 		deny = "error:timeout";
 	}
 	t.assertseq(strip(deny), "Deny", "approval reader receives explicit Deny");
-	t.assertseq(strip(readfile(status)), "depth=1 capacity=1 state=full",
+	t.assertseq(strip(readfile(status)),
+		"depth=1 capacity=1 state=queued\nqueued refinement",
 		"denial delivery also leaves normal refinement queued");
 
 	t.assert(writefile(activitystatus, "working") > 0,
@@ -1318,7 +1346,8 @@ testVoiceApproval(t: ref T)
 	}
 	t.assertseq(strip(delivered), "queued refinement",
 		"normal refinement reaches its reader only after processing completes");
-	t.assertseq(strip(readfile(status)), "depth=0 capacity=1 state=empty",
+	t.assertseq(strip(readfile(status)),
+		"depth=0 capacity=1 state=delivering\nqueued refinement",
 		"released refinement returns queue to empty");
 }
 
@@ -2163,8 +2192,8 @@ init(nil: ref Draw->Context, args: list of string)
 	run("ConvClear", testConvClear);
 	run("VoiceInputMode", testVoiceInputMode);
 	run("VoiceControl", testVoiceControl);
-	run("VoiceInput", testVoiceInput);
 	run("VoiceQueue", testVoiceQueue);
+	run("VoiceInput", testVoiceInput);
 	run("VoiceQueuePendingReader", testVoiceQueuePendingReader);
 	run("VoiceApproval", testVoiceApproval);
 	run("ConversationControl", testConversationControl);

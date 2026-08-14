@@ -62,6 +62,14 @@ DlgButton: adt {
 	msgidx: int;		# index into msgstore of the parent dialogue tile
 };
 
+# Controls for the synthetic queued-follow-up tile. These never write to the
+# ordinary conversation input path: cancel/replace stay scoped to the sole
+# server-owned voice queue item.
+QueueButton: adt {
+	rect: Rect;
+	action: string;
+};
+
 Attr: adt {
 	key: string;
 	val: string;
@@ -114,6 +122,13 @@ inputpos := 0;		# cursor position within inputbuf
 draftbuf: string;		# replaceable STT hypothesis; never submitted
 draftstatusbuf: string;	# listening/countdown state shown with the hypothesis
 levelbuf: string;		# live /n/speech/level PCM telemetry
+queuebuf: string;		# server-owned queued follow-up; display-only
+queuestate: string;		# queue lifecycle state from conversation/voicequeue
+queuedepth := 0;
+queuecapacity := 1;
+queueediting := 0;
+queueeditbuf: string;		# isolated replacement editor; typed compose is untouched
+queueeditpos := 0;
 scrollpx := 0;
 maxscrollpx := 0;
 viewport_h := 400;
@@ -131,6 +146,8 @@ ntiles := 0;
 # Dialogue button layout (populated during dialogue tile rendering)
 dlgbuttons: array of ref DlgButton;
 ndlgbuttons := 0;
+queuebuttons: array of ref QueueButton;
+nqueuebuttons := 0;
 
 # --- init ---
 
@@ -211,6 +228,11 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 	inputpos = 0;
 	draftbuf = "";
 	draftstatusbuf = "";
+	queuebuf = "";
+	queuestate = "empty";
+	queueediting = 0;
+	queueeditbuf = "";
+	queueeditpos = 0;
 	username = readdevuser();
 	# Agent display name (branding); empty => fall back to the raw role string.
 	an := readfile("/lib/veltro/agent-name");
@@ -225,9 +247,12 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 	if(actid >= 0) {
 		loadmessages();
 		loaddraft();
+		loadqueue();
 	}
 	levelc := chan[1] of string;
 	spawn metermonitor(levelc);
+	queuec := chan[1] of string;
+	spawn queuemonitor(queuec);
 
 	redrawconv();
 
@@ -273,6 +298,20 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 						softkbd->clear_rect();
 				}
 			}
+			# Queue controls take precedence over compose and message tiles.
+			queuehandled := 0;
+			for(qi := 0; qi < nqueuebuttons; qi++) {
+				qb := queuebuttons[qi];
+				if(qb != nil && qb.rect.contains(p.xy)) {
+					queuebuttonclick(qb.action);
+					queuehandled = 1;
+					redrawconv();
+					break;
+				}
+			}
+			if(queuehandled)
+				;
+			else
 			# KLUDGE-MOBILE-ACCORDION-INFR-119 — Send button hit
 			# test before any other handlers. Same effect as
 			# pressing Return on desktop: submit inputbuf if
@@ -353,7 +392,10 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 			prevbuttons = 0;
 		}
 	k := <-kbd =>
-		if(voiceactive() && k != 0 && k != 16rF00E && k != 16rF00F) {
+		if(queueediting) {
+			queueeditkey(k);
+			redrawconv();
+		} else if(voiceactive() && k != 0 && k != 16rF00E && k != 16rF00F) {
 			# Voice owns the pending turn. Preserve the typed compose
 			# verbatim until the user exits voice mode.
 			redrawconv();
@@ -457,6 +499,9 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 	level := <-levelc =>
 		levelbuf = level;
 		redrawconv();
+	queue := <-queuec =>
+		setqueue(queue);
+		redrawconv();
 	newimg := <-rsz =>
 		mainwin = newimg;
 		# Skip the redraw when the sub-image is a 1×1 mobile-accordion
@@ -498,6 +543,26 @@ metermonitor(c: chan of string)
 	}
 }
 
+# Queue state is polled independently of the event stream so a server or mount
+# disappearing becomes an explicit disconnected state instead of leaving a
+# stale queued tile on screen.
+queuemonitor(c: chan of string)
+{
+	last := "";
+	for(;;) {
+		path := sys->sprint("%s/activity/%d/conversation/voicequeue",
+			mountpt_g, actid_g);
+		next := strip(readfile(path));
+		if(next == nil)
+			next = "depth=0 capacity=1 state=disconnected\n";
+		if(next != last) {
+			c <-= next;
+			last = next;
+		}
+		sys->sleep(200);
+	}
+}
+
 handleevent(ev: string)
 {
 	if(hasprefix(ev, "switchactivity ")) {
@@ -510,8 +575,14 @@ handleevent(ev: string)
 			actid_g = newid;
 			draftbuf = "";
 			draftstatusbuf = "";
+			queuebuf = "";
+			queuestate = "empty";
+			queueediting = 0;
+			queueeditbuf = "";
+			queueeditpos = 0;
 			loadmessages();
 			loaddraft();
+			loadqueue();
 		}
 	} else if(hasprefix(ev, "input-mode ")) {
 		if(strip(ev[len "input-mode ":]) == "v") {
@@ -521,6 +592,8 @@ handleevent(ev: string)
 		}
 	} else if(ev == "conversation draft") {
 		loaddraft();
+	} else if(ev == "conversation voicequeue") {
+		loadqueue();
 	} else if(hasprefix(ev, "conversation update ")) {
 		idx := strtoint(ev[len "conversation update ":]);
 		if(idx >= 0)
@@ -722,7 +795,10 @@ drawconversation(zone: Rect)
 	}
 
 	hasdraft := draftbuf != nil && draftbuf != "";
+	hasqueue := queuebuf != nil && queuebuf != "" && queuestate != "empty";
 	drawn := nmsg;
+	if(hasqueue)
+		drawn++;
 	if(hasdraft)
 		drawn++;
 	if(drawn == 0) {
@@ -736,6 +812,8 @@ drawconversation(zone: Rect)
 	ntiles = 0;
 	dlgbuttons = array[drawn * 4] of ref DlgButton;  # up to 4 buttons per dialogue
 	ndlgbuttons = 0;
+	queuebuttons = array[2] of ref QueueButton;
+	nqueuebuttons = 0;
 
 	tilegap := 4;
 	tpadv := 3;
@@ -752,8 +830,22 @@ drawconversation(zone: Rect)
 	marr := array[drawn] of ref ConvMsg;
 	for(mi := 0; mi < nmsg; mi++)
 		marr[mi] = msgstore[mi];
+	nextmsg := nmsg;
+	if(hasqueue) {
+		qtext := queuebuf;
+		qoptions := "";
+		if(queueediting) {
+			qtext = queueeditbuf;
+			qoptions = "Cancel edit,Save replacement";
+		} else if(queuedepth > 0)
+			qoptions = "Cancel,Replace";
+		qtitle := sys->sprint("Queued follow-up - not sent - %s - %d/%d",
+			queuestate, queuedepth, queuecapacity);
+		marr[nextmsg++] = ref ConvMsg("human", qtext, "", nil,
+			"voice-queue", qtitle, "", qoptions);
+	}
 	if(hasdraft)
-		marr[nmsg] = ref ConvMsg("human", draftbuf, "", nil,
+		marr[nextmsg] = ref ConvMsg("human", draftbuf, "", nil,
 			"voice-draft", draftstatusbuf, "", "");
 
 	# Pass 1: estimate heights
@@ -774,7 +866,8 @@ drawconversation(zone: Rect)
 			continue;
 		}
 		# Dialogue tiles have their own height calculation
-		if(marr[pi].dtype == "dialogue" || marr[pi].dtype == "form") {
+		if(marr[pi].dtype == "dialogue" || marr[pi].dtype == "form" ||
+				marr[pi].dtype == "voice-queue") {
 			DLGPAD := 8;
 			PROGBAR_H := 10;
 			BTNROW_H := 24;
@@ -886,7 +979,8 @@ drawconversation(zone: Rect)
 			break;
 
 		msg := marr[i];
-		isdialogue := msg.dtype == "dialogue" || msg.dtype == "form";
+		isdialogue := msg.dtype == "dialogue" || msg.dtype == "form" ||
+			msg.dtype == "voice-queue";
 		pending := msg.dtype == "voice-draft";
 		human := msg.role == "human" && !isdialogue;
 		errrole := msg.role == "error" && !isdialogue;
@@ -997,7 +1091,9 @@ drawconversation(zone: Rect)
 						br := Rect((dx, dy), (dx + dw, dy + mbtnh));
 						if(br.min.y < msgy && br.max.y > zone.min.y) {
 							drawdlgbutton(br, opt);
-							if(ndlgbuttons < len dlgbuttons)
+							if(msg.dtype == "voice-queue" && nqueuebuttons < len queuebuttons)
+								queuebuttons[nqueuebuttons++] = ref QueueButton(br, opt);
+							else if(ndlgbuttons < len dlgbuttons)
 								dlgbuttons[ndlgbuttons++] = ref DlgButton(br, opt, i);
 						}
 						dy += mbtnh + 6;
@@ -1011,7 +1107,9 @@ drawconversation(zone: Rect)
 						br := Rect((bx, dy), (bx + bw, dy + BTNROW_H));
 						if(br.min.y < msgy && br.max.y > zone.min.y) {
 							drawdlgbutton(br, opt);
-							if(ndlgbuttons < len dlgbuttons)
+							if(msg.dtype == "voice-queue" && nqueuebuttons < len queuebuttons)
+								queuebuttons[nqueuebuttons++] = ref QueueButton(br, opt);
+							else if(ndlgbuttons < len dlgbuttons)
 								dlgbuttons[ndlgbuttons++] = ref DlgButton(br, opt, i);
 						}
 						bx += bw + 8;
@@ -1353,6 +1451,141 @@ loaddraft()
 	draftbuf = strip(readfile(path));
 	path = sys->sprint("%s/activity/%d/conversation/draft-status", mountpt_g, actid_g);
 	draftstatusbuf = strip(readfile(path));
+}
+
+loadqueue()
+{
+	if(actid_g < 0) {
+		setqueue("depth=0 capacity=1 state=disconnected\n");
+		return;
+	}
+	path := sys->sprint("%s/activity/%d/conversation/voicequeue",
+		mountpt_g, actid_g);
+	status := strip(readfile(path));
+	if(status == nil)
+		status = "depth=0 capacity=1 state=disconnected\n";
+	setqueue(status);
+}
+
+setqueue(status: string)
+{
+	meta := status;
+	text := "";
+	for(i := 0; i < len status; i++)
+		if(status[i] == '\n') {
+			meta = status[0:i];
+			text = status[i+1:];
+			break;
+		}
+	attrs := parseattrs(meta);
+	state := getattr(attrs, "state");
+	if(state == nil || state == "")
+		state = "disconnected";
+	depth := strtoint(getattr(attrs, "depth"));
+	capacity := strtoint(getattr(attrs, "capacity"));
+	if(depth < 0)
+		depth = 0;
+	if(capacity < 1)
+		capacity = 1;
+	# A failed read has no payload. Keep the last known queued transcript so
+	# the disconnected presentation is truthful rather than silently stale.
+	if(state != "disconnected" || text != "")
+		queuebuf = text;
+	queuestate = state;
+	queuedepth = depth;
+	queuecapacity = capacity;
+	if(state == "empty")
+		queuebuf = "";
+	if((depth == 0 || state == "disconnected") && queueediting) {
+		queueediting = 0;
+		queueeditbuf = "";
+		queueeditpos = 0;
+	}
+}
+
+queuebuttonclick(action: string)
+{
+	if(action == "Replace") {
+		queueediting = 1;
+		queueeditbuf = queuebuf;
+		queueeditpos = len queueeditbuf;
+		if(mobile) {
+			if(softkbd != nil)
+				softkbd->set_rect(inputrect.min.x, inputrect.min.y,
+					inputrect.dx(), inputrect.dy());
+			reqkbd(1);
+		}
+		return;
+	}
+	if(action == "Cancel edit") {
+		queueediting = 0;
+		queueeditbuf = "";
+		queueeditpos = 0;
+		if(mobile && voiceactive())
+			reqkbd(0);
+		return;
+	}
+	ctl := sys->sprint("%s/activity/%d/conversation/voicequeue-ctl",
+		mountpt_g, actid_g);
+	command := "";
+	if(action == "Cancel")
+		command = "cancel";
+	else if(action == "Save replacement" && strip(queueeditbuf) != "")
+		command = "replace " + queueeditbuf;
+	if(command == "")
+		return;
+	fd := sys->open(ctl, Sys->OWRITE);
+	if(fd == nil) {
+		setqueue("depth=0 capacity=1 state=disconnected\n");
+		return;
+	}
+	b := array of byte command;
+	if(sys->write(fd, b, len b) != len b) {
+		sys->fprint(stderr, "luciconv: voice queue control failed: %r\n");
+		loadqueue();
+		return;
+	}
+	queueediting = 0;
+	queueeditbuf = "";
+	queueeditpos = 0;
+	if(mobile && voiceactive())
+		reqkbd(0);
+	loadqueue();
+}
+
+# The replacement editor is deliberately separate from inputbuf. It provides
+# atomic replace without consuming or corrupting the user's typed compose.
+queueeditkey(k: int)
+{
+	case k {
+	'\n' or 13 =>
+		queuebuttonclick("Save replacement");
+	8 or 127 =>
+		if(queueeditpos > 0) {
+			queueeditbuf = queueeditbuf[0:queueeditpos-1] + queueeditbuf[queueeditpos:];
+			queueeditpos--;
+		}
+	27 =>
+		queuebuttonclick("Cancel edit");
+	16rFF51 =>
+		if(queueeditpos > 0)
+			queueeditpos--;
+	16rFF53 =>
+		if(queueeditpos < len queueeditbuf)
+			queueeditpos++;
+	16rFF61 =>
+		queueeditpos = 0;
+	16rFF57 =>
+		queueeditpos = len queueeditbuf;
+	* =>
+		if(k >= 32 && k < 16rFFFF) {
+			ch := "x";
+			ch[0] = k;
+			queueeditbuf = queueeditbuf[0:queueeditpos] + ch +
+				queueeditbuf[queueeditpos:];
+			queueeditpos++;
+		}
+	}
 }
 
 writedraft(text: string)

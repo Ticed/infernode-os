@@ -240,6 +240,18 @@ testVoiceDraftPresentation(t: ref T)
 		"the pending voice turn is explicitly marked unsent");
 	t.assert(contains(conv, "voiceactive() && k != 0"),
 		"keyboard compose edits are locked while voice owns the turn");
+	t.assert(contains(conv, "conversation/voicequeue"),
+		"conversation reads the server-owned follow-up queue state");
+	t.assert(contains(conv, "Queued follow-up - not sent"),
+		"queued follow-up renders as a visibly unsent conversation tile");
+	t.assert(contains(conv, "if(action == \"Cancel\")") &&
+		contains(conv, "replace \" + queueeditbuf"),
+		"queued follow-up exposes queue-scoped cancel and atomic replace");
+	t.assert(contains(conv, "queueeditbuf: string") &&
+		contains(conv, "typed compose is untouched"),
+		"replacement editing stays isolated from the typed compose buffer");
+	t.assert(contains(conv, "state=disconnected\\n"),
+		"a missing queue mount becomes an explicit disconnected state");
 
 	boot := script_contents(t, "/appl/cmd/lucifer.b");
 	t.assert(contains(boot, "convEvCh <-= ev"),

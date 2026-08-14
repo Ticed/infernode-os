@@ -939,7 +939,8 @@ tools/speech-regress.sh
 - Cross-host acceptance and productization of the already-delivered 9P remote
   audio launch scripts, routing controls, and loadable engine modules.
 - Public distribution of the Parakeet EOU GGUF and a pinned conversion release.
-- Server-owned queue depth, queued-turn cancel/replace, and rich queue UI.
+- Queue policies beyond the server-owned capacity-one follow-up and Lucia's
+  queued-turn status/cancel/atomic-replace UI.
 - Native 24000/48000 Hz emulator playback.
 - Multilingual STT/TTS.
 - Voice biometrics or multi-speaker disambiguation.

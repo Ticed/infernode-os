@@ -75,9 +75,18 @@ feature can merge into `dev`.
 - `tools/parakeet-eou.manifest` pins the converter, source checkpoint, and
   published F16 GGUF. The installer and `tools/convert-parakeet-eou.sh` reject
   artifacts whose size or SHA-256 does not match the manifest.
-- `luciuisrv` owns the one-entry follow-up queue and exposes queue depth plus
-  queued-turn cancel/replace files; `voicemode` no longer treats a local latch
-  as the queue authority.
+- `luciuisrv` owns the one-entry follow-up queue. Its read-only
+  `conversation/voicequeue` record exposes `depth`, `capacity`, `state`, and
+  the display-only queued `text`; `conversation/voicequeue-ctl` accepts
+  `cancel` or `replace <text>`. States are `empty`, `queued`, `delivering`,
+  `delivered`, `rejected`, `cancelled`, and `replaced`; Lucia locally presents
+  `disconnected` when the authoritative record cannot be read. Reading the
+  status never consumes the queued turn. `voicemode` no longer treats a local
+  latch as the queue authority.
+- Lucia renders the queued transcript as an explicitly unsent conversation
+  tile with persistent depth/capacity, queue-scoped Cancel, and an isolated
+  replacement editor. Atomic replacement never consumes or mutates the typed
+  compose buffer or the active speech draft.
 
 ### Deferred Human Gates
 
@@ -87,7 +96,8 @@ do block final Phase 2 acceptance and the overarching voice-feature merge into
 
 - Real cross-host audio with two machines and their device/network permissions.
 - Jetson or equivalent remote helper/model installation and sustained use.
-- Audible queue/backpressure UX and disconnect/recovery behaviour.
+- Physical confirmation of queue/backpressure UX and disconnect/recovery
+  behaviour; the namespace and renderer contracts are automated.
 
 ## Current Design
 
