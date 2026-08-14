@@ -96,15 +96,28 @@ class InfernodeSDLActivity : SDLActivity() {
             "-pmain=1024m",
             "-pimage=1024m",
             "-r", infernoRoot.absolutePath,
-            "sh",
-            // boot-mobile.sh applies mobile-only setup (bigger fonts,
-            // future hit-target tuning, swipe-nav hooks) and then
-            // sources the regular boot.sh. Keeps desktop boot.sh
-            // untouched.
-            "-l", "/lib/lucifer/boot-mobile.sh",
         )
-        if (DEV_SKIP_LOGON) {
-            args += "--no-logon"
+
+        if (intent?.getStringExtra(EXTRA_MODE) == MODE_SPEECH_EXPORT) {
+            // Remote microphone mode must run under SDLActivity rather than
+            // InfernodeActivity: /dev/audio is backed by SDL3/AAudio and SDL
+            // must own the Android lifecycle before Inferno opens it.
+            val requestedPort = intent?.getIntExtra(EXTRA_SPEECH_PORT, DEFAULT_SPEECH_PORT)
+                ?: DEFAULT_SPEECH_PORT
+            val port = requestedPort.takeIf { it in 1..65535 } ?: DEFAULT_SPEECH_PORT
+            args += listOf("sh", "/lib/voice/speech-phone", port.toString())
+        } else {
+            args += listOf(
+                "sh",
+                // boot-mobile.sh applies mobile-only setup (bigger fonts,
+                // future hit-target tuning, swipe-nav hooks) and then
+                // sources the regular boot.sh. Keeps desktop boot.sh
+                // untouched.
+                "-l", "/lib/lucifer/boot-mobile.sh",
+            )
+            if (DEV_SKIP_LOGON) {
+                args += "--no-logon"
+            }
         }
         return args.toTypedArray()
     }
@@ -274,6 +287,10 @@ class InfernodeSDLActivity : SDLActivity() {
 
     companion object {
         private const val TAG = "InfernodeSDL"
+        private const val EXTRA_MODE = "io.infernode.extra.MODE"
+        private const val EXTRA_SPEECH_PORT = "io.infernode.extra.SPEECH_PORT"
+        private const val MODE_SPEECH_EXPORT = "speech-export"
+        private const val DEFAULT_SPEECH_PORT = 17010
 
         /**
          * Request code for our single batched runtime-permission request.

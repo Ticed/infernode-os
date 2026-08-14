@@ -71,11 +71,18 @@ done
 
 helperbin=-
 configfile=-
+configtmp=
 if [ "$usehelpers" = 1 ]; then
 	if [ -d "$HELPERS/bin" ]; then
 		helperbin="$HELPERS/bin"
 		if [ -f "$HELPERS/speech.ctl.sh" ]; then
-			configfile="/n/local$HELPERS/speech.ctl.sh"
+			# The emulator's -r tree cannot see arbitrary host paths. Stage
+			# the installer-selected ctl script inside that tree instead of
+			# relying on a non-existent /n/local host-filesystem mount.
+			mkdir -p "$ROOT/tmp"
+			configtmp="$(mktemp "$ROOT/tmp/speech-test-ctl.XXXXXX")"
+			cp "$HELPERS/speech.ctl.sh" "$configtmp"
+			configfile="/tmp/$(basename "$configtmp")"
 		fi
 	else
 		echo "note: $HELPERS/bin not found — run tools/install-speech-helpers.sh," >&2
@@ -98,4 +105,12 @@ elif [ "$helperbin" != - ]; then
 	args=(-b -H "$helperbin" "${args[@]:1}")
 fi
 
-exec "$EMU" -c1 "-r$ROOT" /dis/speechtest.dis "${args[@]}"
+if "$EMU" -c1 "-r$ROOT" /dis/speechtest.dis "${args[@]}"; then
+	status=0
+else
+	status=$?
+fi
+if [ -n "$configtmp" ]; then
+	rm -f "$configtmp"
+fi
+exit "$status"

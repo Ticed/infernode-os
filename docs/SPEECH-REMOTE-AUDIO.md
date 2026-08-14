@@ -212,12 +212,33 @@ argument for supervised callers; ordinary one-argument use is unchanged.
 ### 3. Remote capture device (e.g. Infernode on an Android phone)
 
 The phone contributes only its microphone; processing and playback stay
-wherever topology 1 or 2 put them.
+wherever topology 1 or 2 put them. A Tailscale address is preferred because it
+is stable across Wi-Fi changes; a same-LAN Wi-Fi address is the fallback.
 
-**Phone — export the device tree:**
+Build and start the Android frontend from the Mac:
+
 ```sh
-listen -A 'tcp!*!17010' export /dev &
+./build-android-apk.sh --gui sdl3 --abi arm64-v8a
+tools/android-speech-frontend.sh --install
 ```
+
+Pass `--device <adb-serial>` when more than one Android device is attached, or
+`--ip <phone-address>` to override the automatic `tailscale0`/`wlan0`
+detection. The tool grants `RECORD_AUDIO`, launches the real SDL activity in
+`speech-export` mode, and waits until TCP port 17010 is reachable. The SDL
+activity is required: `/dev/audio` uses SDL3's Android AAudio backend, so the
+legacy interactive-shell activity is not a valid audio-service host.
+
+Inside the Android Inferno namespace, that launch mode is equivalent to:
+
+```sh
+sh /lib/voice/speech-phone 17010
+```
+
+`speech-phone` keeps `listen -A 'tcp!*!17010' {export /dev}` in the foreground.
+The `-A` export is intentionally unauthenticated for Phase 2 development. Use
+it only on a trusted local or Tailscale network; it is not the final security
+architecture.
 
 **Processing host (local machine in topology 1, remote engine in topology 2)
 — import the phone's audio and use it for capture only:**
@@ -237,6 +258,18 @@ On the processing host, the import and ctl writes are automated as:
 ```sh
 sh /lib/voice/speech-capture tcp!<phone-ip>!17010
 ```
+
+For an isolated headless proof before attaching the route to a running Lucia
+desktop:
+
+```sh
+tools/speech-test.sh \
+  -M 'tcp!<phone-ip>!17010 /n/phone' \
+  -c 'capturedev /n/phone/audio' -c 'micmode device' -e -n 1
+```
+
+The wrapper stages the installed `speech.ctl.sh` inside the emulator root, so
+the helper configuration does not depend on an ambient `/n/local` host mount.
 
 The capture script uses the same bounded initial retry and background remount
 behaviour. Its state is readable at `/tmp/speech-capture.state` (or the fourth

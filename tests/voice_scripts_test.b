@@ -216,11 +216,27 @@ testSpeechCaptureShape(t: ref T)
 		"speech-capture exposes and removes its supervised watcher state");
 }
 
+testSpeechPhoneShape(t: ref T)
+{
+	s := script_contents(t, "/lib/voice/speech-phone");
+	t.assert(contains(s, "port=17010"),
+		"speech-phone has the documented default port");
+	t.assert(contains(s, "listen -A 'tcp!*!'$port"),
+		"speech-phone exports through the explicit unauthenticated dev listener");
+	t.assert(contains(s, "{export /dev}"),
+		"speech-phone exports only the device tree");
+	t.assert(contains(s, "trusted networks only"),
+		"speech-phone identifies the development security boundary");
+}
+
 testSpeechTestUsesInstalledCtl(t: ref T)
 {
 	launcher := script_contents(t, "/tools/speech-test.sh");
 	t.assert(contains(launcher, "speech.ctl.sh"),
 		"headless speech test discovers the installer-selected ctl file");
+	t.assert(contains(launcher, "speech-test-ctl.XXXXXX") &&
+		contains(launcher, "configfile=\"/tmp/"),
+		"headless speech test stages host ctl inside the emulator root");
 	t.assert(contains(launcher, "-C"),
 		"headless speech test passes the selected ctl file to speechtest");
 
@@ -279,6 +295,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("SpeechTerminalShape", testSpeechTerminalShape);
 	run("SpeechEngineShape", testSpeechEngineShape);
 	run("SpeechCaptureShape", testSpeechCaptureShape);
+	run("SpeechPhoneShape", testSpeechPhoneShape);
 	run("SpeechTestUsesInstalledCtl", testSpeechTestUsesInstalledCtl);
 	run("VoiceDraftPresentation", testVoiceDraftPresentation);
 

@@ -102,6 +102,18 @@ static QLock inlock;
 static QLock outlock;
 static int in_refcnt;			/* opens still holding /dev/audio for read */
 static int out_refcnt;			/* opens still holding /dev/audio for write */
+
+static void
+select_audio_driver(void)
+{
+#ifdef __ANDROID__
+	/* Android API 28+ ships AAudio and the APK links SDL3's AAudio backend. */
+	SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "aaudio");
+#else
+	/* macOS and iOS use SDL3's CoreAudio backend. */
+	SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "coreaudio");
+#endif
+}
 static Audio_t av;			/* current format (in.rate / chan / bits, out.*) */
 
 /*
@@ -165,13 +177,11 @@ ensure_sdl_audio(void)
 	 * a subsystem has already been brought up; it's a no-op past the
 	 * first invocation for the same flags.
 	 *
-	 * Force the CoreAudio driver explicitly via the hint — without
-	 * this, SDL3 sometimes silently falls back to a dummy driver
-	 * when run from a non-GUI process on macOS, which then surfaces
-	 * as "No default audio device available" instead of the more
-	 * obvious "no audio backend available."
+	 * Select the platform's real audio driver explicitly — without this,
+	 * SDL3 can silently fall back to a dummy driver in a non-GUI process.
+	 * Android uses AAudio; Apple targets use CoreAudio.
 	 */
-	SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "coreaudio");
+	select_audio_driver();
 	if(!SDL_Init(SDL_INIT_AUDIO)) {
 		fprint(2, "audio-sdl3: SDL_Init(SDL_INIT_AUDIO) failed: %s\n",
 			SDL_GetError());
@@ -214,7 +224,7 @@ open_stream(SDL_AudioDeviceID dev, Audio_d *fmt)
 			 */
 			SDL_QuitSubSystem(SDL_INIT_AUDIO);
 			sdl_audio_inited = 0;
-			SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "coreaudio");
+			select_audio_driver();
 			if(SDL_Init(SDL_INIT_AUDIO)) {
 				sdl_audio_inited = 1;
 				s = SDL_OpenAudioDeviceStream(dev, &spec, NULL, NULL);
