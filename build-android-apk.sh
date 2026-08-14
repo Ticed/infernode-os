@@ -228,7 +228,7 @@ cp -a "$ROOT/dis"    "$ASSETS/dis"
 # IMPORTANT: dot-prefixed names (.keep, .gitkeep, etc.) get stripped
 # by aapt during APK packaging, so use a normal name. Same trick for
 # every other Inferno-side bind/mount root that ships empty.
-for d in n phone usr/inferno/secstore usr/inferno/tmp; do
+for d in n mnt phone tmp usr/inferno/secstore usr/inferno/tmp; do
     mkdir -p "$ASSETS/$d"
     touch    "$ASSETS/$d/KEEPDIR"
 done

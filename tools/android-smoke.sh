@@ -24,6 +24,7 @@ set -euo pipefail
 PKG=io.infernode
 APK=apk/app-debug.apk
 SIG='UnsatisfiedLink|nativePermissionResult|FATAL EXCEPTION'
+BOOT_SIG="msg9p: mount failed: '/mnt' file does not exist|cannot open /mnt/msg/ctl"
 
 echo "Installing $APK ..."
 adb install -r "$APK"
@@ -49,4 +50,22 @@ if grep -qiE "$SIG" launch.log; then
   grep -iE "$SIG|InfernodeSDL" launch.log | head -40
   exit 1
 fi
-echo "Launch smoke OK: no crash signature on fresh-install launch."
+
+# Inferno mount targets that are empty in the source checkout need ordinary
+# placeholder files in the APK. aapt strips dotfiles and does not preserve
+# empty directories; without /mnt the native process stays alive but Lucifer
+# renders a black surface, while without /tmp the service logs disappear.
+# Process liveness therefore cannot catch this packaging regression.
+for d in mnt tmp; do
+  if ! adb shell run-as "$PKG" ls -d "files/inferno-root/$d" >/dev/null 2>&1; then
+    echo "::error::APK omitted required Inferno mount root /$d"
+    exit 1
+  fi
+done
+if grep -qiE "$BOOT_SIG" launch.log; then
+  echo "::error::Inferno mobile boot failed before Lucifer initialized"
+  grep -iE "$BOOT_SIG" launch.log | head -20
+  exit 1
+fi
+
+echo "Launch smoke OK: no crash or missing-mount-root signature."
