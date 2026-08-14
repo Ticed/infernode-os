@@ -144,10 +144,34 @@ startserver()
 testFiles(t: ref T)
 {
 	files := array[] of {
-		"ctl", "say", "sayq", "hear", "listen", "wake", "cancel", "voices"
+		"ctl", "say", "sayq", "hear", "listen", "wake", "cancel", "voices", "level"
 	};
 	for(i := 0; i < len files; i++)
 		t.assert(pathexists(MNT + "/" + files[i]), files[i] + " should exist");
+}
+
+testLevelProxy(t: ref T)
+{
+	record := "mode=input input-rms=321 input-peak=654 output-rms=0 output-peak=0 capture-rate=16000 playback-rate=22050\n";
+	t.assert(createfile(PARAKEETMNT + "/level", record) > 0,
+		"create provider telemetry fixture");
+	level := readfile(MNT + "/level");
+	t.assert(level == record,
+		"speech9p re-exports provider PCM telemetry unchanged");
+
+	t.assert(sys->remove(PARAKEETMNT + "/level") >= 0,
+		"remove optional provider telemetry");
+	t.assert(writefile(MNT + "/ctl", "capturerate 24000") > 0,
+		"capture telemetry rate accepted");
+	t.assert(writefile(MNT + "/ctl", "rate 24000") > 0,
+		"playback telemetry rate accepted");
+	level = readfile(MNT + "/level");
+	t.assert(hassubstr(level, "mode=idle input-rms=0 input-peak=0 output-rms=0 output-peak=0"),
+		"provider without level degrades to truthful idle telemetry");
+	t.assert(hassubstr(level, "capture-rate=24000 playback-rate=24000"),
+		"fallback telemetry reports configured rates");
+	writefile(MNT + "/ctl", "capturerate 16000");
+	writefile(MNT + "/ctl", "rate 22050");
 }
 
 testConfig(t: ref T)
@@ -328,6 +352,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("Files", testFiles);
 	run("Config", testConfig);
 	run("ListenWakeHelpers", testListenWakeHelpers);
+	run("LevelProxy", testLevelProxy);
 	run("ParakeetListenMount", testParakeetListenMount);
 	run("PiperSayMount", testPiperSayMount);
 	run("SayqCompletion", testSayqCompletion);

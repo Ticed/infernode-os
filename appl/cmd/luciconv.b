@@ -113,6 +113,7 @@ inputbuf: string;
 inputpos := 0;		# cursor position within inputbuf
 draftbuf: string;		# replaceable STT hypothesis; never submitted
 draftstatusbuf: string;	# listening/countdown state shown with the hypothesis
+levelbuf: string;		# live /n/speech/level PCM telemetry
 scrollpx := 0;
 maxscrollpx := 0;
 viewport_h := 400;
@@ -225,6 +226,8 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 		loadmessages();
 		loaddraft();
 	}
+	levelc := chan[1] of string;
+	spawn metermonitor(levelc);
 
 	redrawconv();
 
@@ -451,6 +454,9 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 	ev := <-evch =>
 		handleevent(ev);
 		redrawconv();
+	level := <-levelc =>
+		levelbuf = level;
+		redrawconv();
 	newimg := <-rsz =>
 		mainwin = newimg;
 		# Skip the redraw when the sub-image is a 1×1 mobile-accordion
@@ -468,6 +474,27 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 			lastrendw = 0;
 			redrawconv();
 		}
+	}
+}
+
+# Keep namespace I/O out of the drawing/event process. The monitor is only
+# active while voice owns the input mode, publishes changes at 10Hz, and
+# clears the UI immediately when keyboard mode returns.
+metermonitor(c: chan of string)
+{
+	last := "";
+	for(;;) {
+		next := "";
+		if(voiceactive()) {
+			next = strip(readfile("/n/speech/level"));
+			if(next == nil)
+				next = "mode=idle input-rms=0 input-peak=0 output-rms=0 output-peak=0";
+		}
+		if(next != last) {
+			c <-= next;
+			last = next;
+		}
+		sys->sleep(100);
 	}
 }
 
@@ -576,6 +603,14 @@ drawconversation(zone: Rect)
 		(zone.max.x - pad, zone.max.y));
 	inputrect = inputr;
 	locked := voiceactive();
+	meterh := 0;
+	if(locked) {
+		meterh = mainfont.height + 24;
+		meterr := Rect((zone.min.x + pad, inputr.min.y - meterh - 2),
+			(zone.max.x - pad, inputr.min.y - 2));
+		drawvoicemeter(meterr);
+		msgy -= meterh + 2;
+	}
 	inputfill := inputcol;
 	if(locked)
 		inputfill = bordercol;
@@ -1055,6 +1090,73 @@ drawconversation(zone: Rect)
 		}
 
 		y = tiletop;
+	}
+}
+
+# Draw two deliberately different activity grammars from the same stable
+# text record: microphone bars rise from the baseline; playback bars expand
+# symmetrically around the centre line. No transcript or activity state is
+# used as a proxy for actual audio.
+drawvoicemeter(r: Rect)
+{
+	mainwin.draw(r, inputcol, nil, (0, 0));
+	mainwin.draw(Rect(r.min, (r.max.x, r.min.y + 1)), bordercol, nil, (0, 0));
+
+	attrs := parseattrs(levelbuf);
+	mode := getattr(attrs, "mode");
+	rms := 0;
+	peak := 0;
+	label := "Voice ready";
+	barcol := dimcol;
+	if(mode == "input") {
+		rms = strtoint(getattr(attrs, "input-rms"));
+		peak = strtoint(getattr(attrs, "input-peak"));
+		label = "Listening";
+		barcol = accentcol;
+	} else if(mode == "output") {
+		rms = strtoint(getattr(attrs, "output-rms"));
+		peak = strtoint(getattr(attrs, "output-peak"));
+		label = "Speaking";
+		barcol = progfgcol;
+	}
+	if(rms < 0) rms = 0;
+	if(rms > 1000) rms = 1000;
+	if(peak < rms) peak = rms;
+	if(peak > 1000) peak = 1000;
+
+	pad := 6;
+	labelw := mainfont.width(label) + pad;
+	mainwin.text((r.min.x + pad, r.min.y + 3), barcol, (0, 0), mainfont, label);
+	barminx := r.min.x + labelw + pad;
+	barmaxx := r.max.x - pad;
+	nbar := 18;
+	if(barmaxx - barminx < nbar)
+		return;
+	gap := 2;
+	barw := (barmaxx - barminx - (nbar - 1) * gap) / nbar;
+	if(barw < 1)
+		barw = 1;
+	basey := r.max.y - 5;
+	centery := (r.min.y + r.max.y) / 2;
+	maxh := r.dy() - 10;
+	for(i := 0; i < nbar; i++) {
+		# A fixed profile makes the scalar envelope legible as a bank of
+		# bars while every height remains driven by measured PCM energy.
+		shape := 55 + ((i * 37 + 13) % 46);
+		level := rms * shape / 100;
+		if(i == nbar / 2 || i == nbar / 2 - 1)
+			level = peak;
+		h := maxh * level / 1000;
+		if(level > 0 && h < 1)
+			h = 1;
+		x := barminx + i * (barw + gap);
+		if(mode == "output") {
+			h /= 2;
+			mainwin.draw(Rect((x, centery - h), (x + barw, centery + h + 1)),
+				barcol, nil, (0, 0));
+		} else
+			mainwin.draw(Rect((x, basey - h), (x + barw, basey)),
+				barcol, nil, (0, 0));
 	}
 }
 

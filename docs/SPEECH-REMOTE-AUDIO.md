@@ -259,6 +259,9 @@ hit the other machine's audio hardware. This is standard Plan 9 namespace
 composition — location transparency falls out of the model rather than
 being bolted on as a special case. The provider contract adds the same
 property one level up: the entire speech engine is itself just a mount.
+The optional provider `level` file travels through the same mount, so Lucia's
+input/playback meters reflect PCM processed on the audio host without a
+second telemetry protocol. Missing telemetry degrades to a zeroed idle record.
 
 ---
 

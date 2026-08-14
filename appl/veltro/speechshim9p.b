@@ -74,7 +74,7 @@ Speechshim9p: module {
 	init: fn(nil: ref Draw->Context, args: list of string);
 };
 
-Qroot, Qctl, Qlisten, Qwake, Qsay, Qcancel, Qvoices, Qchime: con iota;
+Qroot, Qctl, Qlisten, Qwake, Qsay, Qcancel, Qvoices, Qchime, Qlevel: con iota;
 
 # Bytes of helper stderr retained for diagnostics (see Hostproc.errtail).
 ERRTAIL: con 512;
@@ -107,6 +107,11 @@ cmdbound := 0;
 audiobound := 0;
 cancelreq := 0;
 playing := 0;
+capturing := 0;
+inputrms := 0;
+inputpeak := 0;
+outputrms := 0;
+outputpeak := 0;
 
 # A host helper process behind #C. ctlfd is the clone fd (kept open —
 # killonclose is armed on it); writing "kill" to it terminates the process.
@@ -470,8 +475,70 @@ addsink(kind: int, p: ref Hostproc)
 
 pumpreset()
 {
+	clearinputlevel();
 	if(pumprunning)
 		pumpc <-= (SINKRESET, nil);
+}
+
+# Convert one s16le mono PCM chunk into normalized 0..1000 RMS and peak.
+# Samples are shifted before squaring so a 100ms 48kHz chunk cannot
+# overflow Limbo's int accumulator.
+pcmlevel(buf: array of byte, n: int): (int, int)
+{
+	n &= ~1;
+	if(n <= 0)
+		return (0, 0);
+	sum := 0;
+	peak := 0;
+	nsamp := n / 2;
+	for(i := 0; i < n; i += 2) {
+		v := (int buf[i] & 16rff) | ((int buf[i+1] & 16rff) << 8);
+		if(v & 16r8000)
+			v -= 16r10000;
+		if(v < 0)
+			v = -v;
+		if(v > peak)
+			peak = v;
+		v >>= 6;
+		sum += v * v;
+	}
+	rms := int math->sqrt(real (sum / nsamp));
+	return (rms * 1000 / 511, peak * 1000 / 32767);
+}
+
+setinputlevel(buf: array of byte, n: int)
+{
+	(inputrms, inputpeak) = pcmlevel(buf, n);
+	capturing = 1;
+}
+
+clearinputlevel()
+{
+	inputrms = 0;
+	inputpeak = 0;
+	capturing = 0;
+}
+
+setoutputlevel(buf: array of byte, n: int)
+{
+	(outputrms, outputpeak) = pcmlevel(buf, n);
+}
+
+clearoutputlevel()
+{
+	outputrms = 0;
+	outputpeak = 0;
+}
+
+readlevel(): string
+{
+	mode := "idle";
+	if(playing)
+		mode = "output";
+	else if(capturing)
+		mode = "input";
+	return sys->sprint("mode=%s input-rms=%d input-peak=%d output-rms=%d output-peak=%d capture-rate=%d playback-rate=%d\n",
+		mode, inputrms, inputpeak, outputrms, outputpeak, capturerate, audrate);
 }
 
 opencapture(): ref Sys->FD
@@ -502,6 +569,7 @@ audiopump()
 	for(;;) {
 		if(sinks[SINKLISTEN] == nil && sinks[SINKWAKE] == nil) {
 			afd = nil;	# release the device while idle
+			clearinputlevel();
 			(k, fd) := <-pumpc;
 			if(k == SINKQUIT)
 				return;
@@ -542,10 +610,14 @@ audiopump()
 			afd = nil;
 			sinks[SINKLISTEN] = nil;
 			sinks[SINKWAKE] = nil;
+			clearinputlevel();
 			continue;
 		}
-		if(duplex == "half" && playing)
+		if(duplex == "half" && playing) {
+			clearinputlevel();
 			continue;
+		}
+		setinputlevel(buf, n);
 		for(k := 0; k < 2; k++)
 			if(sinks[k] != nil && sys->write(sinks[k], buf[0:n], n) < 0)
 				sinks[k] = nil;	# helper died; drop the sink
@@ -716,6 +788,8 @@ dosay(text: string): string
 	buf := array[8192] of byte;
 	status := "";
 	playing = 1;
+	clearinputlevel();
+	clearoutputlevel();
 	for(;;) {
 		n := sys->read(p.datafd, buf, len buf);
 		if(n <= 0)
@@ -725,6 +799,7 @@ dosay(text: string): string
 			status = "error: speech canceled";
 			break;
 		}
+		setoutputlevel(buf, n);
 		if(sys->write(afd, buf[0:n], n) < 0) {
 			status = sys->sprint("error: audio write failed: %r");
 			killproc(p);
@@ -732,6 +807,7 @@ dosay(text: string): string
 		}
 		total += n;
 	}
+	clearoutputlevel();
 	playing = 0;
 	closeproc(p);
 	sayproc = nil;
@@ -760,6 +836,7 @@ playnote(fd: ref Sys->FD, freq, ms: int)
 			real freq * real i / real audrate));
 		put16le(buf, i * 2, v);
 	}
+	setoutputlevel(buf, len buf);
 	sys->write(fd, buf, len buf);
 }
 
@@ -784,6 +861,7 @@ playchime(kind: string)
 		}
 	} else
 		sys->fprint(stderr, "speechshim9p: chime: %s\n", err);
+	clearoutputlevel();
 	playing = 0;
 }
 
@@ -793,6 +871,8 @@ startchime(kind: string)
 	case kind {
 	"wake" or "done" or "on" or "off" =>
 		playing = 1;
+		clearinputlevel();
+		clearoutputlevel();
 		spawn playchime(kind);
 	* =>
 		sys->fprint(stderr, "speechshim9p: unknown chime: %s\n", kind);
@@ -1111,6 +1191,8 @@ walkto(n: ref Navop.Walk)
 		n.path = big Qchime;
 	"voices" =>
 		n.path = big Qvoices;
+	"level" =>
+		n.path = big Qlevel;
 	* =>
 		n.reply <-= (nil, Enotfound);
 		return;
@@ -1147,6 +1229,9 @@ dirgen(path: int): (ref Sys->Dir, string)
 	Qvoices =>
 		name = "voices";
 		perm = 8r444;
+	Qlevel =>
+		name = "level";
+		perm = 8r444;
 	* =>
 		return (nil, Enotfound);
 	}
@@ -1173,7 +1258,7 @@ readdir(n: ref Navop.Readdir, path: int)
 		n.reply <-= (nil, Enotfound);
 		return;
 	}
-	entries := array[] of {Qctl, Qlisten, Qwake, Qsay, Qcancel, Qchime, Qvoices};
+	entries := array[] of {Qctl, Qlisten, Qwake, Qsay, Qcancel, Qchime, Qvoices, Qlevel};
 	for(i := n.offset; i < len entries && i < n.offset + n.count; i++) {
 		(d, err) := dirgen(entries[i]);
 		if(err != nil) {
@@ -1222,6 +1307,8 @@ Serve:
 				srv.reply(styxservers->readstr(m, readconfig()));
 			Qvoices =>
 				srv.reply(styxservers->readstr(m, listvoices()));
+			Qlevel =>
+				srv.reply(styxservers->readstr(m, readlevel()));
 			Qlisten =>
 				if(listenbusy)
 					srv.reply(styxservers->readstr(m, "error: listen busy"));
@@ -1280,6 +1367,7 @@ Serve:
 				# Hard cancel: kill the synthesizing helper and let
 				# the playback loop notice within one chunk.
 				cancelreq = 1;
+				clearoutputlevel();
 				killproc(sayproc);
 				srv.reply(ref Rmsg.Write(m.tag, len m.data));
 			Qchime =>

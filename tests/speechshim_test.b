@@ -30,6 +30,7 @@ SRCFILE: con "/tests/speechshim_test.b";
 SHIMPATH: con "/dis/veltro/speechshim9p.dis";
 MNT: con "/tmp/speechshim_test";
 PCMFILE: con "/tmp/speechshim_test_pcm";
+OUTPCM: con "/tmp/speechshim_test_out_pcm";
 BADPCM: con "/tmp/speechshim_test_badpcm";
 WAKEPID: con "/tmp/speechshim_suppressed_wake.pid";
 
@@ -116,6 +117,19 @@ readproc(path: string, ch: chan of string)
 	ch <-= readfile(path);
 }
 
+makepcm(path: string, nsamp, sample: int): int
+{
+	fd := sys->create(path, Sys->OWRITE, 8r644);
+	if(fd == nil)
+		return -1;
+	buf := array[nsamp * 2] of byte;
+	for(i := 0; i < nsamp; i++) {
+		buf[i * 2] = byte (sample & 16rff);
+		buf[i * 2 + 1] = byte ((sample >> 8) & 16rff);
+	}
+	return sys->write(fd, buf, len buf);
+}
+
 startserver()
 {
 	sys->create("/tmp", Sys->OREAD, Sys->DMDIR | 8r777);
@@ -131,9 +145,89 @@ startserver()
 
 testFiles(t: ref T)
 {
-	files := array[] of {"ctl", "listen", "wake", "say", "cancel", "chime", "voices"};
+	files := array[] of {"ctl", "listen", "wake", "say", "cancel", "chime", "voices", "level"};
 	for(i := 0; i < len files; i++)
 		t.assert(pathexists(MNT + "/" + files[i]), files[i] + " should exist");
+}
+
+# Deterministic PCM fixtures exercise the same provider telemetry the GUI
+# consumes. The sleeping helpers hold each path active long enough to sample
+# it without a physical microphone or speaker.
+testLevelTelemetry(t: ref T)
+{
+	t.assert(makepcm(PCMFILE, 65536, 16384) > 0,
+		"create nonzero capture PCM fixture");
+	fd := sys->create(OUTPCM, Sys->OWRITE, 8r644);
+	t.assert(fd != nil, "create playback sink");
+	if(fd == nil)
+		return;
+	fd = nil;
+
+	t.assert(writefile(MNT + "/ctl", "capturedev " + PCMFILE) > 0,
+		"configure fixture capture");
+	t.assert(writefile(MNT + "/ctl", "micmode device") > 0,
+		"configure device-fed capture");
+	t.assert(writefile(MNT + "/ctl",
+		"whisperstreambin /bin/sh -c \"sleep 2; head -c 8 > /dev/null; echo final level input\"") > 0,
+		"configure delayed stdin consumer");
+	listench := chan of string;
+	spawn readproc(MNT + "/listen", listench);
+	sys->sleep(400);
+	level := readfile(MNT + "/level");
+	t.assert(hassubstr(level, "mode=input"),
+		"capture PCM publishes input mode before a transcript");
+	t.assert(!hassubstr(level, "input-rms=0 "),
+		"nonzero capture PCM publishes nonzero RMS");
+	t.assert(hassubstr(level, "output-rms=0 output-peak=0"),
+		"input telemetry does not claim playback");
+	got := <-listench;
+	t.assert(hassubstr(got, "final level input"),
+		"fixture capture still reaches the STT helper");
+
+	t.assert(writefile(MNT + "/ctl", "audiodev " + OUTPCM) > 0,
+		"configure fixture playback sink");
+	t.assert(writefile(MNT + "/ctl", "duplex half") > 0,
+		"configure half duplex");
+	t.assert(writefile(MNT + "/ctl",
+		"kokorobin /bin/sh -c \"printf 0123456789; sleep 2\"") > 0,
+		"configure delayed PCM synthesizer");
+	sayfd := sys->open(MNT + "/say", Sys->ORDWR);
+	t.assert(sayfd != nil, "open say for playback telemetry");
+	if(sayfd != nil) {
+		b := array of byte "meter test";
+		t.assert(sys->write(sayfd, b, len b) > 0, "start fixture playback");
+		# Process startup can take a few scheduler quanta. Poll the PCM
+		# condition itself rather than baking host timing into the test.
+		for(i := 0; i < 15; i++) {
+			sys->sleep(100);
+			level = readfile(MNT + "/level");
+			if(hassubstr(level, "mode=output") &&
+					!hassubstr(level, "output-rms=0 "))
+				break;
+		}
+		t.assert(hassubstr(level, "mode=output"),
+			"TTS PCM publishes the distinct output mode");
+		t.log("sampled playback telemetry: " + level);
+		t.assert(!hassubstr(level, "output-rms=0 "),
+			"nonzero TTS PCM publishes nonzero RMS");
+		t.assert(hassubstr(level, "input-rms=0 input-peak=0"),
+			"half duplex never publishes simultaneous input activity");
+		t.assert(writefile(MNT + "/cancel", "cancel") > 0,
+			"cancel fixture playback");
+		sys->seek(sayfd, big 0, Sys->SEEKSTART);
+		buf := array[512] of byte;
+		sys->read(sayfd, buf, len buf);
+		sys->sleep(100);
+		level = readfile(MNT + "/level");
+		t.assert(hassubstr(level, "output-rms=0 output-peak=0"),
+			"cancel clears playback telemetry");
+	}
+
+	writefile(MNT + "/ctl", "kokorobin /bin/echo");
+	writefile(MNT + "/ctl", "duplex full");
+	writefile(MNT + "/ctl", "micmode helper");
+	writefile(MNT + "/ctl", "capturedev default");
+	writefile(MNT + "/ctl", "audiodev /dev/audio");
 }
 
 testConfig(t: ref T)
@@ -575,6 +669,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("MicOffReleasesHelpers", testMicOffReleasesHelpers);
 	run("ListenOffStopsListenHelper", testListenOffStopsListenHelper);
 	run("DeviceCapture", testDeviceCapture);
+	run("LevelTelemetry", testLevelTelemetry);
 	run("CancelKillsSay", testCancelKillsSay);
 	run("HalfDuplexSwallowsWakeDuringSay", testHalfDuplexSwallowsWakeDuringSay);
 	run("HelperErrorNamesCause", testHelperErrorNamesCause);

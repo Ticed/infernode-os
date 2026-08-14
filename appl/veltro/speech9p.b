@@ -62,7 +62,7 @@ Speech9p: module {
 };
 
 # Qid layout for synthetic files
-Qroot, Qctl, Qsay, Qhear, Qvoices, Qlisten, Qwake, Qsayq, Qcancel, Qchime: con iota;
+Qroot, Qctl, Qsay, Qhear, Qvoices, Qlisten, Qwake, Qsayq, Qcancel, Qchime, Qlevel: con iota;
 
 # Per-fid state for say and hear operations
 FidState: adt {
@@ -88,6 +88,7 @@ lang := "en";
 apiurl := "";
 apikey := "";
 audrate := 22050;
+capturerate := 16000;
 audchans := 1;
 audbits := 16;
 enginepath := "";
@@ -107,8 +108,8 @@ whispermodel := "";  # Path to .bin GGML model
 # Voice-mode speech provider. speech9p does not run streaming helpers
 # itself: wake, streaming listen, and voice-mode TTS are consumed from a
 # provider mount serving the contract documented in
-# docs/SPEECH-ARCHITECTURE.md — listen/wake/say/cancel/chime plus optional
-# ctl/voices. speechshim9p adapts external helper CLIs (whisper-stream,
+# docs/SPEECH-ARCHITECTURE.md — listen/wake/say/cancel/chime/level plus
+# optional ctl/voices. speechshim9p adapts external helper CLIs (whisper-stream,
 # kokoro, openwakeword) to that contract; a parakeet export or a remote
 # 9P-mounted provider serves the same shape. The parakeet*/pipersay ctl
 # keys below are compatibility aliases into the same state.
@@ -396,6 +397,7 @@ readconfig(): string
 	result += "voice " + voice + "\n";
 	result += "lang " + lang + "\n";
 	result += "rate " + string audrate + "\n";
+	result += "capturerate " + string capturerate + "\n";
 	result += "chans " + string audchans + "\n";
 	result += "bits " + string audbits + "\n";
 	result += "module " + enginepath + "\n";
@@ -485,6 +487,7 @@ applyconfig(cmd: string): string
 		if(r < 8000 || r > 48000)
 			return "error: rate must be 8000-48000";
 		audrate = r;
+		forwardprovider(key, val);
 	"chans" =>
 		c := int val;
 		if(c != 1 && c != 2)
@@ -543,7 +546,13 @@ applyconfig(cmd: string): string
 	"wakethreshold" =>
 		wakethreshold = val;
 		forwardprovider(key, val);
-	"audiodev" or "capturedev" or "micmode" or "capturerate" or "duplex" or "mic" or "listen" =>
+	"capturerate" =>
+		r := int val;
+		if(r < 8000 || r > 48000)
+			return "error: capturerate must be 8000-48000";
+		capturerate = r;
+		forwardprovider(key, val);
+	"audiodev" or "capturedev" or "micmode" or "duplex" or "mic" or "listen" =>
 		# Audio routing lives in the provider (docs/SPEECH-REMOTE-AUDIO.md);
 		# speech9p only passes the knobs through. `mic off` is written by
 		# voicemode on voice-mode exit so the provider releases the
@@ -581,6 +590,20 @@ forwardprovider(key, val: string)
 {
 	if(providermount != "")
 		writemounted(providermount + "/ctl", key + " " + val + "\n");
+}
+
+# Re-export the provider's live PCM telemetry. Providers predating the
+# optional level file degrade to a truthful idle record instead of making
+# the UI infer activity from transcript or state transitions.
+readlevel(): string
+{
+	if(providermount != "") {
+		result := readmounted(providermount + "/level");
+		if(result != nil && result != "")
+			return result;
+	}
+	return sys->sprint("mode=idle input-rms=0 input-peak=0 output-rms=0 output-peak=0 capture-rate=%d playback-rate=%d\n",
+		capturerate, audrate);
 }
 
 safename(s: string): int
@@ -1967,6 +1990,9 @@ walkto(n: ref Navop.Walk)
 		"chime" =>
 			n.path = big Qchime;
 			n.reply <-= dirgen(int n.path);
+		"level" =>
+			n.path = big Qlevel;
+			n.reply <-= dirgen(int n.path);
 		* =>
 			n.reply <-= (nil, Enotfound);
 		}
@@ -2016,6 +2042,9 @@ dirgen(path: int): (ref Sys->Dir, string)
 	Qchime =>
 		d.name = "chime";
 		d.mode = 8r222;
+	Qlevel =>
+		d.name = "level";
+		d.mode = 8r444;
 	* =>
 		return (nil, Enotfound);
 	}
@@ -2028,7 +2057,7 @@ readdir(n: ref Navop.Readdir, path: int)
 {
 	case path {
 	Qroot =>
-		entries := array[] of {Qctl, Qsay, Qhear, Qvoices, Qlisten, Qwake, Qsayq, Qcancel, Qchime};
+		entries := array[] of {Qctl, Qsay, Qhear, Qvoices, Qlisten, Qwake, Qsayq, Qcancel, Qchime, Qlevel};
 		for(i := 0; i < len entries; i++) {
 			if(i >= n.offset) {
 				(d, err) := dirgen(entries[i]);
@@ -2144,6 +2173,8 @@ Serve:
 					srv.reply(styxservers->readstr(m, "idle\n"));
 			Qchime =>
 				srv.reply(ref Rmsg.Error(m.tag, Eperm));
+			Qlevel =>
+				srv.reply(styxservers->readstr(m, readlevel()));
 			* =>
 				srv.default(gm);
 			}

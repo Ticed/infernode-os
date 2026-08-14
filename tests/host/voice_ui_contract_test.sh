@@ -37,7 +37,22 @@ require_literal appl/cmd/luciconv.b \
 require_literal appl/cmd/luciconv.b \
   '# verbatim until the user exits voice mode.' \
   'typed compose preservation contract is missing'
+require_literal appl/cmd/luciconv.b 'readfile("/n/speech/level")' \
+  'voice UI does not consume provider PCM telemetry'
+require_literal appl/cmd/luciconv.b 'sys->sleep(100);' \
+  'voice meter is not updated at the documented 10Hz cadence'
+require_literal appl/cmd/luciconv.b 'drawvoicemeter(meterr);' \
+  'voice meter is not rendered in the standard conversation UI'
+require_literal appl/cmd/luciconv.b 'label = "Listening";' \
+  'microphone activity has no visible listening state'
+require_literal appl/cmd/luciconv.b 'label = "Speaking";' \
+  'playback activity has no visible speaking state'
+require_literal appl/cmd/luciconv.b 'Rect((x, basey - h), (x + barw, basey))' \
+  'microphone meter no longer uses bottom-up bars'
+require_literal appl/cmd/luciconv.b 'Rect((x, centery - h), (x + barw, centery + h + 1))' \
+  'playback meter no longer uses its distinct symmetric shape'
 
 echo 'PASS: every voice entry and exit surface uses one semantic control path'
 echo 'PASS: production compose guard prevents key-driven draft mutation in voice mode'
+echo 'PASS: standard voice UI renders distinct live input and playback meters'
 echo 'PASS'

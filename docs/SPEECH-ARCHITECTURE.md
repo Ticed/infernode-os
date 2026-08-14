@@ -123,7 +123,7 @@ write /n/speech/ctl <- pipermodel /opt/piper/models/en_US-lessac-medium.onnx
 | `piperbin` / `pipermodel`     | binary path / `.onnx` voice model | `local` engine. |
 | `whisperbin` / `whispermodel` | binary path / `.bin` GGML model    | `local` engine. |
 | `ttsengine` | `engine` or `piper` | Selects whether `/n/speech/say` uses the configured speech9p TTS engine or delegates to the provider's `say` file. |
-| `provider` | provider mount root | The speech provider mount behind `listen`, `wake`, kokoro-engine `say`, and `cancel` (see the provider contract below). Default `/n/parakeet`; boot points it at `/n/speechshim`. |
+| `provider` | provider mount root | The speech provider mount behind `listen`, `wake`, kokoro-engine `say`, `cancel`, and live `level` telemetry (see the provider contract below). Default `/n/parakeet`; boot points it at `/n/speechshim`. |
 | `listenengine` | `whisper` or `parakeet` | Compatibility alias; both values consume the provider mount. |
 | `whisperstreambin` / `wakebin` / `kokorobin` / `wakeword` / `wakethreshold` | helper commands and wake tuning | Stored for introspection and forwarded to the provider's `ctl`; `speechshim9p` consumes them. `speech9p` itself runs no helpers. |
 | `audiodev` / `capturedev` / `micmode` / `capturerate` | audio routing (see SPEECH-REMOTE-AUDIO.md) | Forwarded to the provider's `ctl` unchanged. In `speechshim9p`: `audiodev` is the playback (and default capture) device path; `/dev/audio` playback accepts only 8000, 11025, 16000, 22050, or 44100 Hz, while non-default devices may use any configured 8000–48000 Hz rate their own control endpoint supports. `capturedev` overrides capture (`default` clears it); `micmode helper\|device` chooses whether the helper CLI grabs the host mic or the shim pumps PCM from the capture device into helper stdin; `capturerate` remains independently configurable from 8000–48000 Hz for the capture/Parakeet resampling path. |
@@ -146,6 +146,7 @@ mount** — a 9P namespace serving this contract:
 | `<provider>/say`    | write text to synthesize and play; read the last TTS status |
 | `<provider>/cancel` | write to hard-cancel active TTS |
 | `<provider>/chime`  | optional write-only local earcons: `wake`, `done`, `on`, `off` |
+| `<provider>/level`  | optional read-only live PCM telemetry: `mode=input\|output\|idle input-rms=0..1000 input-peak=0..1000 output-rms=0..1000 output-peak=0..1000 capture-rate=Hz playback-rate=Hz` |
 | `<provider>/ctl`    | optional provider configuration (helper paths, wake word, voice, ...) |
 | `<provider>/voices` | optional voice list |
 
@@ -154,6 +155,16 @@ mount** — a 9P namespace serving this contract:
 no helper binaries itself. Streaming reads ignore the fid offset (a consumer
 holds one fd across many reads), and helper-configuration keys written to
 `/n/speech/ctl` are forwarded to the provider's `ctl`.
+
+`speech9p` re-exports provider telemetry as `/n/speech/level`. Providers that
+do not implement the optional file produce a zeroed `mode=idle` record with
+the configured capture and playback rates. `speechshim9p` calculates RMS and
+peak directly from each s16le capture/playback chunk; it clears levels on
+EOF, reset, cancellation, and playback completion. In half-duplex mode it
+suppresses capture before publishing input levels, so input and output cannot
+be reported active simultaneously. Lucia polls this file at 10Hz only while
+voice mode owns input, drawing bottom-up microphone bars and a distinct
+centre-out playback animation above the locked compose row.
 
 InferNode boots voice mode in half-duplex by writing `duplex half` after the
 default `/n/speechshim` provider is selected. During playback and earcons, the
