@@ -28,12 +28,17 @@ if {~ $#statefile 0} {
 if {~ $#ctlfile 0} {
 	ctlfile=/n/speech/ctl
 }
+watchfile=$statefile^.watcher
 
 # Inferno sh's `>` opens an existing file without truncating it. Remove the
 # previous record first so state readers cannot match stale suffix bytes.
 fn setstate {
 	rm -f $statefile
 	echo $* > $statefile
+}
+
+fn cleanupcapture {
+	unmount $capturemnt >[2] /dev/null
 }
 
 fn mountcapture {
@@ -89,11 +94,13 @@ fn recovercapture {
 
 fn routecapture {
 	result=configured
-	if {! echo 'capturedev '$capturemnt'/audio' > $ctlfile} {
+	if {! sh -c 'echo capturedev $capturemnt/audio > $ctlfile'} {
 		result=failed
 	}
-	if {! echo 'micmode device' > $ctlfile} {
-		result=failed
+	if {~ $result configured} {
+		if {! sh -c 'echo micmode device > $ctlfile'} {
+			result=failed
+		}
 	}
 }
 
@@ -110,10 +117,14 @@ fn watchcapture {
 				if {~ $result configured} {
 					setstate connected capture $capture device $capturemnt'/audio'
 				} {
+					cleanupcapture
+					rm -f $watchfile
 					setstate failed control $ctlfile
 					exit ctl
 				}
 			} {
+				cleanupcapture
+				rm -f $watchfile
 				setstate failed capture $capture
 				exit mount
 			}
@@ -122,16 +133,19 @@ fn watchcapture {
 }
 
 setstate starting capture $capture
+rm -f $watchfile
 
 mkdir -p $capturemnt
 mountcapture
 if {! ~ $result mounted} {
 	echo 'voice/speech-capture: capture mount failed:' $capture >[1=2]
 	setstate failed capture $capture
+	cleanupcapture
 	exit mount
 }
 if {! ftest -e $capturemnt/audio} {
 	echo 'voice/speech-capture: remote audio not found:' $capturemnt'/audio' >[1=2]
+	cleanupcapture
 	setstate failed audio $capturemnt'/audio'
 	exit audio
 }
@@ -139,11 +153,13 @@ if {! ftest -e $capturemnt/audio} {
 routecapture
 if {! ~ $result configured} {
 	echo 'voice/speech-capture: speech control routing failed' >[1=2]
+	cleanupcapture
 	setstate failed control $ctlfile
 	exit ctl
 }
 setstate connected capture $capture device $capturemnt'/audio'
 watchcapture &
 watch_pid=$apid
+echo $watch_pid > $watchfile
 echo 'voice/speech-capture: capture device is' $capturemnt'/audio'
 echo '  recovery pid=' $watch_pid 'state=' $statefile

@@ -103,6 +103,9 @@ testListenShape(t: ref T)
 		"voice/listen calls listen builtin");
 	t.assert(contains(s, "export /dev"),
 		"voice/listen exports /dev");
+	t.assert(contains(s, "endpointfile=$2") &&
+		contains(s, "echo $net > "),
+		"voice/listen can publish its announce endpoint for supervision");
 }
 
 testDialShape(t: ref T)
@@ -160,6 +163,9 @@ testSpeechTerminalShape(t: ref T)
 		"speech-terminal bounds its initial mount attempts");
 	t.assert(contains(s, "rm -f $statefile"),
 		"speech-terminal replaces state records without stale suffixes");
+	t.assert(contains(s, "echo hangup > $listenerctl/ctl") &&
+		contains(s, "echo killgrp >/prog/$terminal_pid/ctl"),
+		"speech-terminal closes its listener endpoint and process group");
 }
 
 testSpeechEngineShape(t: ref T)
@@ -167,11 +173,11 @@ testSpeechEngineShape(t: ref T)
 	s := script_contents(t, "/lib/voice/speech-engine");
 	t.assert(contains(s, "mount -A $terminal $termmnt"),
 		"speech-engine imports terminal audio");
-	t.assert(contains(s, "speechshim9p -m $provider"),
+	t.assert(contains(s, "/dis/veltro/speechshim9p.dis -m $provider"),
 		"speech-engine starts a provider at an isolated mount");
-	t.assert(contains(s, "echo 'audiodev '$termmnt'/audio' > $provider/ctl"),
+	t.assert(contains(s, "writectl 'audiodev '^$termmnt'/audio' $provider/ctl"),
 		"speech-engine routes playback and default capture through imported audio");
-	t.assert(contains(s, "echo 'micmode device' > $provider/ctl"),
+	t.assert(contains(s, "writectl 'micmode device' $provider/ctl"),
 		"speech-engine enables namespace-backed PCM capture");
 	t.assert(contains(s, "listen -As $addr"),
 		"speech-engine keeps the provider listener attached for runtime state");
@@ -183,6 +189,9 @@ testSpeechEngineShape(t: ref T)
 		"speech-engine bounds its initial terminal mount attempts");
 	t.assert(contains(s, "rm -f $statefile"),
 		"speech-engine replaces state records without stale suffixes");
+	t.assert(contains(s, "fn cleanupengine") &&
+		contains(s, "echo killgrp >/prog/$shim_pid/ctl"),
+		"speech-engine tears down its mounts and shim process group");
 }
 
 testSpeechCaptureShape(t: ref T)
@@ -192,9 +201,9 @@ testSpeechCaptureShape(t: ref T)
 		"speech-capture imports a remote device tree");
 	t.assert(contains(s, "ctlfile=/n/speech/ctl"),
 		"speech-capture defaults to the installed speech control file");
-	t.assert(contains(s, "echo 'capturedev '$capturemnt'/audio' > $ctlfile"),
+	t.assert(contains(s, "echo capturedev $capturemnt/audio > $ctlfile"),
 		"speech-capture changes capture without changing playback");
-	t.assert(contains(s, "echo 'micmode device' > $ctlfile"),
+	t.assert(contains(s, "echo micmode device > $ctlfile"),
 		"speech-capture enables device-fed helpers");
 	t.assert(contains(s, "watchcapture"),
 		"speech-capture monitors and remounts a disconnected audio export");
@@ -202,6 +211,9 @@ testSpeechCaptureShape(t: ref T)
 		"speech-capture exposes its connection state");
 	t.assert(contains(s, "rm -f $statefile"),
 		"speech-capture replaces state records without stale suffixes");
+	t.assert(contains(s, "fn cleanupcapture") &&
+		contains(s, "watchfile=$statefile^.watcher"),
+		"speech-capture exposes and removes its supervised watcher state");
 }
 
 testSpeechTestUsesInstalledCtl(t: ref T)

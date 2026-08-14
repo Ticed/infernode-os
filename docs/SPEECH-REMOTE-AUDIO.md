@@ -66,7 +66,8 @@ feature can merge into `dev`.
   available in-tree.
 - `/lib/voice/speech-terminal`, `speech-engine`, and `speech-capture` automate
   the current export, import, provider, and ctl wiring, including bounded
-  startup retries, observable state, and terminal/capture remount recovery.
+  startup retries, observable state, terminal/capture remount recovery, and
+  explicit mount, listener, and helper cleanup on terminal failure.
 - `remote_speech_topology_test` exercises provider and fake-audio TCP mounts,
   bounded initial failure, disconnect/remount, playback, and stdin capture in
   one emulator. It proves the namespace/dataflow contract, not real-host
@@ -193,6 +194,11 @@ stacks. The engine writes startup and listener state to
 `/tmp/speech-engine.state`. Both paths can be overridden by their documented
 state-file arguments.
 
+`speech-terminal` gives `/lib/voice/listen` a private endpoint-state path so
+terminal failure can close the actual announced TCP endpoint before stopping
+the listener process group. `/lib/voice/listen` accepts that optional second
+argument for supervised callers; ordinary one-argument use is unchanged.
+
 ### 3. Remote capture device (e.g. Infernode on an Android phone)
 
 The phone contributes only its microphone; processing and playback stay
@@ -245,6 +251,36 @@ emulator so its TCP connection genuinely closes, restarts it on the same
 address, and proves the real `speech-terminal` watcher retries, remounts,
 reapplies provider selection and half-duplex routing through `speech9p`, and
 performs a provider operation without restarting the terminal emulator.
+
+The same host test also forces mounted-tree failures, rejected routing,
+provider-listener failure after shim startup, capture retry exhaustion, and
+terminal retry exhaustion. It asserts that remote mounts disappear, shim and
+watcher helpers exit, and listener ports can be rebound. Finally, it kills and
+reaps a successful terminal emulator as the faithful host service-supervision
+substitute and proves a replacement service can immediately own the released
+audio port. `tcp_test` separately proves that `hangup` closes an announced TCP
+socket and permits immediate reuse; this guards the network primitive on which
+listener cleanup depends.
+
+### Automated Lifecycle Matrix
+
+| Topology / transition | Automated owner | Required verdict |
+| --- | --- | --- |
+| Local provider and local fake audio: provider routing, playback, capture, raw client disconnect/remount | `remote_speech_topology_test` | Data crosses the mounted provider/audio paths once; remount remains usable. |
+| Any remote role: unreachable initial endpoint and bounded startup | `remote_speech_topology_test`, `remote_speech_scripts_test.sh` | Retry count terminates, `failed ...` replaces stale state bytes, and the launcher returns. |
+| Remote engine: mounted terminal lacks audio | `remote_speech_scripts_test.sh` | `failed audio`; terminal mount is absent afterward. |
+| Remote engine: provider listener fails after shim startup | `remote_speech_scripts_test.sh` | Terminal/provider mounts are absent and no `Speechshim9p` worker remains. |
+| Remote engine/local audio: provider rejects required ctl routing | `remote_speech_scripts_test.sh` | Terminal fails closed and does not publish `connected`. |
+| Remote engine/local audio: provider process dies, restarts at the same address | `remote_speech_scripts_test.sh` | Ordered connected -> waiting -> connected transition, routing reapplied, post-remount provider write succeeds. |
+| Remote engine/local audio: provider does not return before retry exhaustion | `remote_speech_scripts_test.sh` | `failed provider`; provider mount and listener endpoint are absent, and the audio port accepts a replacement export. |
+| Remote capture: audio endpoint disappears and returns | `remote_speech_topology_test` | Disconnected/waiting states remain truthful; remount and capture routing recover. |
+| Remote capture: audio endpoint remains absent through retry exhaustion | `remote_speech_scripts_test.sh` | `failed capture`; capture mount and watcher sidecar are absent. |
+| Host service cancellation | `remote_speech_scripts_test.sh` | Terminal emulator is killed and reaped; a replacement process binds and serves the same audio port. |
+| TCP announce teardown | `tcp_test` (`AnnounceHangupReleasesPort`) | `hangup` closes an announced socket and a second announce on the same address succeeds. |
+
+The matrix covers deterministic, non-physical lifecycle transitions. New
+remote lifecycle behaviour must either extend an existing owner or add a row
+with an automated verdict before it is treated as implemented.
 
 This is network transport and namespace-composition evidence, not the deferred
 two-host acceptance gate: both emulator kernels still run on one host, without

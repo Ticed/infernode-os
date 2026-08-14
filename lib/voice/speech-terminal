@@ -35,6 +35,7 @@ if {~ $#statefile 0} {
 if {~ $#ctlfile 0} {
 	ctlfile=/n/speech/ctl
 }
+listenerstate=$statefile^.listener
 
 fn setstate {
 	rm -f $statefile
@@ -85,6 +86,23 @@ fn routeprovider {
 	}
 }
 
+fn cleanupterminal {
+	unmount $provider >[2] /dev/null
+	if {ftest -e $listenerstate} {
+		listenerctl=`{cat $listenerstate}
+		if {! ~ $#listenerctl 0} {
+			echo hangup > $listenerctl/ctl >[2] /dev/null
+		}
+		rm -f $listenerstate
+	}
+	if {ftest -e /prog/$terminal_pid} {
+		echo killgrp >/prog/$terminal_pid/ctl
+		# Process-group teardown is asynchronous; do not return control while the
+		# listener can still own its advertised host port.
+		sleep 1
+	}
+}
+
 fn watchprovider {
 	while {~ 1 1} {
 		sleep 1
@@ -94,17 +112,18 @@ fn watchprovider {
 			mountprovider
 			if {~ $result mounted} {
 				routeprovider
-				if {~ $result configured} {
-					setstate connected provider $engine
+					if {~ $result configured} {
+						setstate connected provider $engine
+					} {
+						cleanupterminal
+						setstate failed control $result
+						exit ctl
+					}
 				} {
-					setstate failed control $result
-					unmount $provider >[2] /dev/null
-					exit ctl
+					cleanupterminal
+					setstate failed provider $engine
+					exit mount
 				}
-			} {
-				setstate failed provider $engine
-				exit mount
-			}
 		}
 	}
 }
@@ -112,7 +131,10 @@ fn watchprovider {
 setstate starting provider $engine
 
 # voice/listen owns the devaudio bind, buffer caps, pre-warm, and export loop.
-sh /lib/voice/listen $audioport &
+# Keep the process-group leader alive: listen(1) can replace its shell and leave
+# the original background pid unavailable through /prog, which would make a
+# later group teardown impossible.
+{pctl newpgrp; sh /lib/voice/listen $audioport $listenerstate &; sleep 99999} &
 terminal_pid=$apid
 sleep 1
 
@@ -120,21 +142,16 @@ mkdir -p $provider
 mountprovider
 if {! ~ $result mounted} {
 	echo 'voice/speech-terminal: provider mount failed:' $engine >[1=2]
+	cleanupterminal
 	setstate failed provider $engine
-	if {ftest -e /prog/$terminal_pid} {
-		echo kill >/prog/$terminal_pid/ctl
-	}
 	exit mount
 }
 
 routeprovider
 if {! ~ $result configured} {
 	echo 'voice/speech-terminal: speech routing failed:' $result >[1=2]
+	cleanupterminal
 	setstate failed control $result
-	unmount $provider >[2] /dev/null
-	if {ftest -e /prog/$terminal_pid} {
-		echo kill >/prog/$terminal_pid/ctl
-	}
 	exit ctl
 }
 setstate connected provider $engine

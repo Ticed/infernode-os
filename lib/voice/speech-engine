@@ -38,6 +38,48 @@ fn setstate {
 	echo $* > $statefile
 }
 
+shim_pid=
+
+fn cleanupengine {
+	if {! ~ $#shim_pid 0} {
+		if {ftest -e /prog/$shim_pid} {
+			echo killgrp >/prog/$shim_pid/ctl
+		}
+	}
+	unmount $provider >[2] /dev/null
+	unmount $termmnt >[2] /dev/null
+}
+
+# Keep redirection-open errors inside a child shell so a rejected provider ctl
+# becomes a normal failure result instead of aborting the launcher.
+fn writectl {
+	ctlvalue=$1
+	ctlpath=$2
+	sh -c 'echo $ctlvalue > $ctlpath'
+}
+
+fn routeengine {
+	result=configured
+	if {! writectl 'audiodev '^$termmnt'/audio' $provider/ctl} {
+		result=$provider/ctl
+	}
+	if {~ $result configured} {
+		if {! writectl 'capturedev default' $provider/ctl} {
+			result=$provider/ctl
+		}
+	}
+	if {~ $result configured} {
+		if {! writectl 'micmode device' $provider/ctl} {
+			result=$provider/ctl
+		}
+	}
+	if {~ $result configured} {
+		if {! writectl 'duplex half' $provider/ctl} {
+			result=$provider/ctl
+		}
+	}
+}
+
 setstate starting terminal $terminal
 
 mkdir -p $termmnt
@@ -48,33 +90,38 @@ while {! mount -A $terminal $termmnt} {
 	if {~ $tries $mounttries} {
 		echo 'voice/speech-engine: terminal audio mount failed:' $terminal >[1=2]
 		setstate failed terminal $terminal
+		cleanupengine
 		exit mount
 	}
 	sleep 1
 }
 if {! ftest -e $termmnt/audio} {
 	echo 'voice/speech-engine: terminal audio mount failed:' $terminal >[1=2]
+	cleanupengine
 	setstate failed audio $termmnt'/audio'
 	exit mount
 }
 
 mkdir -p $provider
-speechshim9p -m $provider &
+# Keep a group leader alive so cleanup can stop speechshim9p and all of its
+# Styx workers even after the launcher process itself has been replaced.
+{pctl newpgrp; /dis/veltro/speechshim9p.dis -m $provider &; sleep 99999} &
 shim_pid=$apid
 sleep 1
 if {! ftest -e $provider/ctl} {
 	echo 'voice/speech-engine: speechshim9p did not mount at' $provider >[1=2]
+	cleanupengine
 	setstate failed shim $provider
-	if {ftest -e /prog/$shim_pid} {
-		echo kill >/prog/$shim_pid/ctl
-	}
 	exit shim
 }
 
-echo 'audiodev '$termmnt'/audio' > $provider/ctl
-echo 'capturedev default' > $provider/ctl
-echo 'micmode device' > $provider/ctl
-echo 'duplex half' > $provider/ctl
+routeengine
+if {! ~ $result configured} {
+	echo 'voice/speech-engine: speech routing failed:' $result >[1=2]
+	cleanupengine
+	setstate failed control $result
+	exit ctl
+}
 
 addr='tcp!*!'$providerport
 setstate connected terminal $terminal exporting $addr
@@ -82,5 +129,6 @@ echo 'voice/speech-engine:' $addr 'exporting' $provider
 listen -As $addr {
 	export $provider
 }
+cleanupengine
 setstate failed provider listener $addr
 exit listen
