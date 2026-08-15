@@ -229,6 +229,38 @@ detection. The tool grants `RECORD_AUDIO`, launches the real SDL activity in
 activity is required: `/dev/audio` uses SDL3's Android AAudio backend, so the
 legacy interactive-shell activity is not a valid audio-service host.
 
+#### Microphone authorization is a separate condition from reachability
+
+Android silences an app's microphone whenever the app stops being "in use".
+Capture then fails in the one way nothing reports: `/dev/audio` still answers
+every read at full rate, and every sample is zero. The 9P export is healthy,
+the mount succeeds, the port is reachable — and the STT helper simply waits,
+because digital silence is indistinguishable from a quiet room. A standardized
+acoustic fixture run therefore *times out* rather than failing.
+
+Measured on a physical Android 13 device, before the fix: with the SDL activity
+visible, `dumpsys audio` reported `not silenced` and the captured PCM was ~94%
+non-zero; pressing HOME flipped the same recording session to `silenced` about
+a second later, and every subsequent sample was exactly zero.
+
+Two mechanisms keep capture authorized for a whole session:
+
+- `InfernodeSpeechMicService`, a foreground service declared with
+  `android:foregroundServiceType="microphone"`. It captures nothing itself; it
+  holds the authorization so the activity's AAudio stream keeps receiving real
+  samples after the activity stops being visible. The activity starts it from
+  `onResume` — starting it while genuinely visible is what converts the
+  while-in-use grant into one the service keeps.
+- `FLAG_KEEP_SCREEN_ON` plus show-over-lock-screen in `speech-export` mode, so
+  the ordinary screen timeout never backgrounds the session in the first place.
+
+`tools/android-speech-frontend.sh` refuses to report readiness unless the
+foreground service is held and any *live* recording session is `not silenced`.
+`dumpsys audio` prints a historical event log rather than current state, so the
+launcher only trusts `rec start` / `rec update` lines; a `rec stop` or
+`rec release` describes a session that has already ended and says nothing about
+the microphone the next run will get.
+
 Inside the Android Inferno namespace, that launch mode is equivalent to:
 
 ```sh
@@ -320,6 +352,7 @@ listener cleanup depends.
 | Remote capture: audio endpoint remains absent through retry exhaustion | `remote_speech_scripts_test.sh` | `failed capture`; capture mount and watcher sidecar are absent. |
 | Host service cancellation | `remote_speech_scripts_test.sh` | Terminal emulator is killed and reaped; a replacement process binds and serves the same audio port. |
 | TCP announce teardown | `tcp_test` (`AnnounceHangupReleasesPort`) | `hangup` closes an announced socket and a second announce on the same address succeeds. |
+| Remote capture: Android microphone authorization | `android_speech_frontend_test.sh` | The manifest declares the `microphone` foreground-service type, `speech-export` mode holds that service and keeps the screen on, and the launcher refuses to report readiness when the service is absent or a live session is `silenced` — while ignoring a `silenced` verdict from an ended session. |
 
 The matrix covers deterministic, non-physical lifecycle transitions. New
 remote lifecycle behaviour must either extend an existing owner or add a row

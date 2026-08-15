@@ -7,6 +7,7 @@ import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.view.WindowManager
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
@@ -98,7 +99,7 @@ class InfernodeSDLActivity : SDLActivity() {
             "-r", infernoRoot.absolutePath,
         )
 
-        if (intent?.getStringExtra(EXTRA_MODE) == MODE_SPEECH_EXPORT) {
+        if (isSpeechExportMode()) {
             // Remote microphone mode must run under SDLActivity rather than
             // InfernodeActivity: /dev/audio is backed by SDL3/AAudio and SDL
             // must own the Android lifecycle before Inferno opens it.
@@ -153,6 +154,29 @@ class InfernodeSDLActivity : SDLActivity() {
         // granted, so requestPermissions() was never called. A fresh
         // Play Store install hits it on first launch.
         ensureRuntimePermissions()
+
+        // Remote-microphone mode: the phone is an appliance, not something
+        // anyone is looking at. Android silences capture the moment this
+        // activity stops being visible, and the default screen timeout is
+        // the most common way that happens mid-session — a standardized
+        // acoustic fixture run long enough to hit the timeout recorded
+        // nothing but zeros from that point on. Keeping the screen on (and
+        // showing over the lock screen) keeps the activity visible for the
+        // whole session; InfernodeSpeechMicService covers the cases this
+        // cannot, such as the user switching apps.
+        if (isSpeechExportMode()) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                setShowWhenLocked(true)
+                setTurnScreenOn(true)
+            } else {
+                @Suppress("DEPRECATION")
+                window.addFlags(
+                    WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                        WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                )
+            }
+        }
 
         // Phase 2b.2 / INFR-115 — keep Lucifer's SDL surface inside the
         // safe rectangle (no overlap with the status bar at top or
@@ -211,6 +235,39 @@ class InfernodeSDLActivity : SDLActivity() {
 
         Log.i(TAG, "InfernodeSDLActivity created; SDL_main will boot wm")
     }
+
+    /**
+     * Hold the microphone authorization for as long as this activity owns
+     * the AAudio capture stream.
+     *
+     * `onResume` is the correct hook, not `onCreate`: the service must be
+     * started while the app is genuinely visible, because that is what
+     * converts the activity's while-in-use grant into one the service keeps
+     * holding after the activity is backgrounded. Starting it any earlier
+     * is either rejected or grants nothing.
+     */
+    override fun onResume() {
+        super.onResume()
+        if (isSpeechExportMode()) {
+            InfernodeSpeechMicService.start(this)
+        }
+    }
+
+    /**
+     * Release the microphone authorization with the session. Nothing else
+     * in the app wants a standing background capture grant, and the
+     * ongoing notification must not outlive the export it describes.
+     */
+    override fun onDestroy() {
+        if (isSpeechExportMode()) {
+            InfernodeSpeechMicService.stop(this)
+        }
+        super.onDestroy()
+    }
+
+    /** True when this activity was launched as the remote-microphone frontend. */
+    private fun isSpeechExportMode(): Boolean =
+        intent?.getStringExtra(EXTRA_MODE) == MODE_SPEECH_EXPORT
 
     /**
      * Request every runtime permission the app needs in one batched

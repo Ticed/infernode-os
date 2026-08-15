@@ -171,10 +171,69 @@ while ! "$NC" -z -w 1 "$phone_ip" "$port" >/dev/null 2>&1; do
 	elapsed=$((elapsed + 1))
 done
 
+# Reachability is not capture. Android silences an app's microphone when it
+# stops being in use, and the 9P export keeps serving at full rate either
+# way — every sample is simply zero. That failure has no error to report at
+# any layer, so the Mac-side STT just waits and a fixture run "times out".
+# Never print "ready" without proving the microphone is actually authorized.
+
+# Latest recording verdict for this package.
+#
+# `dumpsys audio` prints a historical event log, not current state, so the
+# last line is only authoritative while its session is still open. A `rec
+# stop` or `rec release` describes a session that has already ended — at
+# launch nothing has opened /dev/audio yet, so the newest line is routinely
+# a stale verdict from a previous run. Only `rec start` and `rec update`
+# describe a live capture. " not silenced" must also be tested before
+# " silenced": one string contains the other.
+capture_silenced()
+{
+	verdict=$(adb_device shell dumpsys audio 2>/dev/null |
+		grep 'pack:io.infernode' | tail -n 1 | tr -d '\r')
+	case "$verdict" in
+	*' rec start '*|*' rec update '*) ;;
+	*) return 1 ;;
+	esac
+	case "$verdict" in
+	*' not silenced '*) return 1 ;;
+	*' silenced '*) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+# The microphone-typed foreground service is what keeps capture authorized
+# once the activity stops being visible. Without it, a screen timeout part
+# way through a run is enough to zero the rest of the audio.
+mic_service_running()
+{
+	adb_device shell dumpsys activity services io.infernode 2>/dev/null |
+		grep -q 'InfernodeSpeechMicService'
+}
+
+waited=0
+while ! mic_service_running; do
+	if [ "$waited" -ge 10 ]; then
+		echo "android-speech-frontend: InfernodeSpeechMicService is not running" >&2
+		echo "capture would be silenced as soon as the activity stops being visible" >&2
+		echo "reinstall the current APK: tools/android-speech-frontend.sh --install" >&2
+		exit 1
+	fi
+	sleep 1
+	waited=$((waited + 1))
+done
+
+if capture_silenced; then
+	echo "android-speech-frontend: Android has silenced this app's microphone" >&2
+	echo "captured audio would be digital zero, and STT would time out silently" >&2
+	echo "unlock the phone, confirm the microphone permission, and relaunch" >&2
+	exit 1
+fi
+
 cat <<EOF
 Android speech frontend is ready.
   device: $device ($abi)
   address: tcp!$phone_ip!$port
+  microphone: authorized (foreground service held; capture not silenced)
   security: unauthenticated development export; trusted/Tailscale networks only
 
 Inside the processing Mac's InferNode namespace, run:

@@ -180,6 +180,13 @@ run_host_test elevenlabs_speech_e2e_test.sh
 run_host_test remote_speech_scripts_test.sh
 run_host_test parakeet_distribution_test.sh
 
+# Topology 3's Android frontend. Hermetic: a fake adb and nc stand in for the
+# phone. It guards the silent-zero capture failure — Android silences the
+# microphone without erroring, so the export stays reachable while every PCM
+# sample is zero and the Mac-side STT just times out. The launcher must refuse
+# to call that "ready".
+run_host_test android_speech_frontend_test.sh
+
 # The download test is hermetic: it sources the installer with a fake curl.
 run_host_test speech_installer_download_test.sh
 

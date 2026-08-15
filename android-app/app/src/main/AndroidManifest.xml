@@ -13,6 +13,14 @@
   run with a sticky notification on Android 14+. The `dataSync` type
   matches the export-9P-to-LAN use case; revisit if we add
   `mediaPlayback` for the voice-loop.
+
+  FOREGROUND_SERVICE_MICROPHONE is what `dataSync` is *not*: the type
+  that authorizes capture. Android silences an app's microphone as soon
+  as it stops being in use, and a backgrounded Activity does not count.
+  In speech-export mode that produced a silent failure — 9P kept serving
+  at full rate while every PCM sample was zero, so the Mac-side STT
+  timed out instead of erroring. InfernodeSpeechMicService holds this
+  type for the duration of the remote-microphone session.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
@@ -20,6 +28,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!--
@@ -125,6 +134,17 @@
         <service
             android:name=".InfernodeService"
             android:foregroundServiceType="dataSync"
+            android:exported="false" />
+
+        <!--
+          Remote-microphone mode only. Captures nothing itself; it exists
+          so the app keeps microphone authorization once the SDL activity
+          is no longer visible. Started from the visible activity, which
+          is what carries the while-in-use grant into the service.
+        -->
+        <service
+            android:name=".InfernodeSpeechMicService"
+            android:foregroundServiceType="microphone"
             android:exported="false" />
 
         <!--

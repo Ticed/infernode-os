@@ -31,6 +31,23 @@ case "$*" in
 *' shell ip -4 -o addr show tailscale0')
 	echo '42: tailscale0    inet 100.84.91.15/32 scope global tailscale0' ;;
 *' shell ip -4 -o addr show wlan0') exit 1 ;;
+*' shell dumpsys activity services io.infernode')
+	if [ "${FAKE_MIC_SERVICE:-running}" = running ]; then
+		echo '  * ServiceRecord{0 u0 io.infernode/.InfernodeSpeechMicService}'
+		echo '    isForeground=true foregroundServiceType=microphone'
+	fi ;;
+*' shell dumpsys audio')
+	echo 'Audio event log: recording activity received by AudioService'
+	case "${FAKE_MIC_STATE:-audible}" in
+	silenced)
+		echo '08-16 04:49:56:127 rec update riid:2383 uid:10409 session:3585 src:VOICE_RECOGNITION silenced pack:io.infernode' ;;
+	stale)
+		# A session that has already ended. Its verdict describes the
+		# past, not the microphone the next run will get.
+		echo '08-16 04:53:23:104 rec stop riid:2407 uid:10409 session:3705 src:VOICE_RECOGNITION silenced pack:io.infernode' ;;
+	*)
+		echo '08-16 04:51:48:588 rec update riid:2391 uid:10409 session:3625 src:VOICE_RECOGNITION not silenced pack:io.infernode' ;;
+	esac ;;
 *' logcat '*) echo 'InferNode: test diagnostic' ;;
 esac
 exit 0
@@ -70,6 +87,74 @@ check "grants microphone permission" \
 	grep -q 'shell pm grant io.infernode android.permission.RECORD_AUDIO' "$ADB_LOG"
 check "probes the selected address" \
 	grep -q -- '-z -w 1 100.84.91.15 17010' "$NC_LOG"
+check "verifies the microphone foreground service is held" \
+	grep -q 'shell dumpsys activity services io.infernode' "$ADB_LOG"
+check "verifies Android has not silenced capture" \
+	grep -q 'shell dumpsys audio' "$ADB_LOG"
+check "reports the microphone as authorized" \
+	grep -q 'microphone: authorized' "$TMP/launch.out"
+
+# A reachable 9P port proves nothing about capture: Android silences the
+# microphone without erroring, so /dev/audio keeps serving zeros and the
+# Mac-side STT times out with no diagnosis. Both silent-failure modes must
+# stop the launcher instead of printing "ready".
+if FAKE_MIC_STATE=silenced ADB="$TMP/bin/adb" NC="$TMP/bin/nc" \
+	"$ROOT/tools/android-speech-frontend.sh" --ip 100.84.91.15 --wait 0 \
+	> "$TMP/silenced.out" 2> "$TMP/silenced.err"; then
+	silenced_rc=1
+else
+	silenced_rc=0
+fi
+check "fails when Android has silenced the microphone" test "$silenced_rc" -eq 0
+check "explains the silenced-microphone failure" \
+	grep -q 'silenced' "$TMP/silenced.err"
+if grep -q 'is ready' "$TMP/silenced.out"; then
+	ready_leak=1
+else
+	ready_leak=0
+fi
+check "does not report readiness when capture is silenced" test "$ready_leak" -eq 0
+
+# At launch nothing has opened /dev/audio yet, so the newest recording event
+# is normally a finished session from a previous run. Treating that as the
+# current verdict makes the launcher refuse to start a perfectly good phone.
+if ADB="$TMP/bin/adb" NC="$TMP/bin/nc" FAKE_MIC_STATE=stale \
+	"$ROOT/tools/android-speech-frontend.sh" --ip 100.84.91.15 --wait 0 \
+	> "$TMP/stale.out" 2>&1; then
+	stale_rc=0
+else
+	stale_rc=1
+fi
+check "ignores a silenced verdict from an ended session" test "$stale_rc" -eq 0
+check "still reports readiness after a stale silenced verdict" \
+	grep -q 'is ready' "$TMP/stale.out"
+
+if FAKE_MIC_SERVICE=absent ADB="$TMP/bin/adb" NC="$TMP/bin/nc" \
+	"$ROOT/tools/android-speech-frontend.sh" --ip 100.84.91.15 --wait 0 \
+	> "$TMP/nomic.out" 2> "$TMP/nomic.err"; then
+	nomic_rc=1
+else
+	nomic_rc=0
+fi
+check "fails when the microphone foreground service is absent" test "$nomic_rc" -eq 0
+check "explains the missing foreground service" \
+	grep -q 'InfernodeSpeechMicService' "$TMP/nomic.err"
+
+# The service and its manifest type are the fix; a build that drops either
+# regresses to the silent-zero failure, so assert them here rather than
+# waiting for a physical acoustic run to time out again.
+check "manifest declares the microphone foreground service type" \
+	grep -q 'android:foregroundServiceType="microphone"' \
+	"$ROOT/android-app/app/src/main/AndroidManifest.xml"
+check "manifest requests FOREGROUND_SERVICE_MICROPHONE" \
+	grep -q 'android.permission.FOREGROUND_SERVICE_MICROPHONE' \
+	"$ROOT/android-app/app/src/main/AndroidManifest.xml"
+check "speech-export mode holds the microphone service" \
+	grep -q 'InfernodeSpeechMicService.start(this)' \
+	"$ROOT/android-app/app/src/main/java/io/infernode/InfernodeSDLActivity.kt"
+check "speech-export mode keeps the activity visible" \
+	grep -q 'FLAG_KEEP_SCREEN_ON' \
+	"$ROOT/android-app/app/src/main/java/io/infernode/InfernodeSDLActivity.kt"
 
 : > "$ADB_LOG"
 : > "$TMP/app-debug.apk"
