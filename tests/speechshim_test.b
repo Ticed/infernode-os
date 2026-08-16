@@ -356,6 +356,88 @@ testDuplexConfig(t: ref T)
 	t.assert(hassubstr(ctl, "duplex full"), "invalid duplex not applied");
 }
 
+# The suppression window is what actually keeps our own speech out of the
+# microphone; `duplex half` alone reopened the mic the instant the last sample
+# was accepted by the device, which is well before it has been heard.
+testSuppressionWindowConfig(t: ref T)
+{
+	ctl := readfile(MNT + "/ctl");
+	# Defaults must leave local capture behaving as before: a tail long
+	# enough for room decay (measured ~235ms on the physical rig) and no
+	# transport compensation, since local capture has none to compensate.
+	t.assert(hassubstr(ctl, "duplextail 300"), "default duplextail is 300ms");
+	t.assert(hassubstr(ctl, "capturedelay 0"), "default capturedelay is 0");
+
+	t.assert(writefile(MNT + "/ctl", "duplextail 450") > 0,
+		"duplextail accepted");
+	ctl = readfile(MNT + "/ctl");
+	t.assert(hassubstr(ctl, "duplextail 450"), "ctl reports duplextail");
+	t.assert(writefile(MNT + "/ctl", "capturedelay 2500") > 0,
+		"capturedelay accepted");
+	ctl = readfile(MNT + "/ctl");
+	t.assert(hassubstr(ctl, "capturedelay 2500"), "ctl reports capturedelay");
+
+	t.assert(writefile(MNT + "/ctl", "duplextail 99999") <= 0,
+		"out-of-range duplextail rejected");
+	t.assert(writefile(MNT + "/ctl", "capturedelay -1") <= 0,
+		"negative capturedelay rejected");
+	ctl = readfile(MNT + "/ctl");
+	t.assert(hassubstr(ctl, "duplextail 450"),
+		"rejected duplextail not applied");
+	t.assert(hassubstr(ctl, "capturedelay 2500"),
+		"rejected capturedelay not applied");
+
+	writefile(MNT + "/ctl", "duplextail 300");
+	writefile(MNT + "/ctl", "capturedelay 0");
+}
+
+# After playback the level record must say the microphone is still shut and
+# for how long. Without this the suppression window is invisible, and the
+# 2026-08-16 rig failure looked like "STT randomly transcribes the assistant".
+testSuppressionObservable(t: ref T)
+{
+	fd := sys->create(PCMFILE, Sys->OWRITE, 8r644);
+	t.assert(fd != nil, "create fake audio device");
+	if(fd == nil)
+		return;
+	fd = nil;
+	writefile(MNT + "/ctl", "audiodev " + PCMFILE);
+	writefile(MNT + "/ctl", "duplex half");
+	writefile(MNT + "/ctl", "duplextail 800");
+
+	t.assert(writefile(MNT + "/chime", "done") > 0, "chime accepted");
+	# The "done" chime is a single 140ms note, short enough to sit entirely
+	# in the device buffer. Wait past the note itself but well inside the
+	# 800ms tail: playback is over, so the old code would have reopened the
+	# microphone here, and `mode=suppressed` is exactly what it could not
+	# report.
+	sys->sleep(400);
+	level := readfile(MNT + "/level");
+	t.assert(hassubstr(level, "mode=suppressed"),
+		"mic stays shut after playback ends, within the tail");
+	t.assert(hassubstr(level, "suppress-remaining-ms="),
+		"level exposes the remaining suppression window");
+
+	sys->sleep(1200);
+	level = readfile(MNT + "/level");
+	t.assert(!hassubstr(level, "mode=suppressed"),
+		"suppression window ends on its own");
+
+	# Negative control: with no tail configured the same chime must not
+	# leave the window open. Without this the assertions above would still
+	# pass if suppression were simply always on.
+	writefile(MNT + "/ctl", "duplextail 0");
+	t.assert(writefile(MNT + "/chime", "done") > 0, "second chime accepted");
+	sys->sleep(400);
+	level = readfile(MNT + "/level");
+	t.assert(!hassubstr(level, "mode=suppressed"),
+		"duplextail 0 restores the immediate reopen");
+
+	writefile(MNT + "/ctl", "duplextail 300");
+	writefile(MNT + "/ctl", "duplex full");
+	writefile(MNT + "/ctl", "audiodev /dev/audio");
+}
+
 testChimeAccepted(t: ref T)
 {
 	fd := sys->create(PCMFILE, Sys->OWRITE, 8r644);
@@ -663,6 +745,8 @@ init(nil: ref Draw->Context, args: list of string)
 	run("PlaybackRates", testPlaybackRates);
 	run("PlaybackCtlFailure", testPlaybackCtlFailure);
 	run("DuplexConfig", testDuplexConfig);
+	run("SuppressionWindowConfig", testSuppressionWindowConfig);
+	run("SuppressionObservable", testSuppressionObservable);
 	run("ChimeAccepted", testChimeAccepted);
 	run("WakeRestarts", testWakeRestarts);
 	run("ListenRecords", testListenRecords);

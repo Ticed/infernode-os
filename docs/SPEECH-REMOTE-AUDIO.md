@@ -285,6 +285,51 @@ speech come from the phone's mic while TTS still plays through `audiodev`
 (the local speakers, or wherever topology 2 pointed it). Write
 `capturedev default` to fall back to `audiodev` again.
 
+#### Keeping spoken output out of the microphone
+
+Playback and microphone share a room in this topology, so `duplex half` is
+required — but on its own it is not sufficient, and the way it fails is silent.
+`playing` clears when the last sample is *accepted* by the audio device, which
+is well before it has been heard, so the microphone reopens into the tail of
+our own speech and the STT helper transcribes it as the user. On the physical
+rig this put the assistant's reply at the head of the next turn's transcript.
+
+Three knobs now bound that window, all in the provider:
+
+| ctl key | Default | Covers |
+| --- | --- | --- |
+| `duplex half` | `full` | suppress capture while playing at all |
+| `duplextail <ms>` | `300` | device drain + room reverberation after playback |
+| `capturedelay <ms>` | `0` | transport delay before samples reach the pump |
+
+`duplextail` defaults to 300 ms because the measured decay on the Mac +
+Android rig was ~235 ms; the shim additionally holds the window for whatever
+audio it handed the device but the device cannot have played yet.
+
+**`capturedelay` matters enormously for topology 3 and not at all for
+topology 1.** Local capture arrives immediately, so `0` is right. The Android
+9P path does not: bracketed on the physical rig, `capturedelay 1500` still let
+the tail of the reply through, while `2500` was clean across repeated turns.
+That implies roughly **two seconds** of capture latency through AAudio, 9P over
+Wi-Fi and emu buffering — far too large for `duplextail` to absorb, and worth
+knowing independently of echo because it bounds conversational responsiveness.
+
+```sh
+echo 'duplex half' > /n/speech/ctl
+echo 'capturedelay 2500' > /n/speech/ctl   # phone capture; leave 0 when local
+```
+
+The value is topology- and network-specific and there is currently no way to
+measure it from outside the shim: playback tools do not emit at invocation, and
+a read of the capture stream carries no indication of when those samples were
+taken. In-band calibration is tracked separately. Until then, treat 2500 ms as
+a starting point for a phone on Wi-Fi and raise it if the assistant's own words
+appear in a transcript.
+
+The current suppression state is observable in the provider's `level` file as
+`mode=suppressed` with `suppress-remaining-ms=<n>`, distinct from `mode=output`
+(actively playing) so an operator can tell "still shut" from "still talking".
+
 On the processing host, the import and ctl writes are automated as:
 
 ```sh
@@ -352,6 +397,7 @@ listener cleanup depends.
 | Remote capture: audio endpoint remains absent through retry exhaustion | `remote_speech_scripts_test.sh` | `failed capture`; capture mount and watcher sidecar are absent. |
 | Host service cancellation | `remote_speech_scripts_test.sh` | Terminal emulator is killed and reaped; a replacement process binds and serves the same audio port. |
 | TCP announce teardown | `tcp_test` (`AnnounceHangupReleasesPort`) | `hangup` closes an announced socket and a second announce on the same address succeeds. |
+| Any topology: spoken output must not re-enter capture | `speechshim_test` (`SuppressionWindowConfig`, `SuppressionObservable`) | `duplextail`/`capturedelay` are ctl-settable and bounded; the mic stays shut after playback ends and reopens on its own; `duplextail 0` restores the immediate reopen. |
 | Remote capture: Android microphone authorization | `android_speech_frontend_test.sh` | The manifest declares the `microphone` foreground-service type, `speech-export` mode holds that service and keeps the screen on, and the launcher refuses to report readiness when the service is absent or a live session is `silenced` — while ignoring a `silenced` verdict from an ended session. |
 
 The matrix covers deterministic, non-physical lifecycle transitions. New

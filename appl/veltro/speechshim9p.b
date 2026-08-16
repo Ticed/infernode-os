@@ -97,6 +97,17 @@ capturedev := "";		# capture override; empty = audiodev
 micmode := "helper";		# helper | device
 capturerate := 16000;
 duplex := "full";		# full | half
+# Half-duplex suppression is a window, not a flag. `playing` alone reopens the
+# microphone the instant the last sample is *accepted* by the audio device,
+# which is well before it has been heard: the device still holds unplayed
+# audio, the room keeps reverberating, and on a remote capture device the
+# samples take a further trip through AAudio, 9P and emu buffering before the
+# pump sees them. Each of those puts our own speech back into the STT stream.
+# Measured on the physical Mac + Android rig: energy persists ~235ms after the
+# sound stops, which is what duplextail covers.
+duplextail := 300;		# ms of suppression after playback has drained
+capturedelay := 0;		# ms of capture-path delay to compensate (0 = local)
+suppressuntil := 0;		# sys->millisec() deadline; see suppressed()
 standby := 0;			# mic off: no helper (re)starts until the next listen/wake read
 listenoff := 0;			# listen off: the STT helper stays down until the next listen read
 
@@ -530,15 +541,62 @@ clearoutputlevel()
 	outputpeak = 0;
 }
 
+# Keep the microphone shut until our own output can no longer reach it.
+# `playms` is how much audio the device still has to play out; on top of that
+# the room needs duplextail to go quiet, and a remote capture device needs a
+# further capturedelay before samples from this window stop arriving. The
+# window only ever extends, so overlapping says and chimes cannot shorten it.
+# Milliseconds of audio handed to the device that it cannot have played yet:
+# the duration of `nbytes` at the playback rate, less the wall time already
+# spent writing it. s16 mono, so two bytes per frame.
+drainremaining(nbytes: int, since: int): int
+{
+	if(nbytes <= 0 || audrate <= 0)
+		return 0;
+	playms := nbytes * 1000 / (audrate * 2);
+	elapsed := sys->millisec() - since;
+	if(elapsed < 0)
+		elapsed = 0;
+	remain := playms - elapsed;
+	if(remain < 0)
+		return 0;
+	return remain;
+}
+
+holdsuppression(playms: int)
+{
+	deadline := sys->millisec() + playms + duplextail + capturedelay;
+	if(deadline - suppressuntil > 0)
+		suppressuntil = deadline;
+}
+
+# True while captured audio must be discarded rather than fed to the helpers.
+# The subtraction keeps this correct across the millisecond counter wrapping.
+suppressed(): int
+{
+	if(duplex != "half")
+		return 0;
+	if(playing)
+		return 1;
+	return suppressuntil - sys->millisec() > 0;
+}
+
 readlevel(): string
 {
 	mode := "idle";
 	if(playing)
 		mode = "output";
+	else if(suppressed())
+		# Distinct from "output": nothing is playing, but the microphone is
+		# still shut because our own sound has not finished reaching it.
+		mode = "suppressed";
 	else if(capturing)
 		mode = "input";
-	return sys->sprint("mode=%s input-rms=%d input-peak=%d output-rms=%d output-peak=%d capture-rate=%d playback-rate=%d\n",
-		mode, inputrms, inputpeak, outputrms, outputpeak, capturerate, audrate);
+	remain := 0;
+	if(!playing && suppressed())
+		remain = suppressuntil - sys->millisec();
+	return sys->sprint("mode=%s input-rms=%d input-peak=%d output-rms=%d output-peak=%d capture-rate=%d playback-rate=%d suppress-remaining-ms=%d\n",
+		mode, inputrms, inputpeak, outputrms, outputpeak, capturerate, audrate, remain);
 }
 
 opencapture(): ref Sys->FD
@@ -613,7 +671,7 @@ audiopump()
 			clearinputlevel();
 			continue;
 		}
-		if(duplex == "half" && playing) {
+		if(suppressed()) {
 			clearinputlevel();
 			continue;
 		}
@@ -721,7 +779,7 @@ readwake(): string
 		}
 		(record, ok) := readrecord(wakeproc);
 		if(ok) {
-			if(duplex == "half" && playing) {
+			if(suppressed()) {
 				killproc(wakeproc);
 				closeproc(wakeproc);
 				wakeproc = nil;
@@ -734,7 +792,7 @@ readwake(): string
 		wakeproc = nil;
 		attempt++;
 		if(attempt >= 2) {
-			if(!(duplex == "half" && playing))
+			if(!suppressed())
 				break;
 			# A dead helper (exits with no output — e.g. not
 			# installed) must not spawn-storm while playback pins
@@ -788,6 +846,7 @@ dosay(text: string): string
 	buf := array[8192] of byte;
 	status := "";
 	playing = 1;
+	playstart := sys->millisec();
 	clearinputlevel();
 	clearoutputlevel();
 	for(;;) {
@@ -808,7 +867,15 @@ dosay(text: string): string
 		total += n;
 	}
 	clearoutputlevel();
+	# `sys->write` returns once the device *accepts* a sample, not once the
+	# speaker has emitted it, so at this point up to a full device buffer is
+	# still unplayed. Estimate the unplayed remainder as the audio we handed
+	# over minus the wall time the write loop actually took: a loop that
+	# blocked on a full buffer took about as long as the audio lasts, leaving
+	# ~nothing, while a short clip that fitted entirely in the buffer leaves
+	# almost all of it. Suppression runs from there, not from here.
 	playing = 0;
+	holdsuppression(drainremaining(total, playstart));
 	closeproc(p);
 	sayproc = nil;
 	if(status != "")
@@ -825,11 +892,11 @@ put16le(buf: array of byte, off, val: int)
 	buf[off+1] = byte ((val >> 8) & 16rFF);
 }
 
-playnote(fd: ref Sys->FD, freq, ms: int)
+playnote(fd: ref Sys->FD, freq, ms: int): int
 {
 	nsamp := audrate * ms / 1000;
 	if(nsamp <= 0)
-		return;
+		return 0;
 	buf := array[nsamp * 2] of byte;
 	for(i := 0; i < nsamp; i++) {
 		v := int (12000.0 * math->sin(2.0 * Math->Pi *
@@ -838,31 +905,38 @@ playnote(fd: ref Sys->FD, freq, ms: int)
 	}
 	setoutputlevel(buf, len buf);
 	sys->write(fd, buf, len buf);
+	return len buf;
 }
 
 playchime(kind: string)
 {
+	total := 0;
+	start := sys->millisec();
 	(afd, err) := openaudioout(audrate);
 	if(afd != nil) {
 		case kind {
 		"wake" =>
-			playnote(afd, 660, 120);
-			playnote(afd, 880, 120);
+			total += playnote(afd, 660, 120);
+			total += playnote(afd, 880, 120);
 		"done" =>
-			playnote(afd, 440, 140);
+			total += playnote(afd, 440, 140);
 		"on" =>
-			playnote(afd, 523, 90);
-			playnote(afd, 659, 90);
-			playnote(afd, 784, 120);
+			total += playnote(afd, 523, 90);
+			total += playnote(afd, 659, 90);
+			total += playnote(afd, 784, 120);
 		"off" =>
-			playnote(afd, 784, 90);
-			playnote(afd, 659, 90);
-			playnote(afd, 523, 120);
+			total += playnote(afd, 784, 90);
+			total += playnote(afd, 659, 90);
+			total += playnote(afd, 523, 120);
 		}
 	} else
 		sys->fprint(stderr, "speechshim9p: chime: %s\n", err);
 	clearoutputlevel();
+	# Chimes are short enough to sit entirely in the device buffer, so this
+	# path leaked the whole tone into the microphone before the pump could
+	# see it. Same drain accounting as dosay.
 	playing = 0;
+	holdsuppression(drainremaining(total, start));
 }
 
 startchime(kind: string)
@@ -984,6 +1058,8 @@ readconfig(): string
 	result += "micmode " + micmode + "\n";
 	result += "capturerate " + string capturerate + "\n";
 	result += "duplex " + duplex + "\n";
+	result += "duplextail " + string duplextail + "\n";
+	result += "capturedelay " + string capturedelay + "\n";
 	if(standby)
 		result += "mic off\n";
 	else
@@ -1079,6 +1155,26 @@ applyconfig(cmd: string): string
 		if(val != "full" && val != "half")
 			return "error: duplex must be full or half";
 		duplex = val;
+	"duplextail" =>
+		# How long our own sound keeps reaching the microphone after the
+		# device has drained: room reverberation plus input AGC settling.
+		# Measured at ~235ms on the Mac + Android rig; 0 restores the old
+		# reopen-immediately behaviour.
+		t := int val;
+		if(t < 0 || t > 5000)
+			return "error: duplextail must be 0-5000 ms";
+		duplextail = t;
+	"capturedelay" =>
+		# Transport delay before captured samples reach the pump. Local
+		# capture is ~0, so that stays the default and local behaviour is
+		# unchanged. A phone exporting /dev/audio over 9P is a different
+		# story: bracketed on the physical rig at roughly 2s (1500 still
+		# leaked our own speech into the next turn, 2500 was clean), which
+		# is far too large to absorb in duplextail.
+		d := int val;
+		if(d < 0 || d > 5000)
+			return "error: capturedelay must be 0-5000 ms";
+		capturedelay = d;
 	"mic" =>
 		# Voice-mode teardown: `mic off` kills the mic-side helpers
 		# (and the capture pump's device fd) so the microphone is not

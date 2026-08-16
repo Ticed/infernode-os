@@ -552,7 +552,8 @@ applyconfig(cmd: string): string
 			return "error: capturerate must be 8000-48000";
 		capturerate = r;
 		forwardprovider(key, val);
-	"audiodev" or "capturedev" or "micmode" or "duplex" or "mic" or "listen" =>
+	"audiodev" or "capturedev" or "micmode" or "duplex" or "duplextail" or
+	"capturedelay" or "mic" or "listen" =>
 		# Audio routing lives in the provider (docs/SPEECH-REMOTE-AUDIO.md);
 		# speech9p only passes the knobs through. `mic off` is written by
 		# voicemode on voice-mode exit so the provider releases the
