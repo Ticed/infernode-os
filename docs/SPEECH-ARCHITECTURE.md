@@ -354,6 +354,18 @@ model decides when the utterance is over**.
   stops emitting after an EOU otherwise (verified against upstream's own
   file-streaming path), and the reset also bounds hypothesis growth over
   an hours-long session.
+- An `<EOU>` becomes a `final` only once the audio has also been quiet for
+  `--final-silence-ms` (default 800), because the model emits EOU mid-speech
+  often enough that acting on the token alone talks over the user.
+  "Quiet" is measured against the tracked noise floor, not a fixed level:
+  `--speech-rms` (default 0.008) is the floor for a silent room, and the
+  adapter raises the bar to twice the observed noise floor when the room or
+  the capture gain is louder, up to four times that floor. A fixed level
+  cannot work — a MacBook's built-in microphone at full input gain sits at
+  RMS ≈ 0.0115, so every block reads as speech, the silence timer never
+  advances, and no turn ever closes. The floor falls toward quiet in ~2s
+  and rises in ~20s, so a long utterance cannot drag it up into its own
+  level. See `tools/parakeet_turn_gate.h`.
 - The installer downloads the published F16 EOU GGUF from the immutable
   repository revision in `tools/parakeet-eou.manifest`, then verifies its
   byte length and SHA-256 before use. Explicit or pre-existing model files

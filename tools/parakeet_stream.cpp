@@ -12,6 +12,9 @@
 // segment. It becomes a provider `final` only after sustained acoustic
 // silence: the model can emit a false EOU during continuous speech, and
 // treating that token as an immediate turn boundary starts TTS over the user.
+// Silence is judged against the tracked noise floor rather than a fixed
+// level, so capture gain and room noise do not decide whether turns can
+// close at all; `--speech-rms` sets the quiet-room floor for that decision.
 // `confidence=` is the
 // mean of the utterance's per-word confidences (NeMo max_prob, min-
 // aggregated per word by parakeet.cpp); it is omitted when no words were
@@ -290,7 +293,7 @@ int main(int argc, char** argv) {
     int fed_idx = 0;
     bool first_chunk = true;
     RecordEmitter emitter(sess);
-    ParakeetTurnGate turn_gate(final_silence_ms);
+    ParakeetTurnGate turn_gate(final_silence_ms, speech_rms);
 
     if (announce_ready) {
         std::fprintf(stderr, "ready\n");
@@ -351,7 +354,7 @@ int main(int argc, char** argv) {
             square_sum += (double)sample * sample;
         const double rms = std::sqrt(square_sum / feed->size());
         const int block_ms = (int)((1000LL * feed->size()) / 16000);
-        turn_gate.observe_audio(rms >= speech_rms, block_ms);
+        turn_gate.observe_level(rms, block_ms);
 
         int n_new = 0;
         std::vector<float> frames = mel.feed(feed->data(), (int)feed->size(), n_new);
