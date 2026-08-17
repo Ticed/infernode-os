@@ -199,6 +199,13 @@ run_host_test speech_helpers_test.sh
 if [ "$(uname -s)" = Darwin ]; then
   run_host_test audio_macos_test.sh
   run_host_test audio_device_select_test.sh
+  # The microphone-free rig: a loopback audio device stands in for both
+  # the microphone and the speaker, so these assert the live device path
+  # without depending on the room, the capture gain, or anyone speaking.
+  # Both skip when no loopback driver is installed — see
+  # docs/SPEECH-VIRTUAL-AUDIO.md.
+  run_host_test virtual_audio_loopback_test.sh
+  run_host_test virtual_mic_speech_test.sh
 fi
 
 echo

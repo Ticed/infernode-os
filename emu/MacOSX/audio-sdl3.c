@@ -450,11 +450,32 @@ sdl_devs_select(int isin, char *name)
 
 static Audiodevops sdl_devops = { sdl_devs_list, sdl_devs_select };
 
+/*
+ * Starting device names from the host environment. A launcher that wants
+ * a particular device — a test rig pointing capture at a virtual input,
+ * a kiosk pinned to a USB headset — sets these before exec rather than
+ * writing to #A/audiodev after boot, which would be too late: the voice
+ * stack opens capture during startup. An unknown name is not validated
+ * here (SDL is deliberately not up yet); selected_device warns and falls
+ * back to the system default at open time.
+ */
+static void
+devnames_from_env(void)
+{
+	char *s;
+
+	if((s = getenv("INFERNODE_AUDIO_IN")) != nil && *s != 0)
+		snprint(in_devname, sizeof in_devname, "%s", s);
+	if((s = getenv("INFERNODE_AUDIO_OUT")) != nil && *s != 0)
+		snprint(out_devname, sizeof out_devname, "%s", s);
+}
+
 void
 audio_file_init(void)
 {
 	audio_info_init(&av);
 	audio_devops_register(&sdl_devops);
+	devnames_from_env();
 	/* SDL_InitSubSystem is deferred until first open so a headless
 	 * build with no audio HW (e.g. CI runners) doesn't pay startup
 	 * cost or trigger a TCC prompt it can't satisfy. */

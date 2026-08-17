@@ -280,6 +280,21 @@ Backends without device enumeration — the headless macOS build, and every
 non-SDL3 platform — report `unsupported`, and the emulator follows the system
 default as it always did.
 
+A write to `#A/audiodev` is too late for anything that opens capture during
+startup, which the voice stack does. For those, name the device before the
+emulator starts:
+
+```sh
+export INFERNODE_AUDIO_IN='MacBook Pro Microphone'
+export INFERNODE_AUDIO_OUT='MacBook Pro Speakers'
+```
+
+Both are optional and behave exactly like the corresponding write, except that
+an unknown name is not refused: SDL is deliberately not initialised that early,
+so the name is resolved at open time and falls back to the system default with a
+warning. This is how the microphone-free test rig points a whole run at a
+loopback device — see [SPEECH-VIRTUAL-AUDIO.md](SPEECH-VIRTUAL-AUDIO.md).
+
 #### Microphone authorization is a separate condition from reachability
 
 Android silences an app's microphone whenever the app stops being "in use".
@@ -490,6 +505,7 @@ listener cleanup depends.
 | TCP announce teardown | `tcp_test` (`AnnounceHangupReleasesPort`) | `hangup` closes an announced socket and a second announce on the same address succeeds. |
 | Any topology: spoken output must not re-enter capture | `speechshim_test` (`SuppressionWindowConfig`, `SuppressionObservable`, `SayStartupNotCountedAsPlayback`) | `duplextail`/`capturedelay` are ctl-settable and bounded; the mic stays shut after playback ends and reopens on its own; `duplextail 0` restores the immediate reopen; a slow-starting TTS helper does not retire the window early. |
 | Local capture: choosing an input device, and naming a silent one | `audio_device_select_test.sh` | `#A/audiodev` enumerates host devices, a name from that list round-trips through the readback, `default` restores the system default, an unknown name is refused, and a capture reports `active`/`silent`/`idle` rather than leaving a zero-sample device indistinguishable from a quiet room. |
+| Local playback and capture with no hardware in the path | `virtual_audio_loopback_test.sh`, `virtual_mic_speech_test.sh` | A tone played by InferNode returns through a loopback audio device concentrated at the frequency played, and a committed speech fixture played into the same device is transcribed by the live stack — partials stream and a turn commits from audio that never reaches end-of-file. See [SPEECH-VIRTUAL-AUDIO.md](SPEECH-VIRTUAL-AUDIO.md). |
 | Remote capture: Android microphone authorization | `android_speech_frontend_test.sh` | The manifest declares the `microphone` foreground-service type, `speech-export` mode holds that service and keeps the screen on, and the launcher refuses to report readiness when the service is absent or a live session is `silenced` — while ignoring a `silenced` verdict from an ended session. |
 
 The matrix covers deterministic, non-physical lifecycle transitions. New
