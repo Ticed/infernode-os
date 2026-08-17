@@ -198,6 +198,7 @@ run_host_test speech_helpers_test.sh
 # when the current session lacks an audio device or TCC microphone permission.
 if [ "$(uname -s)" = Darwin ]; then
   run_host_test audio_macos_test.sh
+  run_host_test audio_device_select_test.sh
 fi
 
 echo
