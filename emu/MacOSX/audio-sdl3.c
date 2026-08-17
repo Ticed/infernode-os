@@ -235,9 +235,78 @@ ensure_sdl_audio(void)
 	return 1;
 }
 
-static SDL_AudioStream *
-open_stream(SDL_AudioDeviceID dev, Audio_d *fmt)
+/*
+ * Host device selection (see audio.h). Empty means "follow the system
+ * default", which is what the emulator did unconditionally before.
+ */
+static char in_devname[128];
+static char out_devname[128];
+
+/* Capture-silence accounting. A device that opens and then delivers
+ * nothing but zeroes is the failure this selection exists to diagnose:
+ * a virtual input from an app that is not running, an OS-muted device,
+ * or missing microphone authorization all look identical to a working
+ * microphone in a quiet room until you count the samples. */
+static vlong cap_bytes;
+static vlong cap_nonzero;
+static int cap_warned;
+static Uint64 cap_opened_ms;
+
+/* How long a capture may stay all-zero before it is worth saying so.
+ * Measured in wall time rather than bytes: the devices that fail this
+ * way often deliver almost no data either, so a byte threshold can take
+ * minutes to reach — or never arrive at all. */
+#define CAP_SILENT_MS	2000
+
+static SDL_AudioDeviceID
+find_device(int isin, const char *name)
 {
+	SDL_AudioDeviceID *ids, id = 0;
+	const char *dn;
+	int i, n = 0;
+
+	ids = isin ? SDL_GetAudioRecordingDevices(&n)
+		   : SDL_GetAudioPlaybackDevices(&n);
+	if(ids == nil)
+		return 0;
+	for(i = 0; i < n; i++) {
+		dn = SDL_GetAudioDeviceName(ids[i]);
+		if(dn != nil && strcmp(dn, name) == 0) {
+			id = ids[i];
+			break;
+		}
+	}
+	SDL_free(ids);
+	return id;
+}
+
+/*
+ * Resolve the configured name to a live SDL id at open time. A name that
+ * matches nothing falls back to the system default rather than failing
+ * the open: devices are unplugged, and a warning plus the default beats
+ * a voice stack that refuses to start.
+ */
+static SDL_AudioDeviceID
+selected_device(int isin)
+{
+	SDL_AudioDeviceID id;
+	char *name = isin ? in_devname : out_devname;
+
+	if(name[0] != 0) {
+		if((id = find_device(isin, name)) != 0)
+			return id;
+		fprint(2, "audio-sdl3: no %s device named \"%s\"; "
+			"using the system default\n",
+			isin ? "input" : "output", name);
+	}
+	return isin ? SDL_AUDIO_DEVICE_DEFAULT_RECORDING
+		    : SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
+}
+
+static SDL_AudioStream *
+open_stream(int isin, Audio_d *fmt)
+{
+	SDL_AudioDeviceID dev = selected_device(isin);
 	SDL_AudioSpec spec;
 	SDL_AudioStream *s;
 
@@ -277,7 +346,7 @@ open_stream(SDL_AudioDeviceID dev, Audio_d *fmt)
 	}
 	if(s == NULL) {
 		fprint(2, "audio-sdl3: SDL_OpenAudioDeviceStream(%s) failed: %s (devices present: %s)\n",
-			dev == SDL_AUDIO_DEVICE_DEFAULT_RECORDING ? "rec" : "play",
+			isin ? "rec" : "play",
 			SDL_GetError(), audio_devices_present() ? "yes" : "no");
 		return NULL;
 	}
@@ -286,10 +355,106 @@ open_stream(SDL_AudioDeviceID dev, Audio_d *fmt)
 	return s;
 }
 
+/*
+ * #A/audiodev readback. Names are quoted because almost every real one
+ * contains spaces, and quoting makes a line from this read valid input to
+ * the same file. The trailing capture line reports whether the input
+ * device has actually produced a non-zero sample, which is the one thing
+ * that distinguishes a silenced or virtual microphone from a quiet room.
+ */
+static int
+sdl_devs_list(char *buf, char *e)
+{
+	SDL_AudioDeviceID *ids;
+	const char *dn, *sel;
+	char *p = buf;
+	int dir, i, n;
+
+	if(!ensure_sdl_audio())
+		return snprint(buf, e - buf, "unavailable\n");
+
+	for(dir = 1; dir >= 0; dir--) {
+		sel = dir ? in_devname : out_devname;
+		if(sel[0] != 0)
+			p = seprint(p, e, "%s selected '%s'\n",
+				dir ? "in" : "out", sel);
+		else
+			p = seprint(p, e, "%s selected default\n",
+				dir ? "in" : "out");
+		ids = dir ? SDL_GetAudioRecordingDevices(&n)
+			  : SDL_GetAudioPlaybackDevices(&n);
+		if(ids == nil)
+			continue;
+		for(i = 0; i < n; i++) {
+			dn = SDL_GetAudioDeviceName(ids[i]);
+			if(dn != nil)
+				p = seprint(p, e, "%s device '%s'\n",
+					dir ? "in" : "out", dn);
+		}
+		SDL_free(ids);
+	}
+
+	/* Reported for the most recent capture, not only a live one: the
+	 * useful question is "did that recording hear anything", and it is
+	 * usually asked after the stream has been closed again. */
+	if(cap_bytes == 0)
+		p = seprint(p, e, "capture idle\n");
+	else if(cap_nonzero > 0)
+		p = seprint(p, e, "capture active\n");
+	else
+		p = seprint(p, e, "capture silent\n");
+
+	return p - buf;
+}
+
+/*
+ * Take effect immediately: a stream already open on the old device is
+ * reopened on the new one, so an operator can fix a wrong input device
+ * without restarting the voice stack.
+ */
+static int
+sdl_devs_select(int isin, char *name)
+{
+	/* Selection can arrive before anything has opened /dev/audio, and
+	 * SDL enumerates nothing until the subsystem is up — without this
+	 * every name looks unknown. */
+	if(name[0] != 0) {
+		if(!ensure_sdl_audio())
+			return -1;
+		if(find_device(isin, name) == 0)
+			return -1;
+	}
+
+	if(isin) {
+		qlock(&inlock);
+		snprint(in_devname, sizeof in_devname, "%s", name);
+		if(in_stream != NULL) {
+			SDL_DestroyAudioStream(in_stream);
+			cap_bytes = cap_nonzero = 0;
+			cap_warned = 0;
+			cap_opened_ms = SDL_GetTicks();
+			in_stream = open_stream(1, &av.in);
+		}
+		qunlock(&inlock);
+	} else {
+		qlock(&outlock);
+		snprint(out_devname, sizeof out_devname, "%s", name);
+		if(out_stream != NULL) {
+			SDL_DestroyAudioStream(out_stream);
+			out_stream = open_stream(0, &av.out);
+		}
+		qunlock(&outlock);
+	}
+	return 0;
+}
+
+static Audiodevops sdl_devops = { sdl_devs_list, sdl_devs_select };
+
 void
 audio_file_init(void)
 {
 	audio_info_init(&av);
+	audio_devops_register(&sdl_devops);
 	/* SDL_InitSubSystem is deferred until first open so a headless
 	 * build with no audio HW (e.g. CI runners) doesn't pay startup
 	 * cost or trigger a TCC prompt it can't satisfy. */
@@ -315,8 +480,10 @@ audio_file_open(Chan *c, int omode)
 	if(omode == OREAD || omode == ORDWR) {
 		qlock(&inlock);
 		if(in_stream == NULL) {
-			in_stream = open_stream(SDL_AUDIO_DEVICE_DEFAULT_RECORDING,
-						&av.in);
+			cap_bytes = cap_nonzero = 0;
+			cap_warned = 0;
+			cap_opened_ms = SDL_GetTicks();
+			in_stream = open_stream(1, &av.in);
 			if(in_stream == NULL) {
 				qunlock(&inlock);
 				error("audio in unavailable");
@@ -328,8 +495,7 @@ audio_file_open(Chan *c, int omode)
 	if(omode == OWRITE || omode == ORDWR) {
 		qlock(&outlock);
 		if(out_stream == NULL) {
-			out_stream = open_stream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,
-						 &av.out);
+			out_stream = open_stream(0, &av.out);
 			if(out_stream == NULL) {
 				/* clean up the input we just acquired */
 				if(omode == ORDWR) {
@@ -396,6 +562,28 @@ audio_file_read(Chan *c, void *va, long n, vlong off)
 			break;
 		}
 		SDL_Delay(5);	/* ~220 frames @ 44.1k stereo 16-bit */
+	}
+
+	/* Count towards the silence diagnostic until the device has proved
+	 * itself once; after that the scan stops costing anything. */
+	if(cap_nonzero == 0) {
+		uchar *b = va;
+		long i;
+
+		for(i = 0; i < got; i++)
+			if(b[i] != 0) {
+				cap_nonzero += got;
+				break;
+			}
+		cap_bytes += got;
+		if(cap_nonzero == 0 && !cap_warned &&
+		   SDL_GetTicks() - cap_opened_ms > CAP_SILENT_MS) {
+			fprint(2, "audio-sdl3: the capture device has produced "
+				"nothing but silence for 2s — check the input "
+				"device in #A/audiodev and microphone "
+				"authorization\n");
+			cap_warned = 1;
+		}
 	}
 	return got;
 }
@@ -473,8 +661,7 @@ audio_ctl_write(Chan *c, void *va, long n, vlong off)
 	    tmp.in.bits != av.in.bits)) {
 		qlock(&inlock);
 		SDL_DestroyAudioStream(in_stream);
-		in_stream = open_stream(SDL_AUDIO_DEVICE_DEFAULT_RECORDING,
-					&tmp.in);
+		in_stream = open_stream(1, &tmp.in);
 		qunlock(&inlock);
 	}
 	if(out_stream &&
@@ -482,8 +669,7 @@ audio_ctl_write(Chan *c, void *va, long n, vlong off)
 	    tmp.out.bits != av.out.bits)) {
 		qlock(&outlock);
 		SDL_DestroyAudioStream(out_stream);
-		out_stream = open_stream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,
-					 &tmp.out);
+		out_stream = open_stream(0, &tmp.out);
 		qunlock(&outlock);
 	}
 	av = tmp;

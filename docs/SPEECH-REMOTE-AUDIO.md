@@ -229,6 +229,57 @@ detection. The tool grants `RECORD_AUDIO`, launches the real SDL activity in
 activity is required: `/dev/audio` uses SDL3's Android AAudio backend, so the
 legacy interactive-shell activity is not a valid audio-service host.
 
+#### Choosing the local input device: `#A/audiodev`
+
+The desktop version of the same failure is a *virtual* input device. The
+emulator used to open whatever the operating system called the default, and on
+a developer machine that default is often something like Voicemod or Loopback —
+a device belonging to an application that may not even be running. Capture
+opens, every sample is zero, and no layer reports a fault. Diagnosing it meant
+leaving InferNode entirely (`system_profiler SPAudioDataType`).
+
+`#A/audiodev` makes both the choice and the verdict visible. Read it to
+enumerate:
+
+```
+; bind -a '#A' /dev
+; cat /dev/audiodev
+in selected default
+in device 'MacBook Pro Microphone'
+in device 'Voicemod Microphone'
+in device 'Loopback Audio'
+out selected default
+out device 'MacBook Pro Speakers'
+capture idle
+```
+
+Write `in <name>` or `out <name>` to select one; the names are quoted in the
+readback because they contain spaces, and either form is accepted on write, so
+a line from the read can be written straight back. `in default` returns to
+following the system default. An unknown name is refused rather than silently
+ignored. Selection takes effect immediately — a stream already open is reopened
+on the new device, so a wrong input can be corrected without restarting the
+voice stack.
+
+```sh
+echo 'in MacBook Pro Microphone' > /dev/audiodev
+```
+
+The last line is the diagnostic. `capture active` means the device produced at
+least one non-zero sample; `capture silent` means it delivered data and all of
+it was zero; `capture idle` means it delivered nothing. It describes the most
+recent capture, not only a live one, so it can be read after the recording
+finishes. A capture that stays silent for two seconds also prints a one-time
+warning to stderr.
+
+`capture silent` is the desktop signature of the Android condition described
+below, and of macOS microphone authorization being absent: three different
+causes, one symptom, now named at the point of use.
+
+Backends without device enumeration — the headless macOS build, and every
+non-SDL3 platform — report `unsupported`, and the emulator follows the system
+default as it always did.
+
 #### Microphone authorization is a separate condition from reachability
 
 Android silences an app's microphone whenever the app stops being "in use".
@@ -438,6 +489,7 @@ listener cleanup depends.
 | Host service cancellation | `remote_speech_scripts_test.sh` | Terminal emulator is killed and reaped; a replacement process binds and serves the same audio port. |
 | TCP announce teardown | `tcp_test` (`AnnounceHangupReleasesPort`) | `hangup` closes an announced socket and a second announce on the same address succeeds. |
 | Any topology: spoken output must not re-enter capture | `speechshim_test` (`SuppressionWindowConfig`, `SuppressionObservable`, `SayStartupNotCountedAsPlayback`) | `duplextail`/`capturedelay` are ctl-settable and bounded; the mic stays shut after playback ends and reopens on its own; `duplextail 0` restores the immediate reopen; a slow-starting TTS helper does not retire the window early. |
+| Local capture: choosing an input device, and naming a silent one | `audio_device_select_test.sh` | `#A/audiodev` enumerates host devices, a name from that list round-trips through the readback, `default` restores the system default, an unknown name is refused, and a capture reports `active`/`silent`/`idle` rather than leaving a zero-sample device indistinguishable from a quiet room. |
 | Remote capture: Android microphone authorization | `android_speech_frontend_test.sh` | The manifest declares the `microphone` foreground-service type, `speech-export` mode holds that service and keeps the screen on, and the launcher refuses to report readiness when the service is absent or a live session is `silenced` — while ignoring a `silenced` verdict from an ended session. |
 
 The matrix covers deterministic, non-physical lifecycle transitions. New

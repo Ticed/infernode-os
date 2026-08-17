@@ -50,8 +50,31 @@ enum
 {
 	Qdir = 0,		/* must start at 0 representing a directory */
 	Qaudio,
-	Qaudioctl
+	Qaudioctl,
+	Qaudiodev
 };
+
+/*
+ * Optional platform hook for choosing a host audio device by name.
+ * Without it the emulator inherits whatever the operating system calls
+ * the default, which on a desktop is often a virtual device belonging to
+ * an application that is not even running: capture opens, every sample is
+ * zero, and nothing reports a fault. A backend that can enumerate its
+ * devices registers these from audio_file_init(); the rest leave them
+ * unset and #A/audiodev says the platform cannot select a device.
+ *
+ * list   fills buf..e and returns the byte count.
+ * select takes 1 for input, 0 for output, and a device name — the empty
+ *        string means "follow the system default". Returns 0, or -1 when
+ *        no device carries that name.
+ */
+typedef struct Audiodevops Audiodevops;
+struct Audiodevops {
+	int	(*list)(char *buf, char *e);
+	int	(*select)(int isin, char *name);
+};
+
+void	audio_devops_register(Audiodevops*);
 
 /* required external platform specific functions */
 void	audio_file_init(void);
