@@ -846,7 +846,11 @@ dosay(text: string): string
 	buf := array[8192] of byte;
 	status := "";
 	playing = 1;
-	playstart := sys->millisec();
+	# Stamped on the first sample handed to the device, not here: a TTS
+	# helper can take seconds to emit its first byte, and counting that
+	# wait as elapsed playback would retire the suppression window before
+	# the speaker has said anything.
+	playstart := 0;
 	clearinputlevel();
 	clearoutputlevel();
 	for(;;) {
@@ -864,16 +868,18 @@ dosay(text: string): string
 			killproc(p);
 			break;
 		}
+		if(total == 0)
+			playstart = sys->millisec();
 		total += n;
 	}
 	clearoutputlevel();
 	# `sys->write` returns once the device *accepts* a sample, not once the
 	# speaker has emitted it, so at this point up to a full device buffer is
 	# still unplayed. Estimate the unplayed remainder as the audio we handed
-	# over minus the wall time the write loop actually took: a loop that
+	# over minus the wall time since playback actually began: a loop that
 	# blocked on a full buffer took about as long as the audio lasts, leaving
-	# ~nothing, while a short clip that fitted entirely in the buffer leaves
-	# almost all of it. Suppression runs from there, not from here.
+	# ~nothing, while a clip that fitted entirely in the buffer leaves almost
+	# all of it. Suppression runs from there, not from here.
 	playing = 0;
 	holdsuppression(drainremaining(total, playstart));
 	closeproc(p);

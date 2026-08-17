@@ -438,6 +438,49 @@ testSuppressionObservable(t: ref T)
 	writefile(MNT + "/ctl", "audiodev /dev/audio");
 }
 
+# A TTS helper does not start speaking the moment it is asked to. The
+# suppression window has to run from the first sample that reaches the
+# device, so helper startup is not mistaken for elapsed playback.
+testSayStartupNotCountedAsPlayback(t: ref T)
+{
+	fd := sys->create(PCMFILE, Sys->OWRITE, 8r644);
+	t.assert(fd != nil, "create fake audio device");
+	if(fd == nil)
+		return;
+	fd = nil;
+	writefile(MNT + "/ctl", "audiodev " + PCMFILE);
+	writefile(MNT + "/ctl", "rate 8000");
+	writefile(MNT + "/ctl", "duplex half");
+	writefile(MNT + "/ctl", "duplextail 300");
+	writefile(MNT + "/ctl", "capturedelay 0");
+
+	# Two seconds of startup, then two seconds of audio (32000 bytes at
+	# 8kHz s16 mono). The scratch audiodev accepts every write at once, so
+	# all of it is still unplayed when the write loop ends.
+	t.assert(writefile(MNT + "/ctl",
+		"kokorobin /bin/sh -c \"sleep 2; dd if=/dev/zero bs=32000 count=1\"") > 0,
+		"slow-starting say helper accepted");
+	t.assert(writefile(MNT + "/say", "hello") > 0, "say accepted");
+
+	# say is asynchronous, so sample once the write loop is over and the
+	# window is the only thing holding the microphone shut. Counting the
+	# startup as elapsed playback leaves nothing to drain and the window
+	# has already lapsed by here.
+	sys->sleep(3000);
+	level := readfile(MNT + "/level");
+	t.assert(hassubstr(level, "mode=suppressed"),
+		"helper startup is not counted as elapsed playback");
+
+	sys->sleep(2000);
+	level = readfile(MNT + "/level");
+	t.assert(!hassubstr(level, "mode=suppressed"),
+		"window still ends once the audio has drained");
+
+	writefile(MNT + "/ctl", "rate 22050");
+	writefile(MNT + "/ctl", "duplex full");
+	writefile(MNT + "/ctl", "audiodev /dev/audio");
+}
+
 testChimeAccepted(t: ref T)
 {
 	fd := sys->create(PCMFILE, Sys->OWRITE, 8r644);
@@ -747,6 +790,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("DuplexConfig", testDuplexConfig);
 	run("SuppressionWindowConfig", testSuppressionWindowConfig);
 	run("SuppressionObservable", testSuppressionObservable);
+	run("SayStartupNotCountedAsPlayback", testSayStartupNotCountedAsPlayback);
 	run("ChimeAccepted", testChimeAccepted);
 	run("WakeRestarts", testWakeRestarts);
 	run("ListenRecords", testListenRecords);

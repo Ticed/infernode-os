@@ -306,25 +306,31 @@ Three knobs now bound that window, all in the provider:
 Android rig was ~235 ms; the shim additionally holds the window for whatever
 audio it handed the device but the device cannot have played yet.
 
-**`capturedelay` matters enormously for topology 3 and not at all for
-topology 1.** Local capture arrives immediately, so `0` is right. The Android
-9P path does not: bracketed on the physical rig, `capturedelay 1500` still let
-the tail of the reply through, while `2500` was clean across repeated turns.
-That implies roughly **two seconds** of capture latency through AAudio, 9P over
-Wi-Fi and emu buffering — far too large for `duplextail` to absorb, and worth
-knowing independently of echo because it bounds conversational responsiveness.
+`capturedelay` covers transport only, and the Android 9P path needs far less
+of it than it first appears. Reading the phone's exported `/dev/audio` over an
+`adb forward` link sustains 31.6 KB/s against the 32 KB/s the format demands,
+and delivers 18.29 s of audio in 18.54 s of wall time — a startup offset of
+**~250 ms**, with the queue bounded at about the same: pausing the reader for
+five seconds leaves only ~220 ms retrievable rather than the five seconds an
+unbounded backlog would hold.
+
+Earlier guidance here called for `capturedelay 2500` on the phone. That was
+compensating for something else entirely. A TTS helper does not begin speaking
+when it is asked to — kokoro spends ~2.2 s loading before it emits its first
+byte, then hands over 2.2 s of audio in ~60 ms. The provider anchors its drain
+estimate to the first sample that actually reaches the device, so that startup
+is no longer mistaken for elapsed playback. Before that fix the window closed
+while the reply was still being spoken, and `capturedelay` was the only knob
+big enough to hide it.
 
 ```sh
 echo 'duplex half' > /n/speech/ctl
-echo 'capturedelay 2500' > /n/speech/ctl   # phone capture; leave 0 when local
+echo 'capturedelay 250' > /n/speech/ctl   # phone capture; leave 0 when local
 ```
 
-The value is topology- and network-specific and there is currently no way to
-measure it from outside the shim: playback tools do not emit at invocation, and
-a read of the capture stream carries no indication of when those samples were
-taken. In-band calibration is tracked separately. Until then, treat 2500 ms as
-a starting point for a phone on Wi-Fi and raise it if the assistant's own words
-appear in a transcript.
+Raise it if the assistant's own words still appear in a transcript, but treat a
+requirement far above the measured transport delay as a symptom rather than a
+setting — something upstream is under-reporting how long playback lasts.
 
 The current suppression state is observable in the provider's `level` file as
 `mode=suppressed` with `suppress-remaining-ms=<n>`, distinct from `mode=output`
@@ -397,7 +403,7 @@ listener cleanup depends.
 | Remote capture: audio endpoint remains absent through retry exhaustion | `remote_speech_scripts_test.sh` | `failed capture`; capture mount and watcher sidecar are absent. |
 | Host service cancellation | `remote_speech_scripts_test.sh` | Terminal emulator is killed and reaped; a replacement process binds and serves the same audio port. |
 | TCP announce teardown | `tcp_test` (`AnnounceHangupReleasesPort`) | `hangup` closes an announced socket and a second announce on the same address succeeds. |
-| Any topology: spoken output must not re-enter capture | `speechshim_test` (`SuppressionWindowConfig`, `SuppressionObservable`) | `duplextail`/`capturedelay` are ctl-settable and bounded; the mic stays shut after playback ends and reopens on its own; `duplextail 0` restores the immediate reopen. |
+| Any topology: spoken output must not re-enter capture | `speechshim_test` (`SuppressionWindowConfig`, `SuppressionObservable`, `SayStartupNotCountedAsPlayback`) | `duplextail`/`capturedelay` are ctl-settable and bounded; the mic stays shut after playback ends and reopens on its own; `duplextail 0` restores the immediate reopen; a slow-starting TTS helper does not retire the window early. |
 | Remote capture: Android microphone authorization | `android_speech_frontend_test.sh` | The manifest declares the `microphone` foreground-service type, `speech-export` mode holds that service and keeps the screen on, and the launcher refuses to report readiness when the service is absent or a live session is `silenced` — while ignoring a `silenced` verdict from an ended session. |
 
 The matrix covers deterministic, non-physical lifecycle transitions. New
