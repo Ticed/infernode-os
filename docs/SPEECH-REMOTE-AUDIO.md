@@ -285,6 +285,23 @@ speech come from the phone's mic while TTS still plays through `audiodev`
 (the local speakers, or wherever topology 2 pointed it). Write
 `capturedev default` to fall back to `audiodev` again.
 
+**Using the phone in both directions.** Point `audiodev` at the same import and
+the phone becomes a headset — microphone *and* speaker — with processing still
+on the host:
+
+```sh
+echo 'capturedev /n/phone/audio' > /n/speech/ctl
+echo 'audiodev   /n/phone/audio' > /n/speech/ctl
+echo 'micmode device' > /n/speech/ctl
+```
+
+Nothing in the shim is aware this is one device rather than two; playback opens
+an output stream on the phone over the same 9P mount. This is the tightest
+acoustic coupling the system supports — speaker and microphone are centimetres
+apart on one handset — so `duplex half` is not optional here. It has been
+verified in that configuration, including the wake word firing through the
+remote capture path.
+
 #### Keeping spoken output out of the microphone
 
 Playback and microphone share a room in this topology, so `duplex half` is
@@ -353,6 +370,23 @@ tools/speech-test.sh \
 
 The wrapper stages the installed `speech.ctl.sh` inside the emulator root, so
 the helper configuration does not depend on an ambient `/n/local` host mount.
+
+`-w` additionally watches the provider's `wake` file and prints each detection
+as `wake: <model> <score>`. Reads of that file block until the helper fires, so
+it runs beside the listen loop rather than gating it — the point is to prove
+the wake word survives the capture route, which is the part a remote device
+changes. Use it with the both-directions ctl lines for a full proof:
+
+```sh
+tools/speech-test.sh \
+  -M 'tcp!<phone-ip>!17010 /n/phone' \
+  -c 'capturedev /n/phone/audio' -c 'audiodev /n/phone/audio' \
+  -c 'micmode device' -c 'duplex half' -c 'capturedelay 250' -w -n 2
+```
+
+Note that the wake helper scores continuously, so one spoken wake word yields a
+burst of detections above threshold rather than a single line. Consumers are
+expected to act on the first and stop reading.
 
 The capture script uses the same bounded initial retry and background remount
 behaviour. Its state is readable at `/tmp/speech-capture.state` (or the fourth

@@ -19,6 +19,7 @@
 #   tools/speech-test.sh -p 'Hello from InferNode'  # custom phrase
 #   tools/speech-test.sh -e                         # echo the transcript back
 #   tools/speech-test.sh -n 3                       # exit after 3 turns (headless)
+#   tools/speech-test.sh -w                         # also report wake-word hits
 #
 # Remote topologies (headless only; see docs/SPEECH-REMOTE-AUDIO.md;
 # mounts are unauthenticated — trusted networks only):
@@ -62,6 +63,7 @@ while [ $# -gt 0 ]; do
 	-c|--ctl)     headlessonly="$headlessonly -c"; args+=(-c "$2"); shift 2 ;;
 	-M|--mount)   headlessonly="$headlessonly -M"; args+=(-M "$2"); shift 2 ;;
 	-e|--echo)    echoflag=-e; args+=(-e); shift ;;
+	-w|--wake)    headlessonly="$headlessonly -w"; args+=(-w); shift ;;
 	-d|--debug)   headlessonly="$headlessonly -d"; args+=(-d); shift ;;
 	--no-helpers) usehelpers=0; shift ;;
 	-h|--help)    sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;

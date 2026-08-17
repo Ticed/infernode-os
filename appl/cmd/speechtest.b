@@ -63,6 +63,7 @@ echoback := 0;
 turns := 0;
 bootstrap := 0;
 bootstrapped := 0;
+wakewatch := 0;
 
 LISTEN_EMPTY, LISTEN_PARTIAL, LISTEN_FINAL, LISTEN_ERROR: con iota;
 
@@ -275,6 +276,30 @@ startsrv(dis: string, argv: list of string, ready: string): string
 	return nil;
 }
 
+# A read of the wake file blocks until the wake-word helper fires, so this
+# runs in its own proc beside the listen loop. Detection is reported rather
+# than acted on: the point is to prove the wake word reaches the helper,
+# including when capture comes from a remote device.
+wakereader()
+{
+	for(;;) {
+		rec := readfile(speech + "/wake");
+		if(rec == nil) {
+			sys->sleep(250);
+			continue;
+		}
+		line := strip(rec);
+		if(line == "")
+			continue;
+		if(len line > 6 && line[0:6] == "error:") {
+			sys->print("wake error: %s\n", errline(rec));
+			sys->sleep(1000);
+			continue;
+		}
+		sys->print("wake: %s\n", line);
+	}
+}
+
 ctlwrite(line: string)
 {
 	if(writefile(speech + "/ctl", line) < 0)
@@ -363,7 +388,7 @@ init(nil: ref Draw->Context, args: list of string)
 	}
 
 	arg->init(args);
-	arg->setusage("speechtest [-bde] [-n turns] [-p phrase] [-s /n/speech] " +
+	arg->setusage("speechtest [-bdew] [-n turns] [-p phrase] [-s /n/speech] " +
 		"[-C ctlfile] [-H helperbindir] [-c 'key value'] [-M 'dialaddr mountpt']");
 	ctllines: list of string;
 	mounts: list of string;
@@ -374,6 +399,7 @@ init(nil: ref Draw->Context, args: list of string)
 		'b' =>	bootstrap = 1;
 		'd' =>	debug = 1;
 		'e' =>	echoback = 1;
+		'w' =>	wakewatch = 1;
 		'n' =>	turns = int arg->earg();
 		'p' =>	phrase = arg->earg();
 		's' =>	speech = arg->earg();
@@ -426,6 +452,10 @@ init(nil: ref Draw->Context, args: list of string)
 	sys->print("speechtest: listening on %s — speak; every final transcript answers with %s\n",
 		speech, saywhat);
 	chime("on");
+	if(wakewatch) {
+		sys->print("speechtest: watching %s/wake\n", speech);
+		spawn wakereader();
+	}
 
 	completed := 0;
 	lastpartial := "";
