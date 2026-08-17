@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 from pathlib import Path
 import queue
+import random
 import re
+import struct
 import subprocess
 import sys
 import threading
@@ -103,46 +106,44 @@ def word_error_rate(expected: str, heard: str) -> float:
     return previous[-1] / max(1, len(reference))
 
 
-def main() -> int:
-    fixtures = read_manifest()
-    missing = [
-        fixture["id"]
-        for fixture in fixtures
-        if not all((FIXTURES / f"{fixture['id']}.{suffix}").is_file()
-                   for suffix in ("pcm", "txt", "meta"))
-    ]
-    if missing:
-        skip(
-            "ElevenLabs PCM corpus has not been generated: "
-            + ", ".join(str(item) for item in missing)
-        )
+# The fixtures carry digital silence between utterances, which no microphone
+# ever produces. Replaying them a second time over a noise floor above the
+# adapter's quiet-room threshold is what proves turns still close when the
+# capture gain or the room puts every block above that level (INF-25).
+#
+# The noisy pass asserts less than the quiet pass on purpose. Added noise also
+# costs the decoder some end-of-utterance events, so the corpus does not
+# segment one-for-one; that is a model property, and holding this test to it
+# would make it a Parakeet accuracy benchmark rather than a gate regression.
+# What must hold is that turns commit on silence while audio is still
+# arriving, which is exactly what the fixed threshold made impossible.
+NOISY_ROOM_RMS = 0.0115  # measured: built-in MacBook microphone at full gain
+MIN_NOISY_COMMITS = 2
 
-    for fixture in fixtures:
-        fixture_id = str(fixture["id"])
-        pcm_path = FIXTURES / f"{fixture_id}.pcm"
-        text_path = FIXTURES / f"{fixture_id}.txt"
-        meta = read_meta(FIXTURES / f"{fixture_id}.meta")
-        fixture["pcm"] = pcm_path.read_bytes()
-        fixture["meta"] = meta
-        if meta.get("provider") != "ElevenLabs":
-            fail(f"{fixture_id}: fixture provenance is not ElevenLabs")
-        if meta.get("sample_rate") != "16000" or meta.get("channels") != "1":
-            fail(f"{fixture_id}: fixture is not 16kHz mono PCM")
-        if meta.get("sample_format") != "s16le":
-            fail(f"{fixture_id}: fixture is not signed 16-bit little-endian PCM")
-        if meta.get("expected_keywords") != ",".join(fixture["keywords"]):
-            fail(f"{fixture_id}: keyword metadata drifted from utterances.tsv")
-        if meta.get("min_partials") != str(fixture["min_partials"]):
-            fail(f"{fixture_id}: partial-count metadata drifted from utterances.tsv")
-        digest = hashlib.sha256(fixture["pcm"]).hexdigest()
-        if digest != meta.get("sha256"):
-            fail(f"{fixture_id}: PCM SHA-256 does not match metadata")
-        if text_path.read_text(encoding="utf-8").strip() != fixture["text"]:
-            fail(f"{fixture_id}: transcript text drifted from utterances.tsv")
-        if len(fixture["pcm"]) % 2:
-            fail(f"{fixture_id}: PCM byte count is not sample aligned")
 
-    binary, model = find_runtime()
+def add_noise(pcm: bytes, rms: float, rng: random.Random) -> bytes:
+    if rms <= 0.0:
+        return pcm
+    count = len(pcm) // 2
+    samples = struct.unpack(f"<{count}h", pcm)
+    # Uniform noise of the requested RMS: uniform(-a, a) has RMS a/sqrt(3).
+    amplitude = rms * math.sqrt(3.0) * 32768.0
+    noisy = []
+    for sample in samples:
+        value = int(sample + rng.uniform(-amplitude, amplitude))
+        noisy.append(max(-32768, min(32767, value)))
+    return struct.pack(f"<{count}h", *noisy)
+
+
+def run_pass(
+    fixtures: list[dict[str, object]],
+    binary: Path,
+    model: Path,
+    noise_rms: float,
+    label: str,
+) -> tuple[list[tuple[float, str]], list[tuple[float, str]], float]:
+    """Stream the corpus once; return (records, finals, stream duration)."""
+    rng = random.Random(8675309)
     command = [
         str(binary),
         "--stdin",
@@ -199,6 +200,7 @@ def main() -> int:
         fixture["speech_end_s"] = stream_cursor + int(meta["speech_end_ms"]) / 1000.0
         pcm = fixture["pcm"]
         assert isinstance(pcm, bytes)
+        pcm = add_noise(pcm, noise_rms, rng)
         for offset in range(0, len(pcm), CHUNK_BYTES):
             deadline = origin[0] + stream_cursor
             remaining = deadline - time.monotonic()
@@ -220,7 +222,7 @@ def main() -> int:
     while not output.empty():
         records.append(output.get())
     if status != 0:
-        fail("Parakeet adapter exited non-zero: " + " | ".join(stderr_lines[-8:]))
+        fail(f"{label}: Parakeet adapter exited non-zero: " + " | ".join(stderr_lines[-8:]))
 
     finals: list[tuple[float, str]] = []
     for stamp, line in records:
@@ -230,12 +232,24 @@ def main() -> int:
         if final_text.startswith("confidence="):
             _, _, final_text = final_text.partition(" ")
         finals.append((stamp, final_text))
+    return records, finals, stream_cursor
+
+
+def assert_one_final_per_utterance(
+    fixtures: list[dict[str, object]],
+    records: list[tuple[float, str]],
+    finals: list[tuple[float, str]],
+    label: str,
+) -> None:
     if len(finals) != len(fixtures):
-        fail(f"expected {len(fixtures)} final records, received {len(finals)}")
+        fail(
+            f"{label}: expected {len(fixtures)} final records, received "
+            f"{len(finals)} — turns are not closing on acoustic silence"
+        )
 
     previous_final = -1.0
     for fixture, (final_stamp, final_text) in zip(fixtures, finals):
-        fixture_id = str(fixture["id"])
+        fixture_id = f"{label}/{fixture['id']}"
         speech_end = float(fixture["speech_end_s"])
         partials = {
             line[8:]
@@ -279,9 +293,87 @@ def main() -> int:
         )
         previous_final = final_stamp
 
+
+def assert_commits_while_streaming(
+    fixtures: list[dict[str, object]],
+    finals: list[tuple[float, str]],
+    stream_seconds: float,
+    label: str,
+) -> None:
+    # A final emitted after the input ends proves nothing: the adapter flushes
+    # the decoder at EOF regardless. Only a final that lands while audio is
+    # still arriving can have come from the silence gate. With a fixed
+    # threshold and a floor above it, every commit collapsed into that one
+    # EOF flush.
+    committed = [(stamp, text) for stamp, text in finals if stamp < stream_seconds - 1.0]
+    for stamp, text in finals:
+        print(
+            f"TRACE {label} final_ms={stamp * 1000:.0f} "
+            f"stream_ms={stream_seconds * 1000:.0f} text={text}"
+        )
+    if len(committed) < MIN_NOISY_COMMITS:
+        fail(
+            f"{label}: {len(committed)} of {len(finals)} finals arrived before the "
+            f"stream ended; expected at least {MIN_NOISY_COMMITS} — the silence "
+            f"gate is not committing turns over this noise floor"
+        )
+    corpus = " ".join(str(fixture["text"]) for fixture in fixtures)
+    heard = " ".join(text for _, text in finals)
+    error_rate = word_error_rate(corpus, heard)
+    if error_rate > 0.25:
+        fail(f"{label}: word error rate {error_rate:.1%} exceeded 25%: {heard}")
+    print(f"TRACE {label} commits={len(committed)}/{len(finals)} wer={error_rate:.3f}")
+
+
+def main() -> int:
+    fixtures = read_manifest()
+    missing = [
+        fixture["id"]
+        for fixture in fixtures
+        if not all((FIXTURES / f"{fixture['id']}.{suffix}").is_file()
+                   for suffix in ("pcm", "txt", "meta"))
+    ]
+    if missing:
+        skip(
+            "ElevenLabs PCM corpus has not been generated: "
+            + ", ".join(str(item) for item in missing)
+        )
+
+    for fixture in fixtures:
+        fixture_id = str(fixture["id"])
+        pcm_path = FIXTURES / f"{fixture_id}.pcm"
+        text_path = FIXTURES / f"{fixture_id}.txt"
+        meta = read_meta(FIXTURES / f"{fixture_id}.meta")
+        fixture["pcm"] = pcm_path.read_bytes()
+        fixture["meta"] = meta
+        if meta.get("provider") != "ElevenLabs":
+            fail(f"{fixture_id}: fixture provenance is not ElevenLabs")
+        if meta.get("sample_rate") != "16000" or meta.get("channels") != "1":
+            fail(f"{fixture_id}: fixture is not 16kHz mono PCM")
+        if meta.get("sample_format") != "s16le":
+            fail(f"{fixture_id}: fixture is not signed 16-bit little-endian PCM")
+        if meta.get("expected_keywords") != ",".join(fixture["keywords"]):
+            fail(f"{fixture_id}: keyword metadata drifted from utterances.tsv")
+        if meta.get("min_partials") != str(fixture["min_partials"]):
+            fail(f"{fixture_id}: partial-count metadata drifted from utterances.tsv")
+        digest = hashlib.sha256(fixture["pcm"]).hexdigest()
+        if digest != meta.get("sha256"):
+            fail(f"{fixture_id}: PCM SHA-256 does not match metadata")
+        if text_path.read_text(encoding="utf-8").strip() != fixture["text"]:
+            fail(f"{fixture_id}: transcript text drifted from utterances.tsv")
+        if len(fixture["pcm"]) % 2:
+            fail(f"{fixture_id}: PCM byte count is not sample aligned")
+
+    binary, model = find_runtime()
+    records, finals, _ = run_pass(fixtures, binary, model, 0.0, "quiet")
+    assert_one_final_per_utterance(fixtures, records, finals, "quiet")
+    _, finals, stream_seconds = run_pass(fixtures, binary, model, NOISY_ROOM_RMS, "noisy")
+    assert_commits_while_streaming(fixtures, finals, stream_seconds, "noisy")
+
     print("PASS: committed fixtures are authentic ElevenLabs 16kHz mono PCM")
     print("PASS: real-time Parakeet partials progress before one final per utterance")
     print("PASS: no final, and therefore no TTS trigger, occurs before speech ends")
+    print("PASS: turns still close over a noise floor above the quiet-room threshold")
     print("PASS")
     return 0
 
