@@ -158,11 +158,40 @@ sdlfmt(ulong bits)
 	return SDL_AUDIO_S16LE;
 }
 
+/* Retry budget for an audio subsystem that comes up with an empty device
+ * list — see ensure_sdl_audio. */
+#define AUDIO_INIT_TRIES	20
+#define AUDIO_INIT_DELAY_MS	50
+
+static int
+audio_devices_present(void)
+{
+	int nrec = 0, nplay = 0;
+	SDL_AudioDeviceID *rec, *play;
+
+	rec = SDL_GetAudioRecordingDevices(&nrec);
+	play = SDL_GetAudioPlaybackDevices(&nplay);
+	if(rec != nil)
+		SDL_free(rec);
+	if(play != nil)
+		SDL_free(play);
+	return nrec > 0 || nplay > 0;
+}
+
 static int
 ensure_sdl_audio(void)
 {
-	if(sdl_audio_inited)
-		return 1;
+	int i;
+
+	/* An earlier caller may have left the subsystem up with an empty
+	 * device list. That state never recovers on its own, so re-init
+	 * rather than trusting the flag. */
+	if(sdl_audio_inited) {
+		if(audio_devices_present())
+			return 1;
+		SDL_QuitSubSystem(SDL_INIT_AUDIO);
+		sdl_audio_inited = 0;
+	}
 	/* Configure AVAudioSession (or platform equivalent) before SDL
 	 * touches CoreAudio — no-op on macOS/Linux desktop, real impl on
 	 * iOS. INFR-186. */
@@ -181,11 +210,26 @@ ensure_sdl_audio(void)
 	 * SDL3 can silently fall back to a dummy driver in a non-GUI process.
 	 * Android uses AAudio; Apple targets use CoreAudio.
 	 */
-	select_audio_driver();
-	if(!SDL_Init(SDL_INIT_AUDIO)) {
-		fprint(2, "audio-sdl3: SDL_Init(SDL_INIT_AUDIO) failed: %s\n",
-			SDL_GetError());
-		return 0;
+	/*
+	 * SDL_Init can report success while the driver still enumerates no
+	 * devices at all. An audio subsystem in that state is useless: every
+	 * open fails with "No default audio device available", and the
+	 * failure is indistinguishable from a machine with no sound card.
+	 * Bring the subsystem back up until the devices appear, bounded so a
+	 * genuinely silent host (CI, headless runner) still settles quickly
+	 * and fails the open the way it always has.
+	 */
+	for(i = 0;; i++) {
+		select_audio_driver();
+		if(!SDL_Init(SDL_INIT_AUDIO)) {
+			fprint(2, "audio-sdl3: SDL_Init(SDL_INIT_AUDIO) failed: %s\n",
+				SDL_GetError());
+			return 0;
+		}
+		if(audio_devices_present() || i >= AUDIO_INIT_TRIES)
+			break;
+		SDL_QuitSubSystem(SDL_INIT_AUDIO);
+		SDL_Delay(AUDIO_INIT_DELAY_MS);
 	}
 	sdl_audio_inited = 1;
 	return 1;
@@ -232,9 +276,9 @@ open_stream(SDL_AudioDeviceID dev, Audio_d *fmt)
 		}
 	}
 	if(s == NULL) {
-		fprint(2, "audio-sdl3: SDL_OpenAudioDeviceStream(%s) failed: %s\n",
+		fprint(2, "audio-sdl3: SDL_OpenAudioDeviceStream(%s) failed: %s (devices present: %s)\n",
 			dev == SDL_AUDIO_DEVICE_DEFAULT_RECORDING ? "rec" : "play",
-			SDL_GetError());
+			SDL_GetError(), audio_devices_present() ? "yes" : "no");
 		return NULL;
 	}
 	/* Streams are bound paused — resume so data starts flowing. */
