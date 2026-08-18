@@ -24,9 +24,10 @@ A practical guide to using InferNode, the AI-agent-friendly operating system.
 10. [The Login Screen](#the-login-screen)
 11. [The Text Editor](#the-text-editor)
 12. [Wallet and Payments](#wallet-and-payments)
-13. [Security and Agent Namespace Isolation](#security-and-agent-namespace-isolation)
-14. [Common Tasks](#common-tasks)
-15. [Troubleshooting](#troubleshooting)
+13. [Voice Mode](#voice-mode)
+14. [Security and Agent Namespace Isolation](#security-and-agent-namespace-isolation)
+15. [Common Tasks](#common-tasks)
+16. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -203,6 +204,7 @@ InferNode provides functionality through "virtual devices"—kernel-provided fil
 | `#p` | prog | Process information |
 | `#c` | cons | Console I/O |
 | `#m` | mnt | Mount driver |
+| `#A` | audio | Host audio I/O and `/dev/audiodev` |
 
 ### #C - The Command Device (Host Execution)
 
@@ -750,6 +752,196 @@ See [docs/WALLET-AND-PAYMENTS.md](WALLET-AND-PAYMENTS.md) for the full architect
 
 ---
 
+## Voice Mode
+
+Lucia can listen and speak. Voice mode is hands-free: it waits for a
+wake phrase, captures an utterance, sends it as a turn, and speaks the
+reply.
+
+### Turning voice mode on and off
+
+Click the **Voice** row under Resources, press **Esc** then **V**, or
+type `/voice mode on` in the conversation. Press **Esc**, click the row
+again, or type `/voice mode off` to leave. Saying "keyboard" also
+returns to typing.
+
+The installed wake phrase is **hey jarvis**. "hey lucia" does not wake
+the shipped openWakeWord model.
+
+### Which microphone is in use
+
+Two files answer two different questions.
+
+**Host device.** `/dev/audiodev` is the list, the current choice, and
+the capture verdict for `#A` (bound on `/dev` at emulator start):
+
+```
+; cat /dev/audiodev
+in selected default
+in device 'MacBook Pro Microphone'
+in device 'TeoPods'
+in device 'BlackHole 2ch'
+out selected default
+out device 'TeoPods'
+out device 'BlackHole 2ch'
+out device 'MacBook Pro Speakers'
+capture idle
+```
+
+`in selected default` means InferNode is following the operating
+system's default input. A quoted name means that device was chosen
+explicitly. The `in device` lines are every input this emulator can
+open.
+
+The last line is whether the most recent capture heard anything — not
+only a live one:
+
+| Line | Meaning |
+|------|---------|
+| `capture idle` | No capture has run yet, or it delivered no data |
+| `capture active` | At least one non-zero sample arrived |
+| `capture silent` | The device opened and returned only zeros |
+
+Backends that cannot select a device print a single line,
+`unsupported` (the headless macOS build, and every non-SDL3 platform).
+The name-selection commands below are the macOS SDL3 emulator.
+
+**Speech routing.** Lucia hears whatever the speech provider is
+configured to read. Writes to `/n/speech/ctl` are forwarded; they are
+**not** echoed there. Read the provider:
+
+```
+; cat /n/speech/ctl          # look at the provider line
+; cat /n/speechshim/ctl      # micmode, capturedev, audiodev
+```
+
+Lucia's boot sets `provider /n/speechshim`. On that `ctl`:
+
+| Key | What it means |
+|-----|----------------|
+| `micmode device` | The shim reads PCM from `capturedev` (or from `audiodev` when `capturedev` is empty) and feeds the helpers. This is what the Parakeet installer writes. |
+| `micmode helper` | The helper CLIs open the host default microphone themselves. `/dev/audiodev` does not choose that microphone. |
+| `capturedev` | Namespace path of the capture file. Empty means "use `audiodev`". |
+
+If `micmode` is `helper`, switch it before picking a device:
+
+```
+echo 'micmode device' > /n/speech/ctl
+```
+
+### Choosing a local input device
+
+Names may be written with or without the quotes `/dev/audiodev` prints:
+
+```
+echo 'in MacBook Pro Microphone' > /dev/audiodev
+echo 'in default' > /dev/audiodev
+```
+
+An unknown name is refused (`audiodev: no device of that name`).
+Selection takes effect immediately: an already-open capture stream is
+reopened on the new device. `out <name>` selects the playback device
+the same way.
+
+To pin a device before the emulator starts:
+
+```
+export INFERNODE_AUDIO_IN='MacBook Pro Microphone'
+export INFERNODE_AUDIO_OUT='MacBook Pro Speakers'
+```
+
+An unknown `INFERNODE_AUDIO_IN` is not refused. `/dev/audiodev` still
+shows the requested name; the first capture warns on stderr and opens
+the system default instead.
+
+Changing the operating system's default input after InferNode has
+already opened capture does not move that stream. Write to
+`/dev/audiodev`, or set the environment variable and restart.
+
+### Using a microphone on another InferNode
+
+`capturedev` is a path, so a remote `/dev/audio` imported over 9P is
+configured the same way as the local one:
+
+```
+mount -A 'tcp!<phone-ip>!17010' /n/phone
+echo 'capturedev /n/phone/audio' > /n/speech/ctl
+echo 'micmode device' > /n/speech/ctl
+```
+
+Confirm on the provider (`capturedev /n/phone/audio` and
+`micmode device`). `capturedev default` clears the override and
+captures from `audiodev` again.
+
+The phone frontend that exports that `/dev` is a separate setup — see
+[SPEECH-REMOTE-AUDIO.md](SPEECH-REMOTE-AUDIO.md) (topology 3, remote
+capture device) and `tools/android-speech-frontend.sh`. On the
+processing host, `sh /lib/voice/speech-capture tcp!<phone-ip>!17010`
+performs the mount and ctl writes above. The development export is
+unauthenticated; keep it on a trusted local or Tailscale network.
+
+### It opens but hears nothing
+
+The Voice tile stays **waiting**. The wake phrase never fires. No
+error appears on the tile, and `/dev/audio` still reads at full rate.
+
+That is what a silenced or virtual input looks like. Capture
+succeeds; every sample is zero. Virtual inputs are common — Voicemod,
+Loopback, Hue Sync, ARK, Continuity Camera, BlackHole — and any of
+them can become the operating-system default. If the default belongs
+to an application that is not running, InferNode reports no fault.
+
+Confirm after a few seconds of voice mode, or after speaking:
+
+```
+; cat /dev/audiodev
+```
+
+`capture silent` means this layer heard nothing. Pick a real
+microphone by name, or run `tools/diagnose-virtual-audio.sh` from the
+host checkout (it needs a built emulator). That script separates
+emulator playback, emulator capture, the driver, and microphone
+authorization. Mute is a device property: it survives reboot and is
+not shown by `/dev/audiodev`.
+
+The other cause of the same silence is platform microphone
+authorization. On macOS, grant Microphone access to the application
+that launched InferNode (Terminal, the InferNode app bundle, or the
+IDE). A built-in microphone that still reports `capture silent` after
+it is selected is this case, not a wrong name.
+
+A capture that stays all-zero for two seconds also prints once to the
+emulator's stderr:
+
+```
+audio-sdl3: the capture device has produced nothing but silence for 2s — check the input device in #A/audiodev and microphone authorization
+```
+
+That line is not shown on the Voice tile.
+
+`Voice: no speech heard` on the tile is different: the wake phrase
+already fired, then the listen turn heard nothing. That is a timeout
+after wake, not a device that never delivered signal.
+
+### The Voice resource tile
+
+The row is labelled **Voice**. A status word sits on the right. A
+small block on the left changes colour.
+
+| Tile | Meaning |
+|------|---------|
+| **Voice** / `idle`, dim | Voice mode is off |
+| **Voice** / `waiting`, green | Voice mode is on and waiting for **hey jarvis**. This is healthy. It is also how a silent device looks. |
+| **Voice** / `listening`, highlighted | The wake phrase was heard; Lucia is capturing an utterance |
+| **Voice:** *reason* / `error`, red | A speech helper failed. The reason is on the label, truncated. |
+| **Voice** / `starting`, green | The click was registered. If this sticks, the voice daemon did not start. |
+
+The conversation pane separately shows `Listening...` and
+`Sending in Ns` while a turn is in flight. Those are not the resource
+tile.
+
+---
+
 ## Security and Agent Namespace Isolation
 
 ### The Namespace is the Security Boundary
@@ -972,6 +1164,13 @@ Mount it if needed:
 mount -A 'tcp!127.0.0.1!5640' /mnt/llm
 ```
 
+### Voice Mode Hears Nothing
+
+The Voice tile stays **waiting** and the wake phrase never fires. See
+[Voice Mode](#voice-mode): read `/dev/audiodev` for `capture silent`,
+select a real input device, and run `tools/diagnose-virtual-audio.sh`
+if the device is virtual or muted.
+
 ---
 
 ## Quick Reference
@@ -1005,6 +1204,8 @@ mount -A 'tcp!127.0.0.1!5640' /mnt/llm
 | `/net` | Network stack |
 | `/cmd` | Host command interface |
 | `/mnt/xenith` | Xenith 9P interface |
+| `/dev/audiodev` | Audio device list, selection, and capture verdict |
+| `/n/speechshim/ctl` | Speech routing (`micmode`, `capturedev`, `audiodev`) |
 
 ### Essential Devices
 
@@ -1015,6 +1216,7 @@ mount -A 'tcp!127.0.0.1!5640' /mnt/llm
 | `#I` | IP networking |
 | `#p` | Process info |
 | `#c` | Console |
+| `#A` | Host audio (`/dev/audio`, `/dev/audiodev`) |
 
 ---
 
@@ -1028,6 +1230,7 @@ mount -A 'tcp!127.0.0.1!5640' /mnt/llm
 - [The Styx Architecture for Distributed Systems](http://doc.cat-v.org/inferno/4th_edition/styx)
 - [Structural Regular Expressions](http://doc.cat-v.org/bell_labs/structural_regexps/)
 - [Awesome Inferno®](https://github.com/henesy/awesome-inferno) - Curated resource list
+- [Remote Speech: 9P Audio Composition](SPEECH-REMOTE-AUDIO.md) - Remote microphones and speech topologies
 
 ---
 
