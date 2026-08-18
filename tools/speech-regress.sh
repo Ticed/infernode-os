@@ -206,6 +206,11 @@ if [ "$(uname -s)" = Darwin ]; then
   # docs/SPEECH-VIRTUAL-AUDIO.md.
   run_host_test virtual_audio_loopback_test.sh
   run_host_test virtual_mic_speech_test.sh
+  # The whole turn over one device: wake word, utterance, spoken reply,
+  # and the half-duplex suppression that keeps the stack from answering
+  # its own voice — which only means anything when playback and capture
+  # share a device, as they do on a laptop.
+  run_host_test virtual_voice_turn_test.sh
 fi
 
 echo

@@ -116,6 +116,17 @@ va_require_device() {
 	echo "$device"
 }
 
+# ffmpeg's avfoundation input addresses devices by index, and the
+# indices shift as headphones and phones come and go, so resolve the name
+# to an index at the moment of use rather than hard-coding one.
+va_avfoundation_index() {
+	local want=$1
+	ffmpeg -f avfoundation -list_devices true -i "" 2>&1 |
+		awk -v want="$want" -F'] ' '
+			/AVFoundation audio devices/ { audio = 1; next }
+			audio && $3 == want { print substr($2, 2); exit }'
+}
+
 # Raw signed 16-bit little-endian mono PCM of a sine wave, for proving
 # the loop carries a signal before any speech is put through it.
 va_make_tone() {

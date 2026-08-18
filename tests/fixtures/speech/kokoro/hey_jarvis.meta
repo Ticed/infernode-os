@@ -1,0 +1,11 @@
+provider=Kokoro
+voice=af_bella
+sample_rate=16000
+channels=1
+sample_format=s16le
+duration_ms=896
+text=Hey Jarvis.
+wake_model=hey_jarvis_v0.1
+sha256=d52cd328716e20f7879a88e14ed49f721cbc198834aec98368c657adcb3b2d76
+generated_utc=2026-08-18T01:10:30+00:00
+generator=printf "Hey Jarvis." | kokoro-cli --voice af_bella --rate 16000

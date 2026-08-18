@@ -109,6 +109,7 @@ when no loopback driver is installed.
 | --- | --- |
 | `tests/host/virtual_audio_loopback_test.sh` | A tone played by InferNode comes back through the device, concentrated at the frequency that was played. This is the rig checking its own carrier, and the only test in the tree that asserts playback produced a signal rather than that the write returned. |
 | `tests/host/virtual_mic_speech_test.sh` | A committed speech fixture played into the device is transcribed by the live stack: partials stream, a turn commits, and the transcript carries the expected keywords. |
+| `tests/host/virtual_voice_turn_test.sh` | A whole turn over one device: the wake word fires on audio that crossed it, the utterance commits, the spoken reply is recorded back off the device, and no second turn appears — so half-duplex suppression held while the reply was on the capture side. |
 
 The speech test is the one that could not exist before.
 `elevenlabs_speech_e2e_test.py` feeds the same fixtures to the listen
@@ -131,6 +132,8 @@ the id is a row in `tests/fixtures/speech/elevenlabs/utterances.tsv`.
   application, including from a virtual input, so an unapproved terminal
   records silence from BlackHole exactly as it would from a real
   microphone. The tests report that as a skip, not a pass.
-- **Wake-word coverage is not automated here.** The committed corpus has
-  no "hey jarvis" utterance. `tools/virtual-mic.sh` will play one if you
-  record it, and `tools/speech-test.sh -w` reports the hits.
+- **The wake fixture needs the Kokoro helper to regenerate.**
+  `tests/fixtures/speech/kokoro/hey_jarvis.pcm` is committed, and its
+  `.meta` carries the one-line command that produced it. A different
+  wake word means synthesizing a new one, and openWakeWord ships a
+  pretrained model only for "hey jarvis".
