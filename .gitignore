@@ -313,3 +313,7 @@ tools/2fa-poc/
 # the e2e emu script is generated at test time)
 tools/claude-gate/.venv/
 tests/inferno/claude-gate-e2e.sh
+
+# Python bytecode from the host-side test helpers
+__pycache__/
+*.pyc

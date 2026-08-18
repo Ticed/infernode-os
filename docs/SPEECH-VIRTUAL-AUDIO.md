@@ -110,6 +110,7 @@ when no loopback driver is installed.
 | `tests/host/virtual_audio_loopback_test.sh` | A tone played by InferNode comes back through the device, concentrated at the frequency that was played. This is the rig checking its own carrier, and the only test in the tree that asserts playback produced a signal rather than that the write returned. |
 | `tests/host/virtual_mic_speech_test.sh` | A committed speech fixture played into the device is transcribed by the live stack: partials stream, a turn commits, and the transcript carries the expected keywords. |
 | `tests/host/virtual_voice_turn_test.sh` | A whole turn over one device: the wake word fires on audio that crossed it, the utterance commits, the spoken reply is recorded back off the device, and no second turn appears — so half-duplex suppression held while the reply was on the capture side. |
+| `tests/host/gui_voice_turn_test.sh` | The same turn through the desktop, with the loopback device set as the machine's default input and output before it starts, so it is picked up like any headset. Every step is asserted by reading the window with OCR — the Voice tile lighting up, partials in the unsent turn, the "Sending in Ns" countdown counting down, the answer drawn on screen — and the spoken answer is recorded off the device and transcribed to check it against the text. |
 
 The speech test is the one that could not exist before.
 `elevenlabs_speech_e2e_test.py` feeds the same fixtures to the listen
@@ -120,6 +121,31 @@ have come from the silence gate, not from a flush at the end of input.
 
 Point it at a different fixture with `VIRTUAL_MIC_FIXTURE=<id>`, where
 the id is a row in `tests/fixtures/speech/elevenlabs/utterances.tsv`.
+
+## Driving the desktop
+
+`tests/host/gui_voice_turn_test.sh` runs the whole thing through the GUI:
+it points the machine's default input and output at the loopback device,
+boots the desktop with `lib/lucifer/boot-voicetest.sh`, presses Esc-V,
+speaks, and reads the result off the screen.
+
+Two small Swift helpers do the reading, built on demand into
+`.omx/tmp/bin/`:
+
+| Tool | What it does |
+| --- | --- |
+| `tools/mac/window-info.swift` | Lists on-screen windows with their owning pid, so a test captures the window of the emulator it started rather than one the window server has not finished retiring. |
+| `tools/mac/ocr.swift` | Runs Vision text recognition over a screenshot, with bounding boxes. |
+| `tools/mac/ui-probe.py` | Reads one frame of the InferNode window: the Voice tile's status and the text of the conversation pane. Useful on its own: `python3 tools/mac/ui-probe.py $(.omx/tmp/bin/window-info o.emu \| head -1 \| cut -d' ' -f1)`. |
+
+Milestone screenshots land in `.omx/tmp/gui-voice/`, which is the first
+place to look when the test fails: it captured what the screen actually
+showed at the step that did not happen.
+
+The test needs a logged-in desktop session whose terminal holds **Screen
+Recording** (to read the window) and **Accessibility** (to press Esc-V)
+permission. It skips without them, and skips on any machine with no LLM
+endpoint to answer the turn.
 
 ## Limits
 

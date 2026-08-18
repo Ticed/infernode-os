@@ -211,6 +211,12 @@ if [ "$(uname -s)" = Darwin ]; then
   # its own voice — which only means anything when playback and capture
   # share a device, as they do on a laptop.
   run_host_test virtual_voice_turn_test.sh
+  # The same turn through the desktop, asserted on the pixels: the wake
+  # word lighting the Voice tile, partials in the unsent turn, the send
+  # countdown counting, the answer drawn and spoken. Needs a logged-in
+  # session with Screen Recording and Accessibility permission, so it
+  # skips on a build machine.
+  run_host_test gui_voice_turn_test.sh
 fi
 
 echo
