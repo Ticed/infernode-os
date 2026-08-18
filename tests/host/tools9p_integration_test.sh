@@ -437,21 +437,32 @@ else
 fi
 
 if emu_c "provision_invalid_paths" 14 \
-    "tools9p -p /tmp:rw read task & sleep 3; echo '14 paths=/:rw,/tmp/../lib:rw,/tmp//evil:rw,/tmp/./evil:rw,relative/path:rw,/tmp/a paths=/tmp/forged:rw' > /tool/provision; sleep 5; cat /mnt/toolctl.14/paths"; then
-    if echo "$OUTPUT" | grep -qE '^/|relative/path|/tmp/forged'; then
+    "tools9p -p /tmp:rw read task & sleep 3; echo '14 paths=/:rw,/tmp/../lib:rw,/tmp//evil:rw,/tmp/./evil:rw,relative/path:rw,/tmp/a=forged:rw,/tmp/a paths=/tmp/forged:rw' > /tool/provision; sleep 5; cat /mnt/toolctl.14/paths"; then
+    if echo "$OUTPUT" | grep -qE '^/|relative/path|/tmp/forged|/tmp/a=forged'; then
         fail "child provisioning accepted traversal or non-absolute path (output: $OUTPUT)"
     else
-        pass "child provisioning rejects traversal, delimiters, empty-component, root, and relative paths"
+        pass "child provisioning rejects traversal, delimiters, empty-component, root, relative paths, and key delimiters"
     fi
 else
     fail "invalid child path provisioning probe failed"
 fi
 
+if emu_c "provision_bad_grammar_rejected" 14 \
+    "tools9p -b diff -p /tmp:rw read diff task & sleep 3; echo '22x tools=diff paths=/tmp:rw' > /tool/provision; echo '23 unexpected=1 paths=/tmp:rw' > /tool/provision; echo '24 tools=diff=owned paths=/tmp:rw' > /tool/provision; sleep 5; echo BADID; cat /mnt/toolctl.22/paths >[2] /dev/null; echo UNKNOWN; cat /mnt/toolctl.23/paths >[2] /dev/null; echo BADTOOL; cat /mnt/toolctl.24/paths >[2] /dev/null; echo DONE"; then
+    if echo "$OUTPUT" | grep -q "^/tmp rw"; then
+        fail "child provisioning accepted malformed id, unknown attr, or invalid tool token (output: $OUTPUT)"
+    else
+        pass "child provisioning rejects malformed id, unknown attrs, and invalid tool tokens"
+    fi
+else
+    fail "bad child provisioning grammar probe failed"
+fi
+
 if emu_c "bindpath_delimiter_rejected" 12 \
-    "tools9p read & sleep 2; echo 'bindpath /tmp' > /mnt/toolctl/ctl; echo 'bindpath /tmp/evil,/tmp/forged' > /mnt/toolctl/ctl; echo 'bindpath /tmp/a paths=/tmp/forged' > /mnt/toolctl/ctl; echo AFTER; cat /tool/paths"; then
+    "tools9p read & sleep 2; echo 'bindpath /tmp' > /mnt/toolctl/ctl; echo 'bindpath /tmp/evil,/tmp/forged' > /mnt/toolctl/ctl; echo 'bindpath /tmp/a paths=/tmp/forged' > /mnt/toolctl/ctl; echo 'bindpath /tmp/a=forged' > /mnt/toolctl/ctl; echo AFTER; cat /tool/paths"; then
     if ! echo "$OUTPUT" | grep -q "^/tmp rw"; then
         fail "bindpath delimiter probe did not establish a valid control baseline (output: $OUTPUT)"
-    elif echo "$OUTPUT" | grep -q "/tmp/evil" || echo "$OUTPUT" | grep -q "/tmp/forged"; then
+    elif echo "$OUTPUT" | grep -q "/tmp/evil" || echo "$OUTPUT" | grep -q "/tmp/forged" || echo "$OUTPUT" | grep -q "/tmp/a=forged"; then
         fail "bindpath accepted a delimiter-bearing path grant (output: $OUTPUT)"
     else
         pass "bindpath rejects path control delimiters"
@@ -461,10 +472,10 @@ else
 fi
 
 if emu_c "bindpath_privileged_rejected" 12 \
-    "mkdir -p /mnt/ui/activity/0/presentation /mnt/msg/ctl /n/wallet/alice/ctl /n/wallet/new /tmp/veltro/ftree /tmp/veltro/.ns /tmp/veltro/cow /tmp/veltro/tasks /tmp/veltro/browser /tmp/veltro/editor /tmp/veltro/shell /tmp/veltro/fractal /tmp/veltro/man; touch /mnt/msg/ctl/session; touch /n/wallet/alice/ctl/session; touch /n/wallet/new/session; touch /tmp/veltro/ftree/ctl; tools9p read & sleep 2; echo 'bindpath /tmp' > /mnt/toolctl/ctl; echo 'bindpath /mnt/ui:rw' > /mnt/toolctl/ctl; echo 'bindpath /mnt/ui/activity/0/presentation:rw' > /mnt/toolctl/ctl; echo 'bindpath /mnt/msg/ctl' > /mnt/toolctl/ctl; echo 'bindpath /mnt/msg/ctl/session' > /mnt/toolctl/ctl; echo 'bindpath /n/wallet/alice/ctl' > /mnt/toolctl/ctl; echo 'bindpath /n/wallet/alice/ctl/session' > /mnt/toolctl/ctl; echo 'bindpath /n/wallet/new/session' > /mnt/toolctl/ctl; echo 'bindpath /tmp/veltro/ftree:rw' > /mnt/toolctl/ctl; echo 'bindpath /tmp/veltro/.ns:rw' > /mnt/toolctl/ctl; echo 'bindpath /tmp/veltro/cow:rw' > /mnt/toolctl/ctl; echo 'bindpath /tmp/veltro/tasks:rw' > /mnt/toolctl/ctl; echo 'bindpath /tmp/veltro/browser:rw' > /mnt/toolctl/ctl; echo 'bindpath /tmp/veltro/editor:rw' > /mnt/toolctl/ctl; echo 'bindpath /tmp/veltro/shell:rw' > /mnt/toolctl/ctl; echo 'bindpath /tmp/veltro/fractal:rw' > /mnt/toolctl/ctl; echo 'bindpath /tmp/veltro/man:rw' > /mnt/toolctl/ctl; echo AFTER; cat /tool/paths"; then
+    "mkdir -p /mnt/ui/activity/0/presentation /mnt/factotum /mnt/cal/accounts/alice /llm /mnt/audit /mnt/msg/ctl /n/wallet/alice/ctl /n/wallet/new /tmp/veltro/ftree /tmp/veltro/.ns /tmp/veltro/cow /tmp/veltro/tasks /tmp/veltro/browser /tmp/veltro/editor /tmp/veltro/shell /tmp/veltro/fractal /tmp/veltro/man; touch /mnt/factotum/ctl; touch /mnt/cal/ctl; touch /mnt/cal/accounts/alice/ctl; touch /llm/ctl; touch /mnt/audit/ctl; touch /mnt/audit/chain; touch /mnt/msg/ctl/session; touch /n/wallet/alice/ctl/session; touch /n/wallet/new/session; touch /tmp/veltro/ftree/ctl; tools9p read & sleep 2; echo 'bindpath /tmp' > /mnt/toolctl/ctl; echo 'bindpath /mnt/factotum:rw' > /mnt/toolctl/ctl; echo 'bindpath /mnt/factotum/ctl:rw' > /mnt/toolctl/ctl; echo 'bindpath /mnt/cal:rw' > /mnt/toolctl/ctl; echo 'bindpath /mnt/cal/ctl:rw' > /mnt/toolctl/ctl; echo 'bindpath /mnt/cal/accounts:rw' > /mnt/toolctl/ctl; echo 'bindpath /mnt/cal/accounts/alice:rw' > /mnt/toolctl/ctl; echo 'bindpath /mnt/cal/accounts/alice/ctl:rw' > /mnt/toolctl/ctl; echo 'bindpath /llm:rw' > /mnt/toolctl/ctl; echo 'bindpath /llm/ctl:rw' > /mnt/toolctl/ctl; echo 'bindpath /mnt/audit:rw' > /mnt/toolctl/ctl; echo 'bindpath /mnt/audit/ctl:rw' > /mnt/toolctl/ctl; echo 'bindpath /mnt/audit/chain:rw' > /mnt/toolctl/ctl; echo 'bindpath /mnt/ui:rw' > /mnt/toolctl/ctl; echo 'bindpath /mnt/ui/activity/0/presentation:rw' > /mnt/toolctl/ctl; echo 'bindpath /mnt/msg/ctl' > /mnt/toolctl/ctl; echo 'bindpath /mnt/msg/ctl/session' > /mnt/toolctl/ctl; echo 'bindpath /n/wallet/alice/ctl' > /mnt/toolctl/ctl; echo 'bindpath /n/wallet/alice/ctl/session' > /mnt/toolctl/ctl; echo 'bindpath /n/wallet/new/session' > /mnt/toolctl/ctl; echo 'bindpath /tmp/veltro/ftree:rw' > /mnt/toolctl/ctl; echo 'bindpath /tmp/veltro/.ns:rw' > /mnt/toolctl/ctl; echo 'bindpath /tmp/veltro/cow:rw' > /mnt/toolctl/ctl; echo 'bindpath /tmp/veltro/tasks:rw' > /mnt/toolctl/ctl; echo 'bindpath /tmp/veltro/browser:rw' > /mnt/toolctl/ctl; echo 'bindpath /tmp/veltro/editor:rw' > /mnt/toolctl/ctl; echo 'bindpath /tmp/veltro/shell:rw' > /mnt/toolctl/ctl; echo 'bindpath /tmp/veltro/fractal:rw' > /mnt/toolctl/ctl; echo 'bindpath /tmp/veltro/man:rw' > /mnt/toolctl/ctl; echo AFTER; cat /tool/paths"; then
     if ! echo "$OUTPUT" | grep -q "^/tmp rw"; then
         fail "privileged bindpath probe did not establish a valid baseline (output: $OUTPUT)"
-    elif echo "$OUTPUT" | grep -q "^/mnt/ui" || echo "$OUTPUT" | grep -q "^/mnt/msg/ctl" || echo "$OUTPUT" | grep -q "^/n/wallet/alice/ctl" || echo "$OUTPUT" | grep -q "^/n/wallet/new/session" || echo "$OUTPUT" | grep -q "^/tmp/veltro/ftree" || echo "$OUTPUT" | grep -q "^/tmp/veltro/.ns" || echo "$OUTPUT" | grep -q "^/tmp/veltro/cow" || echo "$OUTPUT" | grep -q "^/tmp/veltro/tasks" || echo "$OUTPUT" | grep -q "^/tmp/veltro/browser" || echo "$OUTPUT" | grep -q "^/tmp/veltro/editor" || echo "$OUTPUT" | grep -q "^/tmp/veltro/shell" || echo "$OUTPUT" | grep -q "^/tmp/veltro/fractal" || echo "$OUTPUT" | grep -q "^/tmp/veltro/man"; then
+    elif echo "$OUTPUT" | grep -q "^/mnt/factotum" || echo "$OUTPUT" | grep -q "^/mnt/cal" || echo "$OUTPUT" | grep -q "^/llm" || echo "$OUTPUT" | grep -q "^/mnt/audit" || echo "$OUTPUT" | grep -q "^/mnt/ui" || echo "$OUTPUT" | grep -q "^/mnt/msg/ctl" || echo "$OUTPUT" | grep -q "^/n/wallet/alice/ctl" || echo "$OUTPUT" | grep -q "^/n/wallet/new/session" || echo "$OUTPUT" | grep -q "^/tmp/veltro/ftree" || echo "$OUTPUT" | grep -q "^/tmp/veltro/.ns" || echo "$OUTPUT" | grep -q "^/tmp/veltro/cow" || echo "$OUTPUT" | grep -q "^/tmp/veltro/tasks" || echo "$OUTPUT" | grep -q "^/tmp/veltro/browser" || echo "$OUTPUT" | grep -q "^/tmp/veltro/editor" || echo "$OUTPUT" | grep -q "^/tmp/veltro/shell" || echo "$OUTPUT" | grep -q "^/tmp/veltro/fractal" || echo "$OUTPUT" | grep -q "^/tmp/veltro/man"; then
         fail "bindpath accepted privileged control path (output: $OUTPUT)"
     else
         pass "bindpath rejects privileged control paths"
@@ -474,8 +485,8 @@ else
 fi
 
 if emu_c "startup_privileged_path_rejected" 12 \
-    "mkdir -p /mnt/ui/activity/0/presentation /mnt/msg /tmp/veltro/ftree /tmp/veltro/.ns /tmp/veltro/cow /tmp/veltro/tasks /tmp/veltro/browser /tmp/veltro/editor /tmp/veltro/shell /tmp/veltro/fractal /tmp/veltro/man; touch /mnt/msg/ctl; touch /tmp/veltro/ftree/ctl; tools9p -p /mnt/ui:rw -p /mnt/ui/activity/0/presentation:rw -p /mnt/msg/ctl:rw -p /tmp/veltro/ftree:rw -p /tmp/veltro/.ns:rw -p /tmp/veltro/cow:rw -p /tmp/veltro/tasks:rw -p /tmp/veltro/browser:rw -p /tmp/veltro/editor:rw -p /tmp/veltro/shell:rw -p /tmp/veltro/fractal:rw -p /tmp/veltro/man:rw read; cat /tool/paths >[2] /dev/null"; then
-    if echo "$OUTPUT" | grep -q "privileged -p path not grantable" && ! echo "$OUTPUT" | grep -q "^/mnt/ui" && ! echo "$OUTPUT" | grep -q "^/mnt/msg/ctl" && ! echo "$OUTPUT" | grep -q "^/tmp/veltro/ftree" && ! echo "$OUTPUT" | grep -q "^/tmp/veltro/.ns" && ! echo "$OUTPUT" | grep -q "^/tmp/veltro/cow" && ! echo "$OUTPUT" | grep -q "^/tmp/veltro/tasks" && ! echo "$OUTPUT" | grep -q "^/tmp/veltro/browser" && ! echo "$OUTPUT" | grep -q "^/tmp/veltro/editor" && ! echo "$OUTPUT" | grep -q "^/tmp/veltro/shell" && ! echo "$OUTPUT" | grep -q "^/tmp/veltro/fractal" && ! echo "$OUTPUT" | grep -q "^/tmp/veltro/man"; then
+    "mkdir -p /mnt/factotum /mnt/cal/accounts/alice /llm /mnt/audit /mnt/ui/activity/0/presentation /mnt/msg /tmp/veltro/ftree /tmp/veltro/.ns /tmp/veltro/cow /tmp/veltro/tasks /tmp/veltro/browser /tmp/veltro/editor /tmp/veltro/shell /tmp/veltro/fractal /tmp/veltro/man; touch /mnt/factotum/ctl; touch /mnt/cal/ctl; touch /mnt/cal/accounts/alice/ctl; touch /llm/ctl; touch /mnt/audit/ctl; touch /mnt/audit/chain; touch /mnt/msg/ctl; touch /tmp/veltro/ftree/ctl; tools9p -p /mnt/factotum:rw -p /mnt/factotum/ctl:rw -p /mnt/cal:rw -p /mnt/cal/ctl:rw -p /mnt/cal/accounts:rw -p /mnt/cal/accounts/alice:rw -p /mnt/cal/accounts/alice/ctl:rw -p /llm:rw -p /llm/ctl:rw -p /mnt/audit:rw -p /mnt/audit/ctl:rw -p /mnt/audit/chain:rw -p /mnt/ui:rw -p /mnt/ui/activity/0/presentation:rw -p /mnt/msg/ctl:rw -p /tmp/veltro/ftree:rw -p /tmp/veltro/.ns:rw -p /tmp/veltro/cow:rw -p /tmp/veltro/tasks:rw -p /tmp/veltro/browser:rw -p /tmp/veltro/editor:rw -p /tmp/veltro/shell:rw -p /tmp/veltro/fractal:rw -p /tmp/veltro/man:rw read; cat /tool/paths >[2] /dev/null"; then
+    if echo "$OUTPUT" | grep -q "privileged -p path not grantable" && ! echo "$OUTPUT" | grep -q "^/mnt/factotum" && ! echo "$OUTPUT" | grep -q "^/mnt/cal" && ! echo "$OUTPUT" | grep -q "^/llm" && ! echo "$OUTPUT" | grep -q "^/mnt/audit" && ! echo "$OUTPUT" | grep -q "^/mnt/ui" && ! echo "$OUTPUT" | grep -q "^/mnt/msg/ctl" && ! echo "$OUTPUT" | grep -q "^/tmp/veltro/ftree" && ! echo "$OUTPUT" | grep -q "^/tmp/veltro/.ns" && ! echo "$OUTPUT" | grep -q "^/tmp/veltro/cow" && ! echo "$OUTPUT" | grep -q "^/tmp/veltro/tasks" && ! echo "$OUTPUT" | grep -q "^/tmp/veltro/browser" && ! echo "$OUTPUT" | grep -q "^/tmp/veltro/editor" && ! echo "$OUTPUT" | grep -q "^/tmp/veltro/shell" && ! echo "$OUTPUT" | grep -q "^/tmp/veltro/fractal" && ! echo "$OUTPUT" | grep -q "^/tmp/veltro/man"; then
         pass "startup -p rejects privileged control paths"
     else
         fail "tools9p accepted privileged startup -p path (output: $OUTPUT)"
@@ -485,22 +496,22 @@ else
 fi
 
 if emu_c "bindpath_fixed_service_rejected" 12 \
-    "mkdir -p /mnt/matrix /phone; touch /mnt/matrix/ctl /phone/sms; tools9p read & sleep 2; echo 'bindpath /tmp' > /mnt/toolctl/ctl; echo 'bindpath /mnt/matrix:rw' > /mnt/toolctl/ctl; echo 'bindpath /phone:rw' > /mnt/toolctl/ctl; echo 'bindpath /phone/sms:rw' > /mnt/toolctl/ctl; echo AFTER; cat /tool/paths"; then
+    "mkdir -p /mnt/matrix /mnt/gpu/0 /mnt/web /n/web /mnt/wiki /n/wikia /mnt/video/0 /phone; touch /mnt/matrix/ctl /mnt/gpu/clone /mnt/gpu/0/ctl /mnt/web/clone /n/web/clone /mnt/wiki/new /n/wikia/ctl /mnt/video/0/ctl /phone/sms; tools9p read & sleep 2; echo 'bindpath /tmp' > /mnt/toolctl/ctl; echo 'bindpath /mnt/matrix:rw' > /mnt/toolctl/ctl; echo 'bindpath /mnt/gpu:rw' > /mnt/toolctl/ctl; echo 'bindpath /mnt/gpu/0/ctl:rw' > /mnt/toolctl/ctl; echo 'bindpath /mnt/web:rw' > /mnt/toolctl/ctl; echo 'bindpath /mnt/web/clone:rw' > /mnt/toolctl/ctl; echo 'bindpath /n/web:rw' > /mnt/toolctl/ctl; echo 'bindpath /n/web/clone:rw' > /mnt/toolctl/ctl; echo 'bindpath /mnt/wiki:rw' > /mnt/toolctl/ctl; echo 'bindpath /mnt/wiki/new:rw' > /mnt/toolctl/ctl; echo 'bindpath /n/wikia:rw' > /mnt/toolctl/ctl; echo 'bindpath /n/wikia/ctl:rw' > /mnt/toolctl/ctl; echo 'bindpath /mnt/video:rw' > /mnt/toolctl/ctl; echo 'bindpath /mnt/video/0/ctl:rw' > /mnt/toolctl/ctl; echo 'bindpath /phone:rw' > /mnt/toolctl/ctl; echo 'bindpath /phone/sms:rw' > /mnt/toolctl/ctl; echo AFTER; cat /tool/paths"; then
     if ! echo "$OUTPUT" | grep -q "^/tmp rw"; then
         fail "fixed-service bindpath probe did not establish a valid baseline (output: $OUTPUT)"
-    elif echo "$OUTPUT" | grep -q "^/mnt/matrix" || echo "$OUTPUT" | grep -q "^/phone"; then
+    elif echo "$OUTPUT" | grep -q "^/mnt/matrix" || echo "$OUTPUT" | grep -q "^/mnt/gpu" || echo "$OUTPUT" | grep -q "^/mnt/web" || echo "$OUTPUT" | grep -q "^/n/web" || echo "$OUTPUT" | grep -q "^/mnt/wiki" || echo "$OUTPUT" | grep -q "^/n/wikia" || echo "$OUTPUT" | grep -q "^/mnt/video" || echo "$OUTPUT" | grep -q "^/phone"; then
         fail "bindpath accepted a fixed-service control tree (output: $OUTPUT)"
     else
-        pass "bindpath rejects Matrix and phone service trees"
+        pass "bindpath rejects Matrix, Git, GPU, web, wiki, video, and phone service trees"
     fi
 else
     fail "fixed-service bindpath rejection probe failed"
 fi
 
 if emu_c "startup_fixed_service_rejected" 12 \
-    "mkdir -p /mnt/matrix /phone; touch /mnt/matrix/ctl /phone/sms; tools9p -p /mnt/matrix:rw -p /phone:rw -p /phone/sms:rw read; cat /tool/paths >[2] /dev/null"; then
-    if echo "$OUTPUT" | grep -q "privileged -p path not grantable" && ! echo "$OUTPUT" | grep -q "^/mnt/matrix" && ! echo "$OUTPUT" | grep -q "^/phone"; then
-        pass "startup -p rejects Matrix and phone service trees"
+    "mkdir -p /mnt/matrix /mnt/gpu/0 /mnt/web /n/web /mnt/wiki /n/wikia /mnt/video/0 /phone; touch /mnt/matrix/ctl /mnt/gpu/clone /mnt/gpu/0/ctl /mnt/web/clone /n/web/clone /mnt/wiki/new /n/wikia/ctl /mnt/video/0/ctl /phone/sms; tools9p -p /mnt/matrix:rw -p /mnt/gpu:rw -p /mnt/gpu/0/ctl:rw -p /mnt/web:rw -p /mnt/web/clone:rw -p /n/web:rw -p /n/web/clone:rw -p /mnt/wiki:rw -p /mnt/wiki/new:rw -p /n/wikia:rw -p /n/wikia/ctl:rw -p /mnt/video:rw -p /mnt/video/0/ctl:rw -p /phone:rw -p /phone/sms:rw read; cat /tool/paths >[2] /dev/null"; then
+    if echo "$OUTPUT" | grep -q "privileged -p path not grantable" && ! echo "$OUTPUT" | grep -q "^/mnt/matrix" && ! echo "$OUTPUT" | grep -q "^/mnt/gpu" && ! echo "$OUTPUT" | grep -q "^/mnt/web" && ! echo "$OUTPUT" | grep -q "^/n/web" && ! echo "$OUTPUT" | grep -q "^/mnt/wiki" && ! echo "$OUTPUT" | grep -q "^/n/wikia" && ! echo "$OUTPUT" | grep -q "^/mnt/video" && ! echo "$OUTPUT" | grep -q "^/phone"; then
+        pass "startup -p rejects Matrix, Git, GPU, web, wiki, video, and phone service trees"
     else
         fail "startup -p accepted a fixed-service control tree (output: $OUTPUT)"
     fi
@@ -509,15 +520,21 @@ else
 fi
 
 if emu_c "fixed_service_tool_derived" 15 \
-    "mkdir -p /mnt/matrix /phone; touch /mnt/matrix/ctl /phone/sms; tools9p sms matrix read & sleep 2; echo '15551234 test' > /tool/sms/ctl; cat /tool/sms/ctl; echo PHONE; cat /phone/sms; echo status > /tool/matrix/ctl; cat /tool/matrix/ctl; echo /phone/sms > /tool/read/ctl; echo GENERIC; cat /tool/read/ctl"; then
+    "mkdir -p /mnt/matrix /mnt/gpu/models /n/wikia /phone; echo 'runtime: test' > /mnt/matrix/ctl; echo 'fake gpu info' > /mnt/gpu/ctl; echo 'wiki status ok' > /n/wikia/status; touch /n/wikia/ctl /phone/sms; tools9p sms matrix gpu wiki read & sleep 2; echo '15551234 test' > /tool/sms/ctl; cat /tool/sms/ctl; echo PHONE; cat /phone/sms; echo status > /tool/matrix/ctl; cat /tool/matrix/ctl; echo info > /tool/gpu/ctl; cat /tool/gpu/ctl; echo status > /tool/wiki/ctl; cat /tool/wiki/ctl; echo /phone/sms > /tool/read/ctl; echo GENERICPHONE; cat /tool/read/ctl; echo /mnt/gpu/ctl > /tool/read/ctl; echo GENERICGPU; cat /tool/read/ctl; echo /n/wikia/status > /tool/read/ctl; echo GENERICWIKI; cat /tool/read/ctl"; then
     if ! echo "$OUTPUT" | grep -q "sms: queued to 15551234" ||
        ! echo "$OUTPUT" | grep -q "send 15551234 test" ||
-       ! echo "$OUTPUT" | grep -q "runtime:"; then
-        fail "fixed tools lost their derived Matrix/phone capabilities (output: $OUTPUT)"
+       ! echo "$OUTPUT" | grep -q "runtime:" ||
+       ! echo "$OUTPUT" | grep -q "fake gpu info" ||
+       ! echo "$OUTPUT" | grep -q "wiki status ok"; then
+        fail "fixed tools lost their derived Matrix/GPU/wiki/phone capabilities (output: $OUTPUT)"
     elif ! echo "$OUTPUT" | grep -q "error: cannot open /phone/sms"; then
         fail "generic read inherited the phone tool's derived capability (output: $OUTPUT)"
+    elif ! echo "$OUTPUT" | grep -q "error: cannot open /mnt/gpu/ctl"; then
+        fail "generic read inherited the GPU tool's derived capability (output: $OUTPUT)"
+    elif ! echo "$OUTPUT" | grep -q "error: cannot open /n/wikia/status"; then
+        fail "generic read inherited the wiki tool's derived capability (output: $OUTPUT)"
     else
-        pass "fixed tools receive Matrix/phone while generic read remains isolated"
+        pass "fixed tools receive Matrix/GPU/wiki/phone while generic read remains isolated"
     fi
 else
     fail "fixed-service derived capability probe failed"

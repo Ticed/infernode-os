@@ -154,6 +154,30 @@ safename(s: string): string
 	return r;
 }
 
+# safeattrtext — mirrors ftree.b/lucipres.b presentation ctl labels
+safeattrtext(s: string): string
+{
+	out := "";
+	for(i := 0; i < len s; i++) {
+		c := s[i];
+		if(c == '=')
+			out[len out] = ':';
+		else if(c == '\n' || c == '\r' || c == '\t')
+			out[len out] = ' ';
+		else
+			out[len out] = c;
+	}
+	i = 0;
+	while(i < len out && out[i] == ' ')
+		i++;
+	j := len out;
+	while(j > i && out[j-1] == ' ')
+		j--;
+	if(i >= j)
+		return "";
+	return out[i:j];
+}
+
 # trimcell — mirrors lucipres.b
 trimcell(s: string): string
 {
@@ -264,14 +288,25 @@ pathparent(s: string): string
 
 slugify(s: string): string
 {
-	r := s;
-	for(i := 0; i < len r; i++) {
-		c := r[i];
+	r := "";
+	lastdash := 0;
+	for(i := 0; i < len s; i++) {
+		c := s[i];
 		if(c >= 'A' && c <= 'Z')
-			r[i] = c + ('a' - 'A');
-		else if(c == ' ' || c == '\t')
-			r[i] = '-';
+			c += 'a' - 'A';
+		if((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+		   c == '_' || c == '-') {
+			r[len r] = c;
+			lastdash = 0;
+		} else if(!lastdash && len r > 0) {
+			r[len r] = '-';
+			lastdash = 1;
+		}
 	}
+	while(len r > 0 && r[len r - 1] == '-')
+		r = r[0:len r - 1];
+	if(r == "")
+		return "resource";
 	return r;
 }
 
@@ -462,6 +497,23 @@ testSafenameTruncation(t: ref T)
 	t.asserteq(len result, 64, "safename: truncated at 64 chars");
 }
 
+# --- safeattrtext tests ---
+
+testSafeattrtextBlocksCtlInjection(t: ref T)
+{
+	raw := "report dis=/dis/wm/shell.dis type=app";
+	attrs := parseattrs("id=x type=text label=" + raw);
+	t.assertseq(getattr(attrs, "dis"), "/dis/wm/shell.dis",
+		"raw label demonstrates presentation ctl attr injection");
+
+	safe := safeattrtext(raw);
+	attrs = parseattrs("id=x type=text label=" + safe);
+	t.assertseq(getattr(attrs, "label"), "report dis:/dis/wm/shell.dis type:app",
+		"safeattrtext keeps control-looking label text inert");
+	t.assertseq(getattr(attrs, "dis"), nil,
+		"safeattrtext prevents injected dis attr");
+}
+
 # --- tabparsecells tests ---
 
 testTabparsecellsBasic(t: ref T)
@@ -625,6 +677,14 @@ testSlugifyAlreadyLower(t: ref T)
 	t.assertseq(slugify("already-lower"), "already-lower", "slugify no-op");
 }
 
+testSlugifyRejectsMountPathSyntax(t: ref T)
+{
+	t.assertseq(slugify("../bad/name\npath=owned"), "bad-name-path-owned",
+		"slugify removes path and ctl syntax");
+	t.assertseq(slugify("///"), "resource",
+		"slugify empty unsafe names use fallback");
+}
+
 # --- islaunchabledis tests ---
 
 testIslaunchabledisWm(t: ref T)
@@ -752,6 +812,9 @@ init(nil: ref Draw->Context, args: list of string)
 	run("SafenameHyphensUnderscores", testSafenameHyphensUnderscores);
 	run("SafenameTruncation", testSafenameTruncation);
 
+	# safeattrtext
+	run("SafeattrtextBlocksCtlInjection", testSafeattrtextBlocksCtlInjection);
+
 	# tabparsecells
 	run("TabparsecellsBasic", testTabparsecellsBasic);
 	run("TabparsecellsNoPipes", testTabparsecellsNoPipes);
@@ -791,6 +854,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("SlugifyLowercase", testSlugifyLowercase);
 	run("SlugifyTabs", testSlugifyTabs);
 	run("SlugifyAlreadyLower", testSlugifyAlreadyLower);
+	run("SlugifyRejectsMountPathSyntax", testSlugifyRejectsMountPathSyntax);
 
 	# islaunchabledis
 	run("IslaunchabledisWm", testIslaunchabledisWm);

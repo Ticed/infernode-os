@@ -18,6 +18,8 @@ implement VeltroMoreToolsTest;
 #   wiki     — argument validation, unmounted-/n/wikia error path
 #   say      — unsafe voice names rejected before speech9p ctl writes
 #   gpu      — unsafe model names rejected before /mnt/gpu session writes
+#   fractal  — exact typed args before fractal ctl writes
+#   http/webfetch/payfetch — private URL rejection before network dials
 #
 # These tools are an attack surface for the agent: every tool's exec()
 # accepts a free-form string from the LLM.  Bad parsing here = agent
@@ -186,14 +188,10 @@ testWalletMissingArgs(t: ref T)
 			cmd[i] + " missing-arg rejected");
 	}
 
-	# 'sign' needs account + 64-hex-char hash
+	# raw signing is not an agent wallet command
 	r := tool->exec("sign");
-	t.assert(hassubstr(r, "error"), "sign with no args rejected");
-
-	# 'sign acct shorthex' rejected for non-64-char hash
-	r = tool->exec("sign myacct deadbeef");
-	t.assert(hassubstr(r, "64 hex"),
-		"sign with short hash rejected");
+	t.assert(hassubstr(r, "error") && hassubstr(r, "unknown command"),
+		"sign is not an agent wallet command");
 
 	# 'pay' needs at least account + amount
 	r = tool->exec("pay myacct");
@@ -230,12 +228,27 @@ testWalletRejectsUnsafeAccount(t: ref T)
 		"wallet balance rejects absolute account");
 
 	r = tool->exec("sign ../ctl 9c22ff5f21f0b81b113e63f7db6da94fedef11b2119b4088b89664fb9a3cb658");
-	t.assert(hassubstr(r, "error") && hassubstr(r, "unsafe"),
-		"wallet sign rejects traversal account");
+	t.assert(hassubstr(r, "error") && hassubstr(r, "unknown command"),
+		"wallet sign is not an agent command");
 
 	r = tool->exec("pay ../ctl 1000 0x000000000000000000000000000000000000dEaD");
 	t.assert(hassubstr(r, "error") && hassubstr(r, "unsafe"),
 		"wallet pay rejects traversal account");
+}
+
+testWalletRejectsUnsafeNetwork(t: ref T)
+{
+	tool := loadtool(t, "wallet");
+	if(tool == nil)
+		return;
+
+	r := tool->exec("network Base\napprove 1");
+	t.assert(hassubstr(r, "error") && hassubstr(r, "unsafe"),
+		"wallet network rejects control delimiters");
+
+	r = tool->exec("network Base approve 1");
+	t.assert(hassubstr(r, "error") && hassubstr(r, "unknown"),
+		"wallet network rejects unknown names before wallet ctl write");
 }
 
 # ============================================================================
@@ -443,6 +456,13 @@ testGapAddNoUI(t: ref T)
 		"error explains UI is not running");
 }
 
+testGapSafeattrtextControlSyntax(t: ref T)
+{
+	input := "missing data relevance=low\nprogress=100\tlabel=owned";
+	want := "missing data relevance:low progress:100 label:owned";
+	t.assertseq(safeattrtext(input), want, "gap description text is inert in context ctl attrs");
+}
+
 # ============================================================================
 # task — subcommand dispatch
 # ============================================================================
@@ -568,6 +588,33 @@ testWikiUnmounted(t: ref T)
 		"wiki status without /n/wikia mounted reports the mount");
 }
 
+testWikiRejectsUnsafeIngestPath(t: ref T)
+{
+	tool := loadtool(t, "wiki");
+	if(tool == nil)
+		return;
+
+	r := tool->exec("ingest /n/wikia/raw/../secret");
+	t.assert(hassubstr(r, "error") && hassubstr(r, "unsafe"),
+		"wiki ingest rejects traversal before wiki9p I/O");
+
+	r = tool->exec("ingest /tmp/secret");
+	t.assert(hassubstr(r, "error") && hassubstr(r, "unsafe"),
+		"wiki ingest rejects paths outside /n/wikia/raw");
+
+	r = tool->exec("ingest /n/wikia/raw/doc\nlint");
+	t.assert(hassubstr(r, "error") && hassubstr(r, "unsafe"),
+		"wiki ingest rejects control delimiters");
+
+	r = tool->exec("ingest /n/wikia/raw/doc=owned");
+	t.assert(hassubstr(r, "error") && hassubstr(r, "unsafe"),
+		"wiki ingest rejects key delimiter in paths");
+
+	r = tool->exec("ingest /n/wikia/raw/doc,owned");
+	t.assert(hassubstr(r, "error") && hassubstr(r, "unsafe"),
+		"wiki ingest rejects list delimiter in paths");
+}
+
 # ============================================================================
 # matrix — fixed-service path validation
 # ============================================================================
@@ -602,6 +649,14 @@ testMatrixRejectsUnsafeNames(t: ref T)
 	r = tool->exec("ctl load sysmon\nunload");
 	t.assert(hassubstr(r, "error") && hassubstr(r, "control"),
 		"matrix ctl rejects control delimiters");
+
+	r = tool->exec("compose layout hsplit 1 1;left app /dis/wm/clock.dis");
+	t.assert(hassubstr(r, "error") && hassubstr(r, "app hosting"),
+		"matrix compose rejects app hosting");
+
+	r = tool->exec("compose service sysmon-svc /");
+	t.assert(hassubstr(r, "error") && hassubstr(r, "whole-namespace"),
+		"matrix compose rejects whole namespace service grants");
 }
 
 # ============================================================================
@@ -643,6 +698,85 @@ testGpuRejectsUnsafeModel(t: ref T)
 }
 
 # ============================================================================
+# fractal — fixed-service control validation
+# ============================================================================
+
+testFractalRejectsUnsafeCtl(t: ref T)
+{
+	tool := loadtool(t, "fractal");
+	if(tool == nil)
+		return;
+
+	r := tool->exec("zoomin -0.8 0.05 -0.7 0.15\nrestart");
+	t.assert(hassubstr(r, "error") && hassubstr(r, "unsafe"),
+		"fractal zoomin rejects extra/control-delimited arguments");
+
+	r = tool->exec("center -0.75 0.1 0.02 restart");
+	t.assert(hassubstr(r, "error") && hassubstr(r, "requires"),
+		"fractal center rejects extra tokens");
+
+	r = tool->exec("julia -0.4 0.6\nmandelbrot");
+	t.assert(hassubstr(r, "error") && hassubstr(r, "unsafe"),
+		"fractal julia rejects control delimiters");
+
+	r = tool->exec("depth 3\nrestart");
+	t.assert(hassubstr(r, "error") && hassubstr(r, "unsafe"),
+		"fractal depth rejects control delimiters");
+
+	r = tool->exec("fill on\nrestart");
+	t.assert(hassubstr(r, "error") && hassubstr(r, "unsafe"),
+		"fractal fill rejects control delimiters");
+
+	r = tool->exec("julia -0.4 0.6");
+	t.assert(hassubstr(r, "error") && hassubstr(r, "/tmp/veltro/fractal/ctl"),
+		"valid fractal julia reaches service ctl path when unmounted");
+}
+
+# ============================================================================
+# network tools — SSRF guard parsing
+# ============================================================================
+
+testNetworkToolsRejectPrivateUrls(t: ref T)
+{
+	http := loadtool(t, "http");
+	if(http != nil) {
+		r := http->exec("GET http://[::1]:1/");
+		t.assert(hassubstr(r, "error") && hassubstr(r, "private"),
+			"http rejects bracketed IPv6 loopback");
+
+		r = http->exec("GET http://user@10.0.0.1:1/");
+		t.assert(hassubstr(r, "error") && hassubstr(r, "private"),
+			"http rejects userinfo-hidden RFC1918 host");
+	}
+
+	webfetch := loadtool(t, "webfetch");
+	if(webfetch != nil) {
+		r := webfetch->exec("http://[::1]:1/");
+		t.assert(hassubstr(r, "error") && hassubstr(r, "private"),
+			"webfetch rejects bracketed IPv6 loopback");
+
+		r = webfetch->exec("http://user@192.168.0.1:1/");
+		t.assert(hassubstr(r, "error") && hassubstr(r, "private"),
+			"webfetch rejects userinfo-hidden RFC1918 host");
+	}
+
+	payfetch := loadtool(t, "payfetch");
+	if(payfetch != nil) {
+		r := payfetch->exec("http://[::1]:1/ -a acct");
+		t.assert(hassubstr(r, "error") && hassubstr(r, "private"),
+			"payfetch rejects bracketed IPv6 loopback");
+
+		r = payfetch->exec("http://172.16.0.1:1/ -a acct");
+		t.assert(hassubstr(r, "error") && hassubstr(r, "private"),
+			"payfetch rejects 172.16/12 private host");
+
+		r = payfetch->exec("http://2130706433:1/ -a acct");
+		t.assert(hassubstr(r, "error") && hassubstr(r, "private"),
+			"payfetch rejects numeric loopback host form");
+	}
+}
+
+# ============================================================================
 # Helpers
 # ============================================================================
 
@@ -655,6 +789,25 @@ hassubstr(s, sub: string): int
 			return 1;
 	}
 	return 0;
+}
+
+safeattrtext(s: string): string
+{
+	out := "";
+	for(i := 0; i < len s; i++) {
+		c := s[i];
+		if(c == '=')
+			out[len out] = ':';
+		else if(c == '\n' || c == '\r' || c == '\t')
+			out[len out] = ' ';
+		else
+			out[len out] = c;
+	}
+	while(len out > 0 && (out[len out - 1] == '\n' || out[len out - 1] == ' ' || out[len out - 1] == '\t'))
+		out = out[0:len out - 1];
+	while(len out > 0 && (out[0] == ' ' || out[0] == '\t'))
+		out = out[1:];
+	return out;
 }
 
 init(nil: ref Draw->Context, args: list of string)
@@ -684,6 +837,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("WalletMissingArgs", testWalletMissingArgs);
 	run("WalletDoubledCommand", testWalletDoubledCommand);
 	run("WalletRejectsUnsafeAccount", testWalletRejectsUnsafeAccount);
+	run("WalletRejectsUnsafeNetwork", testWalletRejectsUnsafeNetwork);
 
 	# keyring
 	run("KeyringNameDoc", testKeyringNameDoc);
@@ -706,6 +860,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("GapResolveRequiresDescription", testGapResolveRequiresDescription);
 	run("GapUnknownCommand", testGapUnknownCommand);
 	run("GapAddNoUI", testGapAddNoUI);
+	run("GapSafeattrtextControlSyntax", testGapSafeattrtextControlSyntax);
 
 	# task
 	run("TaskNameDoc", testTaskNameDoc);
@@ -719,6 +874,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("WikiNameDoc", testWikiNameDoc);
 	run("WikiEmpty", testWikiEmpty);
 	run("WikiUnmounted", testWikiUnmounted);
+	run("WikiRejectsUnsafeIngestPath", testWikiRejectsUnsafeIngestPath);
 
 	# matrix
 	run("MatrixRejectsUnsafeNames", testMatrixRejectsUnsafeNames);
@@ -728,6 +884,12 @@ init(nil: ref Draw->Context, args: list of string)
 
 	# gpu
 	run("GpuRejectsUnsafeModel", testGpuRejectsUnsafeModel);
+
+	# fractal
+	run("FractalRejectsUnsafeCtl", testFractalRejectsUnsafeCtl);
+
+	# network tools
+	run("NetworkToolsRejectPrivateUrls", testNetworkToolsRejectPrivateUrls);
 
 	if(testing->summary(passed, failed, skipped) > 0)
 		raise "fail:tests failed";

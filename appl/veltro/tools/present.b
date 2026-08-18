@@ -187,6 +187,8 @@ docreate(args: string): string
 	(id, rest) := splitfirst(args);
 	if(id == "")
 		return "error: artifact id required";
+	if(!validid(id))
+		return "error: invalid artifact id: " + id;
 
 	atype := "";
 	label := "";
@@ -229,6 +231,7 @@ docreate(args: string): string
 
 	if(label == nil || label == "")
 		label = id;
+	label = safeattrtext(label);
 
 	actid := currentactid();
 	if(actid < 0)
@@ -262,6 +265,8 @@ dowrite(args: string): string
 	(id, content) := splitfirst(args);
 	if(id == "")
 		return "error: artifact id required";
+	if(!validid(id))
+		return "error: invalid artifact id: " + id;
 	if(content == "")
 		return "error: content required";
 
@@ -305,6 +310,8 @@ doappend(args: string): string
 	(id, content) := splitfirst(args);
 	if(id == "")
 		return "error: artifact id required";
+	if(!validid(id))
+		return "error: invalid artifact id: " + id;
 
 	# Strip a single pair of surrounding double quotes if present
 	# (same reasoning as in dowrite — models copy quoted-arg examples).
@@ -333,6 +340,8 @@ docenter(args: string): string
 	id := strip(args);
 	if(id == "")
 		return "error: usage: center <id>";
+	if(!validid(id))
+		return "error: invalid artifact id: " + id;
 
 	actid := currentactid();
 	if(actid < 0)
@@ -353,6 +362,8 @@ dokill(args: string): string
 	id := strip(args);
 	if(id == "")
 		return "error: usage: kill <id>";
+	if(!validid(id))
+		return "error: invalid artifact id: " + id;
 
 	actid := currentactid();
 	if(actid < 0)
@@ -379,6 +390,8 @@ donavigate(args: string): string
 	(id, url) := splitfirst(args);
 	if(id == "")
 		return "error: app id required";
+	if(!validid(id))
+		return "error: invalid artifact id: " + id;
 	if(url == "")
 		return sys->sprint("error: url required — e.g. navigate %s http://example.com", id);
 	if(id != "charon")
@@ -403,6 +416,7 @@ donavigate(args: string): string
 		label = id;
 	else
 		label = strip(label);
+	label = safeattrtext(label);
 
 	pctl := sys->sprint("%s/activity/%d/presentation/ctl", UI_MOUNT, actid);
 
@@ -442,6 +456,8 @@ dodelete(args: string): string
 	id := strip(args);
 	if(id == "")
 		return "error: usage: delete <id>";
+	if(!validid(id))
+		return "error: invalid artifact id: " + id;
 
 	actid := currentactid();
 	if(actid < 0)
@@ -552,6 +568,38 @@ readfile(path: string): string
 	if(n <= 0)
 		return nil;
 	return string buf[0:n];
+}
+
+# Text written into luciuisrv ctl attributes must stay inert display text.
+# The ctl parser treats any whitespace-delimited word ending in '=' as a new
+# attribute, so collapse controls and replace '=' before embedding labels.
+safeattrtext(s: string): string
+{
+	out := "";
+	for(i := 0; i < len s; i++) {
+		c := s[i];
+		if(c == '=')
+			out[len out] = ':';
+		else if(c == '\n' || c == '\r' || c == '\t')
+			out[len out] = ' ';
+		else
+			out[len out] = c;
+	}
+	return strip(out);
+}
+
+validid(id: string): int
+{
+	if(id == nil || len id == 0 || len id > 128)
+		return 0;
+	for(i := 0; i < len id; i++) {
+		c := id[i];
+		if((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		   (c >= '0' && c <= '9') || c == '-' || c == '_')
+			continue;
+		return 0;
+	}
+	return 1;
 }
 
 # Process escape sequences in content (\\n → newline, \\t → tab, etc.)

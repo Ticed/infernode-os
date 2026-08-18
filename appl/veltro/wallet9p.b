@@ -565,10 +565,14 @@ dowrite(srv: ref Styxserver, m: ref Tmsg.Write)
 			return;
 		}
 		cmd := hd toks;
-		if(cmd == "default" && ntoks >= 2) {
+		if(cmd == "default" && ntoks == 2) {
+			if(!validacctname(hd tl toks)) {
+				srv.reply(ref Rmsg.Error(m.tag, "invalid account name"));
+				return;
+			}
 			defaultacct = hd tl toks;
 			globalctl = "default " + defaultacct + "\n";
-		} else if(cmd == "rpc" && ntoks >= 2) {
+		} else if(cmd == "rpc" && ntoks == 2) {
 			ethrpc->setrpc(hd tl toks);
 		} else if(cmd == "network" && ntoks >= 2) {
 			# Rejoin remaining tokens as network name (may have spaces)
@@ -579,15 +583,23 @@ dowrite(srv: ref Styxserver, m: ref Tmsg.Write)
 				nname += hd nt;
 			}
 			setnetwork(nname);
-		} else if(cmd == "approve" && ntoks >= 2) {
-			pid := int hd tl toks;
+		} else if(cmd == "approve") {
+			(pid, perr) := pendingid(toks, "approve");
+			if(perr != nil) {
+				srv.reply(ref Rmsg.Error(m.tag, perr));
+				return;
+			}
 			err := approvepending(pid);
 			if(err != nil) {
 				srv.reply(ref Rmsg.Error(m.tag, err));
 				return;
 			}
-		} else if(cmd == "deny" && ntoks >= 2) {
-			pid := int hd tl toks;
+		} else if(cmd == "deny") {
+			(pid, perr) := pendingid(toks, "deny");
+			if(perr != nil) {
+				srv.reply(ref Rmsg.Error(m.tag, perr));
+				return;
+			}
 			err := denypending(pid);
 			if(err != nil) {
 				srv.reply(ref Rmsg.Error(m.tag, err));
@@ -604,12 +616,16 @@ dowrite(srv: ref Styxserver, m: ref Tmsg.Write)
 		data = str->take(data, "^\n\r");
 		(ntoks, toks) := sys->tokenize(data, " \t");
 
-		if(ntoks >= 1 && hd toks == "import" && ntoks >= 5) {
+		if(ntoks >= 1 && hd toks == "import" && ntoks == 5) {
 			# import eth base myaccount hexkey
 			toks = tl toks;
 			accttype := parsetype(hd toks); toks = tl toks;
 			chain := hd toks; toks = tl toks;
 			name := hd toks; toks = tl toks;
+			if(!validacctname(name)) {
+				srv.reply(ref Rmsg.Error(m.tag, "invalid account name"));
+				return;
+			}
 			hexkey := hd toks;
 			privkey := ethcrypto->hexdecode(hexkey);
 			if(privkey == nil) {
@@ -627,11 +643,15 @@ dowrite(srv: ref Styxserver, m: ref Tmsg.Write)
 			setnewstate(m.fid, name);
 			syncfactotum();
 			vers++;
-		} else if(ntoks >= 3) {
+		} else if(ntoks == 3) {
 			# eth base myaccount
 			accttype := parsetype(hd toks); toks = tl toks;
 			chain := hd toks; toks = tl toks;
 			name := hd toks;
+			if(!validacctname(name)) {
+				srv.reply(ref Rmsg.Error(m.tag, "invalid account name"));
+				return;
+			}
 			if(findacct(name) != nil) {
 				srv.reply(ref Rmsg.Error(m.tag, "account exists: " + name));
 				return;
@@ -711,6 +731,11 @@ dowrite(srv: ref Styxserver, m: ref Tmsg.Write)
 			payamt = first;
 			payrecip = hd tl paytoks;
 		}
+		payerr := validatepay(as, paytoken, payamt, payrecip);
+		if(payerr != nil) {
+			srv.reply(ref Rmsg.Error(m.tag, payerr));
+			return;
+		}
 
 		# Check if approval is required for this account
 		if(as.requireapproval) {
@@ -722,7 +747,6 @@ dowrite(srv: ref Styxserver, m: ref Tmsg.Write)
 		} else {
 			# Execute immediately
 			txhash: string;
-			payerr: string;
 			if(paytoken == "usdc")
 				(txhash, payerr) = executeerc20(as, payamt, payrecip);
 			else
@@ -769,6 +793,30 @@ dowrite(srv: ref Styxserver, m: ref Tmsg.Write)
 	}
 }
 
+pendingid(toks: list of string, verb: string): (int, string)
+{
+	if(toks == nil || tl toks == nil || tl tl toks != nil)
+		return (-1, "usage: " + verb + " <id>");
+	(id, rest) := str->toint(hd tl toks, 10);
+	if(id <= 0 || rest != "")
+		return (-1, verb + ": invalid id");
+	return (id, nil);
+}
+
+validacctname(s: string): int
+{
+	if(s == nil || s == "" || s == "." || s == "..")
+		return 0;
+	for(i := 0; i < len s; i++) {
+		c := s[i];
+		if((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		   (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.')
+			continue;
+		return 0;
+	}
+	return 1;
+}
+
 parsetype(s: string): int
 {
 	if(s == "eth" || s == "ethereum")
@@ -778,6 +826,48 @@ parsetype(s: string): int
 	if(s == "stripe" || s == "fiat")
 		return Wallet->ACCT_STRIPE;
 	return Wallet->ACCT_ETH;
+}
+
+validatepay(as: ref AcctState, token, amount, recipient: string): string
+{
+	if(!validamount(amount))
+		return "invalid payment amount";
+	if(token == "usdc" || as.acct.accttype == Wallet->ACCT_ETH) {
+		if(ethcrypto->strtoaddr(recipient) == nil)
+			return "invalid recipient address";
+		return nil;
+	}
+	if(as.acct.accttype == Wallet->ACCT_STRIPE) {
+		if(recipient == nil || recipient == "" || len recipient > 256 || hascontrol(recipient))
+			return "invalid payment description";
+		return nil;
+	}
+	return nil;
+}
+
+validamount(s: string): int
+{
+	if(s == nil || s == "")
+		return 0;
+	nonzero := 0;
+	for(i := 0; i < len s; i++) {
+		c := s[i];
+		if(c < '0' || c > '9')
+			return 0;
+		if(c != '0')
+			nonzero = 1;
+	}
+	return nonzero;
+}
+
+hascontrol(s: string): int
+{
+	for(i := 0; i < len s; i++) {
+		c := s[i];
+		if(c < ' ' || c == 16r7f)
+			return 1;
+	}
+	return 0;
 }
 
 # --- Pending payment approval/denial ---

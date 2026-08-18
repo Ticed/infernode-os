@@ -201,7 +201,7 @@ restrictns(caps: ref Capabilities): string
 	# /n is the IMPORT YARD — foreign trees imported intact (docs/NAMESPACE-LAYOUT.md).
 	# All /n/ entries are capability-driven — never auto-exposed by existence:
 	#   /n/speech — "/n/speech" in caps.paths
-	#   /n/git    — "/n/git" in caps.paths
+	#   /n/git    — fixed git tool
 	#   /n/wallet — "/n/wallet" in caps.paths
 	#   /n/pres-* — caps.xenith != 0
 	#   /n/local  — /n/local/ subpaths in caps.paths
@@ -225,8 +225,10 @@ restrictns(caps: ref Capabilities): string
 				nallow = "speech" :: nallow;
 		}
 
-		# /n/git — only if explicitly granted via caps.paths
-		if(inlist("/n/git", caps.paths)) {
+		# /n/git — fixed-function git service. The git tool mounts git/fs here
+		# during trusted init; generic path grants cannot expose gitfs ctl/raw
+		# repository state to unrelated tools.
+		if(inlist("git", caps.tools)) {
 			(gitok, nil) := sys->stat("/n/git");
 			if(gitok >= 0)
 				nallow = "git" :: nallow;
@@ -237,6 +239,14 @@ restrictns(caps: ref Capabilities): string
 			(walletok, nil) := sys->stat("/n/wallet");
 			if(walletok >= 0)
 				nallow = "wallet" :: nallow;
+		}
+
+		# /n/wikia — fixed-function wiki agent service. The wiki tool receives
+		# it per-invocation; generic path grants cannot drive ctl/query directly.
+		if(inlist("wiki", caps.tools)) {
+			(wikiaok, nil) := sys->stat("/n/wikia");
+			if(wikiaok >= 0)
+				nallow = "wikia" :: nallow;
 		}
 
 		# (The UI presentation surface moved to /mnt/ui — granted + sub-restricted
@@ -314,6 +324,13 @@ restrictns(caps: ref Capabilities): string
 		(matrixok, nil) := sys->stat("/mnt/matrix");
 		if(matrixok >= 0 && !inlist("matrix", mntpaths))
 			mntpaths = "matrix" :: mntpaths;
+	}
+	# GPU inference is fixed-function service authority. The gpu and vision
+	# tools receive it per-invocation; generic path grants cannot.
+	if(inlist("gpu", caps.tools) || inlist("vision", caps.tools)) {
+		(gpuok, nil) := sys->stat("/mnt/gpu");
+		if(gpuok >= 0 && !inlist("gpu", mntpaths))
+			mntpaths = "gpu" :: mntpaths;
 	}
 	# /mnt/ui — presentation surface (luciuisrv), granted only to fixed-function
 	# UI tools. Per-invocation caps prevent unrelated tools from inheriting it.
@@ -637,7 +654,7 @@ restrictwallet(): string
 	if(err != nil)
 		return err;
 
-	acctallow := "address" :: "balance" :: "chain" :: "sign" ::
+	acctallow := "address" :: "balance" :: "chain" ::
 		"pay" :: "history" :: nil;
 	for(a = accts; a != nil; a = tl a) {
 		err = restrictdir("/n/wallet/" + hd a, acctallow, 1);
@@ -872,7 +889,8 @@ validatepath(p: string): string
 	if(p == "/")
 		return "root path is not grantable";
 	for(ci := 0; ci < len p; ci++)
-		if(p[ci] == ' ' || p[ci] == '\n' || p[ci] == '\r' || p[ci] == '\t' || p[ci] == ',')
+		if(p[ci] == ' ' || p[ci] == '\n' || p[ci] == '\r' ||
+		   p[ci] == '\t' || p[ci] == ',' || p[ci] == '=')
 			return "path contains control delimiter";
 
 	start := 1;
@@ -904,6 +922,7 @@ privilegedcontrolpath(path: string, tools: list of string): int
 		"/tool/ctl",
 		"/mnt/toolctl",
 		"/mnt/toolctl/ctl",
+		"/mnt/factotum",
 		"/mnt/ui/ctl",
 		"/mnt/msg/ctl",
 		"/mnt/msg/pending",
@@ -925,6 +944,12 @@ privilegedcontrolpath(path: string, tools: list of string): int
 	if(appipccontrolpath(path) && !appipctoolpath(path, tools))
 		return 1;
 	if(uiagentcontrolpath(path))
+		return 1;
+	if(llmctlcontrolpath(path))
+		return 1;
+	if(auditcontrolpath(path))
+		return 1;
+	if(calendarcontrolpath(path))
 		return 1;
 	if(fixedservicecontrolpath(path))
 		return 1;
@@ -996,9 +1021,51 @@ uiagentcontrolpath(path: string): int
 	return path == "/mnt/ui" || prefix(path, "/mnt/ui/");
 }
 
+llmctlcontrolpath(path: string): int
+{
+	# /llm is the Settings bridge to host llmctl. The root contains ctl, so a
+	# broad path grant is administrative authority. Exact status reads may be
+	# granted separately if a future tool needs health visibility.
+	return path == "/llm" || path == "/llm/ctl" || prefix(path, "/llm/ctl/");
+}
+
+auditcontrolpath(path: string): int
+{
+	# Audit subjects should receive only the append endpoint they need:
+	# /mnt/audit/log. Broad roots expose chain history and ctl checkpoints.
+	return path == "/mnt/audit" ||
+		path == "/mnt/audit/ctl" || prefix(path, "/mnt/audit/ctl/") ||
+		path == "/mnt/audit/chain" || prefix(path, "/mnt/audit/chain/");
+}
+
+calendarcontrolpath(path: string): int
+{
+	# Calendar depth grants may name exact read/query subtrees, but the scaffold's
+	# root and account roots include writable ctl siblings that configure CalDAV.
+	if(path == "/mnt/cal" || path == "/mnt/cal/ctl" || path == "/mnt/cal/accounts")
+		return 1;
+	if(prefix(path, "/mnt/cal/accounts/")) {
+		if(componentcount(path) <= 4)
+			return 1;
+		if(pathhascomponent(path, "ctl"))
+			return 1;
+	}
+	return 0;
+}
+
 fixedservicecontrolpath(path: string): int
 {
 	return path == "/mnt/matrix" || prefix(path, "/mnt/matrix/") ||
+		path == "/n/git" || prefix(path, "/n/git/") ||
+		path == "/mnt/gpu" || prefix(path, "/mnt/gpu/") ||
+		path == "/mnt/web" || prefix(path, "/mnt/web/") ||
+		path == "/n/web" || prefix(path, "/n/web/") ||
+		path == "/mnt/wiki" || prefix(path, "/mnt/wiki/") ||
+		path == "/n/wikia" || prefix(path, "/n/wikia/") ||
+		path == "/mnt/keys" || prefix(path, "/mnt/keys/") ||
+		path == "/mnt/keysrv" || prefix(path, "/mnt/keysrv/") ||
+		path == "/mnt/registry" || prefix(path, "/mnt/registry/") ||
+		path == "/mnt/video" || prefix(path, "/mnt/video/") ||
 		path == "/phone" || prefix(path, "/phone/");
 }
 
@@ -1145,6 +1212,7 @@ emitmanifest(caps: ref Capabilities, mpath: string)
 	nentries := array[] of {
 		("/n/speech", "Speech",           "rw"),
 		("/n/git",    "Git",              "rw"),
+		("/n/wikia",  "Wiki Agent",       "rw"),
 		("/phone",    "Phone Bridge",     "rw"),
 		# The LLM (llm9p), UI surface (luciuisrv) and MCP providers live under
 		# /mnt now — application mount points, schema is ours, not /n imports
@@ -1153,6 +1221,10 @@ emitmanifest(caps: ref Capabilities, mpath: string)
 		("/mnt/ui",   "UI Service",       "rw"),
 		("/mnt/mcp",  "MCP Providers",    "rw"),
 		("/mnt/matrix", "Matrix Runtime", "rw"),
+		("/mnt/gpu", "GPU Service", "rw"),
+		("/mnt/web", "Web Service", "rw"),
+		("/mnt/wiki", "Wiki Store", "rw"),
+		("/mnt/registry", "Registry", "rw"),
 	};
 
 	for(i = 0; i < len nentries; i++) {

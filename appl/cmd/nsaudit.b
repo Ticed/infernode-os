@@ -467,7 +467,8 @@ invalidGrantPath(p: string): string
 	if(p == "/")
 		return "root path is not grantable";
 	for(ci := 0; ci < len p; ci++)
-		if(p[ci] == ' ' || p[ci] == '\n' || p[ci] == '\r' || p[ci] == '\t' || p[ci] == ',')
+		if(p[ci] == ' ' || p[ci] == '\n' || p[ci] == '\r' ||
+		   p[ci] == '\t' || p[ci] == ',' || p[ci] == '=')
 			return "path contains control delimiter";
 	start := 1;
 	for(i := 1; i <= len p; i++) {
@@ -489,6 +490,7 @@ privilegedControlGrant(p: string): int
 		"/tool/ctl",
 		"/mnt/toolctl",
 		"/mnt/toolctl/ctl",
+		"/mnt/factotum",
 		"/mnt/ui/ctl",
 		"/mnt/msg/ctl",
 		"/mnt/msg/pending",
@@ -510,6 +512,12 @@ privilegedControlGrant(p: string): int
 	if(appIpcControlGrant(p))
 		return 1;
 	if(uiAgentControlGrant(p))
+		return 1;
+	if(llmCtlControlGrant(p))
+		return 1;
+	if(auditControlGrant(p))
+		return 1;
+	if(calendarControlGrant(p))
 		return 1;
 	if(fixedServiceControlGrant(p))
 		return 1;
@@ -549,9 +557,44 @@ uiAgentControlGrant(p: string): int
 	return p == "/mnt/ui" || prefix(p, "/mnt/ui/");
 }
 
+llmCtlControlGrant(p: string): int
+{
+	return p == "/llm" || p == "/llm/ctl" || prefix(p, "/llm/ctl/");
+}
+
+auditControlGrant(p: string): int
+{
+	return p == "/mnt/audit" ||
+		p == "/mnt/audit/ctl" || prefix(p, "/mnt/audit/ctl/") ||
+		p == "/mnt/audit/chain" || prefix(p, "/mnt/audit/chain/");
+}
+
+calendarControlGrant(p: string): int
+{
+	if(p == "/mnt/cal" || p == "/mnt/cal/ctl" || p == "/mnt/cal/accounts")
+		return 1;
+	if(prefix(p, "/mnt/cal/accounts/")) {
+		if(componentcount(p) <= 4)
+			return 1;
+		if(pathhascomponent(p, "ctl"))
+			return 1;
+	}
+	return 0;
+}
+
 fixedServiceControlGrant(p: string): int
 {
 	return p == "/mnt/matrix" || prefix(p, "/mnt/matrix/") ||
+		p == "/n/git" || prefix(p, "/n/git/") ||
+		p == "/mnt/gpu" || prefix(p, "/mnt/gpu/") ||
+		p == "/mnt/web" || prefix(p, "/mnt/web/") ||
+		p == "/n/web" || prefix(p, "/n/web/") ||
+		p == "/mnt/wiki" || prefix(p, "/mnt/wiki/") ||
+		p == "/n/wikia" || prefix(p, "/n/wikia/") ||
+		p == "/mnt/keys" || prefix(p, "/mnt/keys/") ||
+		p == "/mnt/keysrv" || prefix(p, "/mnt/keysrv/") ||
+		p == "/mnt/registry" || prefix(p, "/mnt/registry/") ||
+		p == "/mnt/video" || prefix(p, "/mnt/video/") ||
 		p == "/phone" || prefix(p, "/phone/");
 }
 

@@ -581,6 +581,37 @@ strlist_contains(l: list of string, s: string): int
 	return 0;
 }
 
+isdigit(c: int): int
+{
+	return c >= '0' && c <= '9';
+}
+
+parseactivityid(s: string): (int, string)
+{
+	if(s == nil || len s == 0)
+		return (-1, "missing activity id");
+	for(i := 0; i < len s; i++)
+		if(!isdigit(s[i]))
+			return (-1, "activity id must be decimal digits");
+	(id, nil) := str->toint(s, 10);
+	if(id < 0)
+		return (-1, "invalid activity id");
+	return (id, nil);
+}
+
+validtooltoken(name: string): int
+{
+	if(name == nil || len name == 0)
+		return 0;
+	for(i := 0; i < len name; i++) {
+		c := name[i];
+		if((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.')
+			continue;
+		return 0;
+	}
+	return 1;
+}
+
 # Generate list of bound paths (newline-separated for /tool/paths).
 # Format: "path perm" per line (e.g. "/n/local/Users/pdfinn/tmp rw").
 genpathlist(): string
@@ -640,7 +671,8 @@ validatepath(p: string): string
 	if(p == "/")
 		return "root path is not grantable";
 	for(ci := 0; ci < len p; ci++)
-		if(p[ci] == ' ' || p[ci] == '\n' || p[ci] == '\r' || p[ci] == '\t' || p[ci] == ',')
+		if(p[ci] == ' ' || p[ci] == '\n' || p[ci] == '\r' ||
+		   p[ci] == '\t' || p[ci] == ',' || p[ci] == '=')
 			return "path contains control delimiter";
 
 	start := 1;
@@ -779,6 +811,7 @@ privilegedcontrolpath(path: string): int
 		"/tool/ctl",
 		"/mnt/toolctl",
 		"/mnt/toolctl/ctl",
+		"/mnt/factotum",
 		"/mnt/ui/ctl",
 		"/mnt/msg/ctl",
 		"/mnt/msg/pending",
@@ -800,6 +833,12 @@ privilegedcontrolpath(path: string): int
 	if(appipccontrolpath(path))
 		return 1;
 	if(uiagentcontrolpath(path))
+		return 1;
+	if(llmctlcontrolpath(path))
+		return 1;
+	if(auditcontrolpath(path))
+		return 1;
+	if(calendarcontrolpath(path))
 		return 1;
 	if(fixedservicecontrolpath(path))
 		return 1;
@@ -849,9 +888,50 @@ uiagentcontrolpath(path: string): int
 	return path == "/mnt/ui" || prefix(path, "/mnt/ui/");
 }
 
+llmctlcontrolpath(path: string): int
+{
+	# /llm/ctl switches host LLM backends through llmctl9p. Keep that Settings
+	# control surface out of caller-supplied path grants.
+	return path == "/llm" || path == "/llm/ctl" || prefix(path, "/llm/ctl/");
+}
+
+auditcontrolpath(path: string): int
+{
+	# /mnt/audit/log is the append-only subject capability. A raw root or chain
+	# grant leaks log history; ctl can force signed checkpoints.
+	return path == "/mnt/audit" ||
+		path == "/mnt/audit/ctl" || prefix(path, "/mnt/audit/ctl/") ||
+		path == "/mnt/audit/chain" || prefix(path, "/mnt/audit/chain/");
+}
+
+calendarcontrolpath(path: string): int
+{
+	# Calendar depth grants may name exact read/query subtrees, but broad roots
+	# expose writable ctl files that configure accounts and CalDAV operations.
+	if(path == "/mnt/cal" || path == "/mnt/cal/ctl" || path == "/mnt/cal/accounts")
+		return 1;
+	if(prefix(path, "/mnt/cal/accounts/")) {
+		if(componentcount(path) <= 4)
+			return 1;
+		if(pathhascomponent(path, "ctl"))
+			return 1;
+	}
+	return 0;
+}
+
 fixedservicecontrolpath(path: string): int
 {
 	return path == "/mnt/matrix" || prefix(path, "/mnt/matrix/") ||
+		path == "/n/git" || prefix(path, "/n/git/") ||
+		path == "/mnt/gpu" || prefix(path, "/mnt/gpu/") ||
+		path == "/mnt/web" || prefix(path, "/mnt/web/") ||
+		path == "/n/web" || prefix(path, "/n/web/") ||
+		path == "/mnt/wiki" || prefix(path, "/mnt/wiki/") ||
+		path == "/n/wikia" || prefix(path, "/n/wikia/") ||
+		path == "/mnt/keys" || prefix(path, "/mnt/keys/") ||
+		path == "/mnt/keysrv" || prefix(path, "/mnt/keysrv/") ||
+		path == "/mnt/registry" || prefix(path, "/mnt/registry/") ||
+		path == "/mnt/video" || prefix(path, "/mnt/video/") ||
 		path == "/phone" || prefix(path, "/phone/");
 }
 
@@ -1223,9 +1303,9 @@ provisiontask(args: string)
 	}
 	idstr := hd toks;
 	toks = tl toks;
-	(id, nil) := str->toint(idstr, 10);
-	if(id < 0) {
-		sys->fprint(stderr, "tools9p: provision: invalid id %s\n", idstr);
+	(id, iderr) := parseactivityid(idstr);
+	if(iderr != nil) {
+		sys->fprint(stderr, "tools9p: provision: invalid id %s: %s\n", idstr, iderr);
 		return;
 	}
 
@@ -1250,6 +1330,9 @@ provisiontask(args: string)
 			}
 			seenpaths = 1;
 			pathsarg = tok[6:];
+		} else {
+			sys->fprint(stderr, "tools9p: provision: unknown attr %s\n", tok);
+			return;
 		}
 	}
 
@@ -1263,6 +1346,10 @@ provisiontask(args: string)
 		(nil, ttoks) := sys->tokenize(toolsarg, ",");
 		for(; ttoks != nil; ttoks = tl ttoks) {
 			tname := hd ttoks;
+			if(!validtooltoken(tname)) {
+				sys->fprint(stderr, "tools9p: provision: invalid tool name %s\n", tname);
+				return;
+			}
 			if(!strlist_contains(childbudget(), tname) || !toolavailable(tname)) {
 				sys->fprint(stderr, "tools9p: provision: denied tool %s\n", tname);
 				continue;

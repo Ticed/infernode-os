@@ -290,6 +290,9 @@ docreate(args: string): string
 	label := getattr(attrs, "label");
 	if(label == "")
 		return "error: label required. Usage: create label=<name> [tools=<csv>]";
+	label = safeattrtext(label);
+	if(label == "")
+		return "error: label contains no safe display text";
 
 	agenttype := str->tolower(getattr(attrs, "agenttype"));
 	(deftools, defmodel) := agentdefaults(agenttype);
@@ -313,11 +316,13 @@ docreate(args: string): string
 	if(toolsarg != "") {
 		budgetstr := readfile("/tool/budget");
 		if(budgetstr != nil) {
-			budgetstr = strip(budgetstr);
+			budget := parsetoollist(budgetstr);
 			(nil, reqtoks) := sys->tokenize(toolsarg, ",");
 			for(; reqtoks != nil; reqtoks = tl reqtoks) {
-				t := hd reqtoks;
-				if(!contains(budgetstr, t))
+				t := strip(hd reqtoks);
+				if(t == "")
+					continue;
+				if(!strlistcontains(budget, t))
 					return sys->sprint("error: tool '%s' not in delegation budget", t);
 			}
 		}
@@ -357,6 +362,8 @@ docreate(args: string): string
 		}
 	}
 
+	if(newid < 0)
+		(newid, nil) = str->toint(strip(readfile(UI_MOUNT + "/activity/current")), 10);
 	if(newid < 0)
 		return "error: could not determine new activity id";
 
@@ -427,9 +434,9 @@ docreate(args: string): string
 		writefile(dashctl, "synopsis " + string newid + " " + label);
 		category := getattr(attrs, "category");
 		if(category != "")
-			writefile(dashctl, "categorize " + string newid + " " + category);
+			writefile(dashctl, "categorize " + string newid + " " + safeattrtext(category));
 		if(instructions != "")
-			writefile(dashctl, "instructions " + string newid + " " + instructions);
+			writefile(dashctl, "instructions " + string newid + " " + safeattrtext(instructions));
 	}
 
 	# Delegate provisioning to tools9p's narrow child-provision path.
@@ -691,6 +698,24 @@ splitlines(s: string): list of string
 	return rev;
 }
 
+# Text written into ctl attributes must stay inert display text. The ctl
+# parser treats whitespace-delimited words ending in '=' as new attributes, so
+# collapse controls and replace '=' before embedding model-supplied metadata.
+safeattrtext(s: string): string
+{
+	out := "";
+	for(i := 0; i < len s; i++) {
+		c := s[i];
+		if(c == '=')
+			out[len out] = ':';
+		else if(c == '\n' || c == '\r' || c == '\t')
+			out[len out] = ' ';
+		else
+			out[len out] = c;
+	}
+	return strip(out);
+}
+
 # Return the first attr key that is not in createkeys, or "" if all are valid.
 firstunknownkey(attrs: list of (string, string)): string
 {
@@ -760,19 +785,12 @@ knownagenttypes(): string
 	return r;
 }
 
-contains(haystack, needle: string): int
+parsetoollist(s: string): list of string
 {
-	nlen := len needle;
-	for(i := 0; i <= len haystack - nlen; i++) {
-		if(haystack[i:i+nlen] == needle) {
-			# Check word boundary
-			if(i > 0 && haystack[i-1] != '\n' && haystack[i-1] != ' ' && haystack[i-1] != ',')
-				continue;
-			end := i + nlen;
-			if(end < len haystack && haystack[end] != '\n' && haystack[end] != ' ' && haystack[end] != ',')
-				continue;
-			return 1;
-		}
-	}
-	return 0;
+	(nil, toks) := sys->tokenize(s, " \t\r\n,");
+	out: list of string;
+	for(; toks != nil; toks = tl toks)
+		if(hd toks != "")
+			out = hd toks :: out;
+	return out;
 }
