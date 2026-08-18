@@ -1,0 +1,10 @@
+provider=Kokoro
+voice=af_bella
+sample_rate=16000
+channels=1
+sample_format=s16le
+duration_ms=981
+text=What is your name?
+sha256=51de4a337156fa3e08adee5be44eb784e85ea57237f3a60a68d769c0308abcd1
+generated_utc=2026-08-18T02:13:53+00:00
+generator=printf "What is your name?" | kokoro-cli --voice af_bella --rate 16000

@@ -16,7 +16,8 @@ one of these things is a promise made to the user's eyes:
     following along;
   - the "Sending in Ns" countdown is the window in which they can say
     "cancel", so it has to be on screen and it has to count;
-  - the answer has to appear as text and be spoken.
+  - the answer has to appear as text, be something a person can be read
+    aloud, and be spoken word for word as it was written.
 
 The last of those is checked by recording the audio device while the
 desktop speaks and transcribing what comes back, then comparing it with
@@ -52,8 +53,14 @@ SHOTS = os.path.join(TMP, "gui-voice")
 BIN = os.path.join(TMP, "bin")
 HELPERS = os.environ.get("INFERNODE_SPEECH_HOME", os.path.expanduser("~/.local/share/infernode-speech"))
 WAKE = "tests/fixtures/speech/kokoro/hey_jarvis.pcm"
-FIXTUREDIR = "tests/fixtures/speech/elevenlabs"
-FIXTURE = os.environ.get("VIRTUAL_MIC_FIXTURE", "voice_submit")
+# A question rather than an instruction, on purpose. "Reply with exactly
+# ..." is a request to use the say tool, so a turn built on it measures
+# how well the model follows the tool protocol as much as it measures
+# the voice path — and a model that answers it with an unparsed tool call
+# (INF-27) fails here for a reason that has nothing to do with audio.
+# Ordinary conversation is also what voice mode is mostly used for.
+REQUEST = os.environ.get("GUI_VOICE_REQUEST",
+                         "tests/fixtures/speech/kokoro/what_is_your_name.pcm")
 RATE = 16000
 GAP_MS = 150
 
@@ -71,7 +78,6 @@ T_SPOKEN = 180       # the answer finishes being spoken
 
 REPLY_SILENCE_S = 1.5    # trailing silence that means the speaking stopped
 SPEECH_RMS = 0.01        # a spoken word against a silent virtual device
-MIN_RECALL = 0.6         # of the on-screen answer's words, heard in the audio
 
 
 def fail(msg):
@@ -180,7 +186,7 @@ def joined_stream(out):
 
     for path, name, front, back in (
             (WAKE, "wake", False, True),
-            (os.path.join(FIXTUREDIR, FIXTURE + ".pcm"), "request", True, False)):
+            (REQUEST, "request", True, False)):
         s = trim(samples(path), front, back)
         open(out % name, "wb").write(struct.pack("<%dh" % len(s), *s))
 
@@ -227,6 +233,23 @@ def read_screen(window, keep=None):
     return Screen(rows, width)
 
 
+def press_until(window, predicate, script, timeout, what, shot=None):
+    """Send a keystroke until the screen shows it landed."""
+    deadline = time.monotonic() + timeout
+    last = None
+    while time.monotonic() < deadline:
+        keystroke(script)
+        attempt = time.monotonic() + 5
+        while time.monotonic() < attempt:
+            last = read_screen(window)
+            if predicate(last):
+                if shot:
+                    read_screen(window, os.path.join(SHOTS, shot))
+                return last
+    fail("%s within %ds. The screen showed: voice=%s | %s"
+         % (what, timeout, last.voice if last else "?", last.left if last else "?"))
+
+
 def wait_for(window, predicate, timeout, what, shot=None):
     """Poll the screen until it shows something, or say what it showed."""
     deadline = time.monotonic() + timeout
@@ -261,8 +284,22 @@ def speech_windows(path):
     return first, last, len(s) / RATE
 
 
+# Glyphs the OCR cannot tell apart in this font — lowercase L, capital i
+# and the digit one all draw as a bare stroke, and O and zero as a ring.
+# Folding them is a statement about the reader, not leniency about the
+# content: it is applied to both sides, so it can only ever let two
+# readings agree, never make them disagree.
+CONFUSABLE = str.maketrans({"i": "l", "1": "l", "0": "o"})
+
+
 def normalize(text):
-    return re.findall(r"[a-z0-9]+", text.lower())
+    return [w.translate(CONFUSABLE) for w in re.findall(r"[a-z0-9]+", text.lower())]
+
+
+# A turn whose visible answer is a tool call the agent failed to parse:
+# `{"name": "say", "parameters": {...}}` drawn as prose and read out loud
+# as "name say parameters text ...". See INF-27.
+TOOL_CALL_JSON = re.compile(r'\{\s*"?(name|tool|function)"?\s*[:=]', re.I)
 
 
 # Lines the pane draws about itself rather than about the conversation.
@@ -386,13 +423,15 @@ def main():
         note("desktop up")
 
         # Esc-V is the documented way in, and it is the one a user reaches
-        # for when the pointer is elsewhere.
-        keystroke(['tell application "System Events" to set frontmost of process "o.emu" to true',
-                   "delay 0.4",
-                   'tell application "System Events" to key code 53',
-                   'tell application "System Events" to keystroke "v"'])
-        wait_for(window, lambda s: s.voice == "waiting", T_VOICEMODE,
-                 "voice mode did not turn on", "02-voice-mode.png")
+        # for when the pointer is elsewhere. A window that is still taking
+        # focus drops the keys, so press again until the desktop shows it
+        # arrived rather than pressing once and hoping.
+        press_until(window, lambda s: s.voice == "waiting",
+                    ['tell application "System Events" to set frontmost of process "o.emu" to true',
+                     "delay 0.4",
+                     'tell application "System Events" to key code 53',
+                     'tell application "System Events" to keystroke "v"'],
+                    T_VOICEMODE, "voice mode did not turn on", "02-voice-mode.png")
         note("voice mode on, waiting for the wake word")
 
         # Say the wake word, then wait to be told it is listening before
@@ -404,8 +443,8 @@ def main():
         note("wake word heard: the Voice tile is listening")
         player = play(speech["request"])
 
-        expected = open(os.path.join(FIXTUREDIR, FIXTURE + ".txt")).read().strip()
-        keywords = [w for w in normalize(expected) if len(w) > 3]
+        expected = open(os.path.splitext(REQUEST)[0] + ".txt").read().strip()
+        keywords = [w for w in normalize(expected) if len(w) >= 3]
 
         def partial_showing(s):
             words = normalize(s.left)
@@ -452,6 +491,13 @@ def main():
         answer = answer_text(after, seen)
         note("answer on screen: " + answer)
 
+        # An answer is something a person can be read. A raw tool call is
+        # not, and the fact that it was faithfully spoken is not a
+        # mitigation — it is the failure.
+        if TOOL_CALL_JSON.search(answer) or answer.count('"') > 2:
+            fail("the answer is an unparsed tool call, not something to say aloud "
+                 "(INF-27): " + answer)
+
         # "The speaking has stopped" is the one thing with no state to
         # poll for: wait until the device has been quiet for long enough
         # after it was loud.
@@ -472,16 +518,20 @@ def main():
             fail("nothing was heard on '%s' after the answer appeared — it was never spoken" % device)
         note("answer heard: " + heard)
 
-        want = set(normalize(answer))
-        got_words = set(normalize(heard))
-        # OCR and speech recognition each mangle a word here and there,
-        # so the bar is that the two agree on what was said, not that
-        # they agree letter for letter.
-        recall = len(want & got_words) / max(1, len(want))
-        if recall < MIN_RECALL:
-            fail("the spoken answer does not match the screen (%.0f%% of the words): "
-                 "screen %r, heard %r" % (recall * 100, answer, heard))
-        note("screen and audio agree on %.0f%% of the words" % (recall * 100))
+        want = normalize(answer)
+        got_words = normalize(heard)
+        # Every word, in order. The screen and the speaker are two
+        # renderings of one answer, so anything less than exact agreement
+        # means the user was told two different things.
+        if want != got_words:
+            missing = [w for w in want if w not in got_words]
+            extra = [w for w in got_words if w not in want]
+            fail("the spoken answer is not word for word what the screen says.\n"
+                 "  screen: %s\n  heard:  %s\n  on screen but not heard: %s\n"
+                 "  heard but not on screen: %s"
+                 % (" ".join(want), " ".join(got_words),
+                    " ".join(missing) or "(none)", " ".join(extra) or "(none)"))
+        note("screen and audio agree word for word (%d words)" % len(want))
 
         print("PASS: a wake word, a request, a countdown, an LLM turn and a spoken "
               "answer, all through '%s', all verified on screen" % device)
