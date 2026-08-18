@@ -14,11 +14,15 @@ NC=${NC:-nc}
 
 device=
 phone_ip=
+phone_iface=
 port=17010
 wait_seconds=30
 install=0
 stop=0
 apk="$ROOT/android-app/app/build/outputs/apk/debug/app-debug.apk"
+
+. "$ROOT/tools/android-speech-preflight.sh"
+
 
 usage()
 {
@@ -70,37 +74,104 @@ case "$wait_seconds" in
 ''|*[!0-9]*) echo "android-speech-frontend: invalid wait: $wait_seconds" >&2; exit 2 ;;
 esac
 
-if ! command -v "$ADB" >/dev/null 2>&1; then
-	echo "android-speech-frontend: adb not found (set ADB or install Android platform-tools)" >&2
-	exit 1
+if [ "$stop" -eq 0 ]; then
+	android_preflight_init
+	android_preflight_check_helpers
+	android_preflight_check_playback
+else
+	android_preflight_init
 fi
 
-if [ -z "$device" ]; then
-	devices=$($ADB devices | awk 'NR > 1 && $2 == "device" { print $1 }')
-	# Intentional word splitting: adb serials cannot contain whitespace.
-	set -- $devices
-	case "$#" in
-	0) echo "android-speech-frontend: no authorized adb device found" >&2; exit 1 ;;
-	1) device=$1 ;;
-	*) echo "android-speech-frontend: multiple adb devices; pass --device SERIAL" >&2; exit 1 ;;
-	esac
+android_preflight_find_adb
+if [ -n "$android_preflight_adb" ]; then
+	ADB=$android_preflight_adb
+else
+	_sdk=${android_preflight_sdk:-}
+	[ -n "$_sdk" ] || { android_preflight_find_sdk; _sdk=$android_preflight_sdk; }
+	android_preflight_add_error \
+		"adb" \
+		"\$ADB, adb on PATH, ${_sdk:-~/Library/Android/sdk}/platform-tools/adb" \
+		"install Android platform-tools, or use the copy under the resolved SDK"
+fi
+
+if [ -n "${ADB:-}" ] && command -v "$ADB" >/dev/null 2>&1; then
+	if [ -z "$device" ]; then
+		devices=$($ADB devices | awk 'NR > 1 && $2 == "device" { print $1 }')
+		# Intentional word splitting: adb serials cannot contain whitespace.
+		set -- $devices
+		case "$#" in
+		0) android_preflight_add_error \
+			"authorized adb device" \
+			"adb devices" \
+			"enable USB debugging, authorize this computer, or pass --device SERIAL" ;;
+		1) device=$1 ;;
+		*) android_preflight_add_error \
+			"adb device selection" \
+			"multiple devices: $*" \
+			"pass --device SERIAL" ;;
+		esac
+	fi
+
+	if [ -n "$device" ]; then
+		if ! "$ADB" -s "$device" get-state 2>/dev/null | grep -q '^device'; then
+			android_preflight_add_error \
+				"adb device ready" \
+				"adb -s $device get-state" \
+				"unlock the phone and re-authorize USB debugging"
+		fi
+	fi
+fi
+
+if [ "$stop" -eq 1 ]; then
+	android_preflight_finish || exit 1
+	"$ADB" -s "$device" shell am force-stop "$PKG"
+	echo "Stopped $PKG on $device."
+	exit 0
+fi
+
+if [ "$install" -eq 1 ] && [ ! -f "$apk" ]; then
+	android_preflight_add_error \
+		"debug APK" \
+		"$apk" \
+		"./build-android-apk.sh --gui sdl3 --abi arm64-v8a"
+fi
+
+if [ -n "$device" ] && [ "$install" -eq 0 ]; then
+	if ! "$ADB" -s "$device" shell pm path "$PKG" 2>/dev/null | grep -q '^package:'; then
+		android_preflight_add_error \
+			"$PKG is not installed" \
+			"adb -s $device shell pm path $PKG" \
+			"pass --install after building the APK"
+	fi
+fi
+
+if [ -z "$phone_ip" ] && [ -n "$device" ]; then
+	for iface in tailscale0 wlan0; do
+		phone_ip=$("$ADB" -s "$device" shell ip -4 -o addr show "$iface" 2>/dev/null |
+			sed -n 's/.* inet \([0-9.]*\)\/.*/\1/p' | head -n 1 | tr -d '\r')
+		if [ -n "$phone_ip" ]; then
+			phone_iface=$iface
+			break
+		fi
+	done
+	if [ -z "$phone_ip" ]; then
+		android_preflight_add_error \
+			"phone network reachability" \
+			"adb -s $device shell ip -4 addr show tailscale0 / wlan0" \
+			"join Tailscale on the phone, or the same Wi-Fi as this Mac, or pass --ip ADDRESS"
+	fi
+fi
+
+android_preflight_finish || exit 1
+
+if [ "$phone_iface" = wlan0 ]; then
+	echo "note: Tailscale was not detected; using Wi-Fi address $phone_ip" >&2
 fi
 
 adb_device()
 {
 	"$ADB" -s "$device" "$@"
 }
-
-if ! adb_device get-state 2>/dev/null | grep -q '^device'; then
-	echo "android-speech-frontend: device is not ready or authorized: $device" >&2
-	exit 1
-fi
-
-if [ "$stop" -eq 1 ]; then
-	adb_device shell am force-stop "$PKG"
-	echo "Stopped $PKG on $device."
-	exit 0
-fi
 
 abi=$(adb_device shell getprop ro.product.cpu.abi 2>/dev/null | tr -d '\r')
 if [ -z "$abi" ]; then
@@ -109,11 +180,6 @@ if [ -z "$abi" ]; then
 fi
 
 if [ "$install" -eq 1 ]; then
-	if [ ! -f "$apk" ]; then
-		echo "android-speech-frontend: APK not found: $apk" >&2
-		echo "build it with: ./build-android-apk.sh --gui sdl3 --abi arm64-v8a" >&2
-		exit 1
-	fi
 	echo "Installing $(basename "$apk") on $device ($abi) ..."
 	adb_device install -r "$apk" >/dev/null
 fi
@@ -129,23 +195,7 @@ if ! adb_device shell pm grant "$PKG" android.permission.RECORD_AUDIO 2>/dev/nul
 	exit 1
 fi
 
-if [ -z "$phone_ip" ]; then
-	for iface in tailscale0 wlan0; do
-		phone_ip=$(adb_device shell ip -4 -o addr show "$iface" 2>/dev/null |
-			sed -n 's/.* inet \([0-9.]*\)\/.*/\1/p' | head -n 1 | tr -d '\r')
-		if [ -n "$phone_ip" ]; then
-			phone_iface=$iface
-			break
-		fi
-	done
-	if [ -z "$phone_ip" ]; then
-		echo "android-speech-frontend: no tailscale0 or wlan0 IPv4 address found" >&2
-		exit 1
-	fi
-	if [ "$phone_iface" = wlan0 ]; then
-		echo "note: Tailscale was not detected; using Wi-Fi address $phone_ip" >&2
-	fi
-fi
+
 
 echo "Launching Android speech export on $phone_ip:$port ..."
 adb_device shell am force-stop "$PKG"

@@ -11,6 +11,23 @@ ADB_LOG="$TMP/adb.log"
 NC_LOG="$TMP/nc.log"
 export ADB_LOG NC_LOG
 
+# The launcher now preflights helpers, models, and playback with the SDK
+# checks (INF-17). Give it a complete fake prefix so this test stays hermetic.
+SPEECH_HOME="$TMP/speech"
+mkdir -p "$SPEECH_HOME/bin" "$SPEECH_HOME/models/kokoro" "$SPEECH_HOME/models/parakeet"
+touch "$SPEECH_HOME/bin/kokoro-cli" "$SPEECH_HOME/bin/openwakeword-cli" \
+	"$SPEECH_HOME/bin/whisper-stream-cli"
+chmod +x "$SPEECH_HOME/bin/kokoro-cli" "$SPEECH_HOME/bin/openwakeword-cli" \
+	"$SPEECH_HOME/bin/whisper-stream-cli"
+touch "$SPEECH_HOME/models/kokoro/kokoro-v1.0.onnx" \
+	"$SPEECH_HOME/models/kokoro/voices-v1.0.bin" \
+	"$SPEECH_HOME/models/ggml-base.en.bin"
+PLAYBACK_LIST="$TMP/playback.list"
+echo 'Test Speakers' > "$PLAYBACK_LIST"
+export INFERNODE_SPEECH_HOME="$SPEECH_HOME"
+export ANDROID_PREFLIGHT_PLAYBACK_LIST="$PLAYBACK_LIST"
+
+
 cat > "$TMP/bin/adb" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "$ADB_LOG"

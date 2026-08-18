@@ -32,12 +32,17 @@ for d in lib9 libbio libmath libmp libsec; do (cd $d && mk nuke && mk install); 
 (cd limbo && mk install)
 ```
 
-**Android builds need two environment variables that are not set.**
-`ANDROID_NDK_HOME` for `build-android-apk.sh`, `ANDROID_HOME` for a
-direct `android-app/./gradlew`. A worktree without `MacOSX/arm64/bin`
-host tools cannot run the full APK script at all ("host mk not built") —
-but for Kotlin or manifest changes `gradlew assembleDebug` is correct
-anyway, because `jniLibs/` and `assets/inferno-root/` are already staged.
+**Android SDK/NDK locations are discovered, not exported.** A standard
+Android Studio install lives at `~/Library/Android/sdk` (NDK under
+`ndk/<version>`, e.g. `29.0.14206865`) and does not set `ANDROID_HOME`
+or `ANDROID_NDK_HOME`. `tools/android-speech-preflight.sh` searches that
+path, `$ANDROID_HOME` / `$ANDROID_SDK_ROOT` / `$ANDROID_NDK_HOME`, and
+the older `~/Android/Sdk` default, then writes `android-app/local.properties`.
+A worktree without `MacOSX/arm64/bin` still cannot run the full APK
+script — the preflight names the bootstrap — but Kotlin or manifest
+changes can use `gradlew assembleDebug` because `jniLibs/` and
+`assets/inferno-root/` are already staged.
+
 
 ## Building Limbo
 
