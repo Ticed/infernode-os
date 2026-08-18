@@ -462,17 +462,19 @@ testSayStartupNotCountedAsPlayback(t: ref T)
 		"slow-starting say helper accepted");
 	t.assert(writefile(MNT + "/say", "hello") > 0, "say accepted");
 
-	# say is asynchronous, so sample once the write loop is over and the
-	# window is the only thing holding the microphone shut. Counting the
-	# startup as elapsed playback leaves nothing to drain and the window
-	# has already lapsed by here.
+	# say is asynchronous. After startup (2s) the scratch audiodev
+	# accepts the 2s clip at once, so the write loop is over and the
+	# unplayed remainder is still audible: mode must stay output, not
+	# drop to suppressed, until that drain completes.
 	sys->sleep(3000);
 	level := readfile(MNT + "/level");
-	t.assert(hassubstr(level, "mode=suppressed"),
-		"helper startup is not counted as elapsed playback");
+	t.assert(hassubstr(level, "mode=output"),
+		"unplayed remainder still reports output, not suppressed");
 
 	sys->sleep(2000);
 	level = readfile(MNT + "/level");
+	t.assert(!hassubstr(level, "mode=output"),
+		"output ends once the audio has drained");
 	t.assert(!hassubstr(level, "mode=suppressed"),
 		"window still ends once the audio has drained");
 

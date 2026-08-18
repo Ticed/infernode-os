@@ -1216,6 +1216,9 @@ drawvoicemeter(r: Rect)
 		peak = strtoint(getattr(attrs, "output-peak"));
 		label = "Speaking";
 		barcol = progfgcol;
+	} else if(mode == "suppressed") {
+		label = "Suppressed";
+		barcol = dimcol;
 	}
 	if(rms < 0) rms = 0;
 	if(rms > 1000) rms = 1000;
