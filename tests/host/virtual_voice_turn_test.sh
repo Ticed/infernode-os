@@ -46,7 +46,7 @@ FIXTUREDIR=tests/fixtures/speech/elevenlabs
 FIXTURE=${VIRTUAL_MIC_FIXTURE:-voice_submit}
 PHRASE='Local speech is working correctly.'
 RATE=16000
-GAP_MS=250              # shorter than the turn gate's silence window
+GAP_MS=150              # the join, once both sides are trimmed
 READY_TIMEOUT=90        # the listen helper loads a model on first start
 FINAL_TIMEOUT=25
 REPLY_TIMEOUT=20
@@ -80,12 +80,50 @@ keywords=$(awk -F'\t' -v id="$FIXTURE" '$1==id{print $3}' "$FIXTUREDIR/utterance
 [ -n "$keywords" ] || fail "fixture $FIXTURE has no expected keywords in utterances.tsv"
 
 # One stream: wake word, a gap too short to end a turn, then the request.
-cat "$WAKE" > "$speech"
-head -c $((RATE * 2 * GAP_MS / 1000)) /dev/zero >> "$speech"
-cat "$FIXTUREDIR/$FIXTURE.pcm" >> "$speech"
+# Both fixtures carry their own padding, and that padding is what decides
+# whether this is one turn or two. Let the join reach the gate's 800 ms
+# and the stack commits "hey jarvis" alone, answers it, and its own reply
+# suppresses capture for the request that follows. So trim both sides and
+# set the gap here rather than inheriting whatever the fixtures have.
+python3 - "$WAKE" "$FIXTUREDIR/$FIXTURE.pcm" "$speech" "$RATE" "$GAP_MS" <<'JOIN'
+import struct, sys
+
+wake, utterance, out, rate, gap_ms = sys.argv[1:6]
+rate, gap_ms = int(rate), int(gap_ms)
+block = rate // 100                     # 10 ms
+floor = 300                             # a block under this is padding
+
+
+def samples(path):
+    raw = open(path, "rb").read()
+    n = len(raw) // 2
+    return list(struct.unpack("<%dh" % n, raw[:n * 2]))
+
+
+def trim(s, front, back):
+    blocks = [s[i:i + block] for i in range(0, len(s), block)]
+    quiet = lambda b: max((abs(v) for v in b), default=0) < floor
+    if front:
+        while blocks and quiet(blocks[0]):
+            blocks.pop(0)
+    if back:
+        while blocks and quiet(blocks[-1]):
+            blocks.pop()
+    return [v for b in blocks for v in b]
+
+
+joined = (trim(samples(wake), False, True)
+          + [0] * (rate * gap_ms // 1000)
+          + trim(samples(utterance), True, False))
+open(out, "wb").write(struct.pack("<%dh" % len(joined), *joined))
+sys.stderr.write("joined stream: %.2fs\n" % (len(joined) / rate))
+JOIN
 
 : >"$log"
-tools/speech-test.sh -d -w -n 2 -p "$PHRASE" >"$log" 2>&1 &
+# More turns than this test should ever produce: the quiet window at the
+# end proves no further turn happens, and a turn budget of one would
+# prove that by exiting rather than by staying silent.
+tools/speech-test.sh -d -w -n 5 -p "$PHRASE" >"$log" 2>&1 &
 listener=$!
 
 waited=0
