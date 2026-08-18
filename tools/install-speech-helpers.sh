@@ -374,6 +374,31 @@ if [ ! -s "$model" ]; then
   exit 0
 fi
 
+# Probe the installed whisper-stream and pass only flags it advertises
+# (INF-38). Unknown arguments print usage and exit 0, which the speech
+# shim reports as a crash and then restarts.
+whisper_help=$("$bin" --help 2>&1 || true)
+whisper_has() {
+  printf '%s\n' "$whisper_help" | tr -s '[:space:],' '\n' | grep -Fx -- "$1" >/dev/null
+}
+
+set -- --model "$model"
+if whisper_has --capture; then
+  set -- "$@" --capture "$capture"
+fi
+if whisper_has --step; then
+  set -- "$@" --step 0
+fi
+if whisper_has --length; then
+  set -- "$@" --length "$length"
+fi
+if whisper_has --keep; then
+  set -- "$@" --keep 200
+fi
+if whisper_has --vad-thold; then
+  set -- "$@" --vad-thold 0.6
+fi
+
 # VAD mode: whisper-stream waits for end-of-utterance, then prints the
 # transcribed segment. Filter its chrome — "### Transcription" separators,
 # ANSI escapes, [timestamp] blocks — and emit each utterance as a final.
@@ -384,7 +409,7 @@ fi
 # \r is stripped per line in bash instead. stderr is not discarded: the
 # shim keeps a bounded tail of it, the only diagnostic when whisper dies.
 esc=$(printf '\033')
-"$bin" --model "$model" --capture "$capture" --step 0 --length "$length" --keep 200 --vad-thold 0.6 |
+"$bin" "$@" |
 while IFS= read -r line; do
   line=${line//$'\r'/}
   case "$line" in
