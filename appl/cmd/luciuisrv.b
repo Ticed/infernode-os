@@ -1222,6 +1222,7 @@ dowrite(srv: ref Styxserver, m: ref Tmsg.Write, c: ref Fid)
 		srv.reply(ref Rmsg.Write(m.tag, len m.data));
 
 	Qnotification =>
+		data = safeeventtext(data);
 		if(qlen(notifyq) >= MAX_QUEUE_DEPTH) {
 			srv.reply(ref Rmsg.Error(m.tag, "notification queue full"));
 			return;
@@ -1230,6 +1231,7 @@ dowrite(srv: ref Styxserver, m: ref Tmsg.Write, c: ref Fid)
 		srv.reply(ref Rmsg.Write(m.tag, len m.data));
 
 	Qtoast =>
+		data = safeeventtext(data);
 		if(qlen(toastq) >= MAX_QUEUE_DEPTH) {
 			srv.reply(ref Rmsg.Error(m.tag, "toast queue full"));
 			return;
@@ -1313,7 +1315,7 @@ dowrite(srv: ref Styxserver, m: ref Tmsg.Write, c: ref Fid)
 			srv.reply(ref Rmsg.Error(m.tag, Enotfound));
 			break;
 		}
-		a.label = data;
+		a.label = safeattrtext(data);
 		vers++;
 		pushevent(actid, "label");
 		srv.reply(ref Rmsg.Write(m.tag, len m.data));
@@ -1324,8 +1326,8 @@ dowrite(srv: ref Styxserver, m: ref Tmsg.Write, c: ref Fid)
 			srv.reply(ref Rmsg.Error(m.tag, Enotfound));
 			break;
 		}
-		a.status = data;
-		if(data != "blocked")
+		a.status = safeattrtext(data);
+		if(a.status != "blocked")
 			a.voiceapprovalq = nil;
 		if(a.voicequeuestate == "delivering" && activitybusy(a)) {
 			a.voicequeuestate = "delivered";
@@ -1568,6 +1570,10 @@ dowrite(srv: ref Styxserver, m: ref Tmsg.Write, c: ref Fid)
 			srv.reply(ref Rmsg.Error(m.tag, Enotfound));
 			break;
 		}
+		if(!validid(data) || findartifact(a, data) == nil) {
+			srv.reply(ref Rmsg.Error(m.tag, "unknown artifact"));
+			break;
+		}
 		a.currentArtifact = data;
 		vers++;
 		pushevent(actid, "presentation current");
@@ -1592,9 +1598,9 @@ dowrite(srv: ref Styxserver, m: ref Tmsg.Write, c: ref Fid)
 			srv.reply(ref Rmsg.Error(m.tag, Enotfound));
 			break;
 		}
-		a.artifacts[subid].appstatus = data;
+		a.artifacts[subid].appstatus = safeattrtext(data);
 		vers++;
-		pushevent(actid, "presentation app " + a.artifacts[subid].id + " status=" + data);
+		pushevent(actid, "presentation app " + a.artifacts[subid].id + " status=" + a.artifacts[subid].appstatus);
 		srv.reply(ref Rmsg.Write(m.tag, len m.data));
 
 	Qctxctl =>
@@ -1656,7 +1662,7 @@ globalctl(data: string): string
 		return nil;
 	}
 	if(hasprefix(data, "activity create ")) {
-		label := data[len "activity create ":];
+		label := safeattrtext(data[len "activity create ":]);
 		a := newactivity(label);
 		if(a == nil)
 			return "too many activities";
@@ -1695,6 +1701,8 @@ globalctl(data: string): string
 	}
 	if(hasprefix(data, "theme ")) {
 		name := data[len "theme ":];
+		if(!validid(name))
+			return "invalid theme name";
 		# Persist theme choice (truncate to avoid stale trailing bytes)
 		fd := sys->open("/lib/lucifer/theme/current", Sys->OWRITE|Sys->OTRUNC);
 		if(fd == nil)
@@ -1739,13 +1747,17 @@ convctl(a: ref Activity, data: string): string
 		if(hasattr(attrs, "text"))
 			a.messages[idx].text = getattr(attrs, "text");
 		if(hasattr(attrs, "progress"))
-			a.messages[idx].progress = getattr(attrs, "progress");
+			a.messages[idx].progress = safeattrtext(getattr(attrs, "progress"));
 		if(hasattr(attrs, "title"))
-			a.messages[idx].title = getattr(attrs, "title");
+			a.messages[idx].title = safeattrtext(getattr(attrs, "title"));
 		if(hasattr(attrs, "options"))
-			a.messages[idx].options = getattr(attrs, "options");
-		if(hasattr(attrs, "dtype"))
-			a.messages[idx].dtype = getattr(attrs, "dtype");
+			a.messages[idx].options = safeattrtext(getattr(attrs, "options"));
+		if(hasattr(attrs, "dtype")) {
+			dt := safeattrtext(getattr(attrs, "dtype"));
+			if(dt != "" && !validdtype(dt))
+				return "invalid dtype";
+			a.messages[idx].dtype = dt;
+		}
 		vers++;
 		pushevent(a.id, "conversation update " + string idx);
 		return nil;
@@ -1763,8 +1775,18 @@ convctl(a: ref Activity, data: string): string
 
 	if(role == nil || role == "")
 		return "missing role";
+	role = safeattrtext(role);
+	if(!validrole(role))
+		return "invalid role";
 	if(text == nil)
 		text = "";
+	using = safeattrtext(using);
+	dtype = safeattrtext(dtype);
+	title = safeattrtext(title);
+	progress = safeattrtext(progress);
+	options = safeattrtext(options);
+	if(dtype != nil && dtype != "" && !validdtype(dtype))
+		return "invalid dtype";
 
 	idx := addmessage(a, role, text, using, dtype, title, progress, options);
 	if(idx < 0)
@@ -1788,8 +1810,13 @@ presctl(a: ref Activity, data: string): string
 			return "missing id";
 		if(atype == nil || atype == "")
 			atype = "text";
+		atype = safeattrtext(atype);
+		if(!validleaf(atype))
+			return "invalid artifact type";
 		if(label == nil)
 			label = id;
+		label = safeattrtext(label);
+		dispath = safeattrtext(dispath);
 		if(findartifact(a, id) != nil)
 			return "artifact already exists: " + id;
 		art := addartifact(a, id, atype, label);
@@ -1826,10 +1853,14 @@ presctl(a: ref Activity, data: string): string
 			art.data = d;
 		l := getattr(attrs, "label");
 		if(l != nil)
-			art.label = l;
+			art.label = safeattrtext(l);
 		t := getattr(attrs, "type");
-		if(t != nil)
+		if(t != nil) {
+			t = safeattrtext(t);
+			if(!validleaf(t))
+				return "invalid artifact type";
 			art.atype = t;
+		}
 		vers++;
 		pushevent(a.id, "presentation " + id);
 		return nil;
@@ -1924,7 +1955,7 @@ presctl(a: ref Activity, data: string): string
 		if(art == nil)
 			return "unknown artifact: " + id;
 		if(status != nil)
-			art.appstatus = status;
+			art.appstatus = safeattrtext(status);
 		vers++;
 		pushevent(a.id, "presentation app " + id + " status=" + art.appstatus);
 		return nil;
@@ -1959,12 +1990,19 @@ ctxctl(a: ref Activity, data: string): string
 		via := getattr(attrs, "via");
 		if(path == nil || path == "")
 			return "missing path";
+		if(!validctxpath(path))
+			return "invalid resource path";
 		if(label == nil)
 			label = path;
 		if(rtype == nil)
 			rtype = "unknown";
 		if(status == nil)
 			status = "idle";
+		label = safeattrtext(label);
+		rtype = safeattrtext(rtype);
+		status = safeattrtext(status);
+		latency = safeattrtext(latency);
+		via = safeattrtext(via);
 		if(a.nres >= MAX_RESOURCES)
 			return "too many resources";
 		if(a.nres >= len a.resources) {
@@ -1983,21 +2021,23 @@ ctxctl(a: ref Activity, data: string): string
 		path := getattr(attrs, "path");
 		if(path == nil || path == "")
 			return "missing path";
+		if(!validctxpath(path))
+			return "invalid resource path";
 		found := 0;
 		for(i := 0; i < a.nres; i++) {
 			if(a.resources[i].path == path) {
 				s := getattr(attrs, "status");
 				if(s != nil)
-					a.resources[i].status = s;
+					a.resources[i].status = safeattrtext(s);
 				sf := getattr(attrs, "staleFor");
 				if(sf != nil)
-					a.resources[i].staleFor = sf;
+					a.resources[i].staleFor = safeattrtext(sf);
 				l := getattr(attrs, "latency");
 				if(l != nil)
-					a.resources[i].latency = l;
+					a.resources[i].latency = safeattrtext(l);
 				v := getattr(attrs, "via");
 				if(v != nil)
-					a.resources[i].via = v;
+					a.resources[i].via = safeattrtext(v);
 				found = 1;
 				break;
 			}
@@ -2014,6 +2054,8 @@ ctxctl(a: ref Activity, data: string): string
 		path := getattr(attrs, "path");
 		if(path == nil || path == "")
 			return "missing path";
+		if(!validctxpath(path))
+			return "invalid resource path";
 		found := -1;
 		for(i := 0; i < a.nres; i++) {
 			if(a.resources[i].path == path) {
@@ -2024,16 +2066,16 @@ ctxctl(a: ref Activity, data: string): string
 		if(found >= 0) {
 			l := getattr(attrs, "label");
 			if(l != nil)
-				a.resources[found].label = l;
+				a.resources[found].label = safeattrtext(l);
 			t := getattr(attrs, "type");
 			if(t != nil)
-				a.resources[found].rtype = t;
+				a.resources[found].rtype = safeattrtext(t);
 			s := getattr(attrs, "status");
 			if(s != nil)
-				a.resources[found].status = s;
+				a.resources[found].status = safeattrtext(s);
 			v := getattr(attrs, "via");
 			if(v != nil)
-				a.resources[found].via = v;
+				a.resources[found].via = safeattrtext(v);
 		} else {
 			label := getattr(attrs, "label");
 			rtype := getattr(attrs, "type");
@@ -2042,6 +2084,10 @@ ctxctl(a: ref Activity, data: string): string
 			if(label == nil) label = path;
 			if(rtype == nil) rtype = "unknown";
 			if(status == nil) status = "idle";
+			label = safeattrtext(label);
+			rtype = safeattrtext(rtype);
+			status = safeattrtext(status);
+			via = safeattrtext(via);
 			if(a.nres >= MAX_RESOURCES)
 				return "too many resources";
 			if(a.nres >= len a.resources) {
@@ -2084,6 +2130,8 @@ ctxctl(a: ref Activity, data: string): string
 	}
 	if(hasprefix(data, "resource activity ")) {
 		path := data[len "resource activity ":];
+		if(!validctxpath(path))
+			return "invalid resource path";
 		found := 0;
 		for(i := 0; i < a.nres; i++) {
 			if(a.resources[i].path == path) {
@@ -2108,6 +2156,8 @@ ctxctl(a: ref Activity, data: string): string
 			return "missing desc";
 		if(relevance == nil)
 			relevance = "medium";
+		desc = safeattrtext(desc);
+		relevance = safeattrtext(relevance);
 		if(a.ngaps >= MAX_GAPS)
 			return "too many gaps";
 		if(a.ngaps >= len a.gaps) {
@@ -2141,6 +2191,8 @@ ctxctl(a: ref Activity, data: string): string
 			return "missing desc";
 		if(relevance == nil || relevance == "")
 			relevance = "medium";
+		desc = safeattrtext(desc);
+		relevance = safeattrtext(relevance);
 		# Find existing gap with same desc
 		found := -1;
 		for(i := 0; i < a.ngaps; i++) {
@@ -2173,6 +2225,7 @@ ctxctl(a: ref Activity, data: string): string
 		desc := getattr(attrs, "desc");
 		if(desc == nil || desc == "")
 			return "missing desc";
+		desc = safeattrtext(desc);
 		found := -1;
 		for(i := 0; i < a.ngaps; i++) {
 			if(a.gaps[i].desc == desc) {
@@ -2198,6 +2251,8 @@ ctxctl(a: ref Activity, data: string): string
 			return "missing label";
 		if(status == nil)
 			status = "idle";
+		label = safeattrtext(label);
+		status = safeattrtext(status);
 		if(a.nbg >= MAX_BGTASKS)
 			return "too many background tasks";
 		if(a.nbg >= len a.bgtasks) {
@@ -2229,13 +2284,13 @@ ctxctl(a: ref Activity, data: string): string
 		attrs := parseattrs(rem);
 		s := getattr(attrs, "status");
 		if(s != nil)
-			a.bgtasks[idx].status = s;
+			a.bgtasks[idx].status = safeattrtext(s);
 		p := getattr(attrs, "progress");
 		if(p != nil)
-			a.bgtasks[idx].progress = p;
+			a.bgtasks[idx].progress = safeattrtext(p);
 		l := getattr(attrs, "label");
 		if(l != nil)
-			a.bgtasks[idx].label = l;
+			a.bgtasks[idx].label = safeattrtext(l);
 		vers++;
 		pushevent(a.id, "context background");
 		return nil;
@@ -2908,8 +2963,14 @@ parseattrs(s: string): list of ref Attr
 		i++;
 
 	j := i;
+	inquote := 0;
 	while(j < len s) {
-		if(s[j] == '=') {
+		if(s[j] == '"') {
+			inquote = !inquote;
+			j++;
+			continue;
+		}
+		if(!inquote && s[j] == '=') {
 			kstart := j - 1;
 			while(kstart > i && s[kstart - 1] != ' ' && s[kstart - 1] != '\t')
 				kstart--;
@@ -2967,6 +3028,86 @@ parseattrs(s: string): list of ref Attr
 	for(; attrs != nil; attrs = tl attrs)
 		rev = hd attrs :: rev;
 	return rev;
+}
+
+validctxpath(p: string): int
+{
+	if(p == nil || p == "")
+		return 0;
+	for(i := 0; i < len p; i++) {
+		c := p[i];
+		if(c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
+		   c == ',' || c == '=')
+			return 0;
+	}
+	return 1;
+}
+
+safeattrtext(s: string): string
+{
+	if(s == nil)
+		return nil;
+	out := "";
+	for(i := 0; i < len s; i++) {
+		c := s[i];
+		if(c == '=')
+			out[len out] = ':';
+		else if(c == '\n' || c == '\r' || c == '\t')
+			out[len out] = ' ';
+		else
+			out[len out] = c;
+	}
+	return trimspaces(out);
+}
+
+safeeventtext(s: string): string
+{
+	if(s == nil)
+		return nil;
+	out := "";
+	for(i := 0; i < len s; i++) {
+		c := s[i];
+		if(c == '\n' || c == '\r' || c == '\t')
+			out[len out] = ' ';
+		else
+			out[len out] = c;
+	}
+	return trimspaces(out);
+}
+
+validrole(role: string): int
+{
+	return role == "human" || role == "veltro" || role == "system" || role == "tool";
+}
+
+validdtype(dtype: string): int
+{
+	return dtype == "dialogue" || dtype == "form";
+}
+
+validleaf(s: string): int
+{
+	if(s == nil || s == "" || s == "." || s == "..")
+		return 0;
+	for(i := 0; i < len s; i++) {
+		c := s[i];
+		if((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		   (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.')
+			continue;
+		return 0;
+	}
+	return 1;
+}
+
+trimspaces(s: string): string
+{
+	i := 0;
+	while(i < len s && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r'))
+		i++;
+	j := len s;
+	while(j > i && (s[j - 1] == ' ' || s[j - 1] == '\t' || s[j - 1] == '\n' || s[j - 1] == '\r'))
+		j--;
+	return s[i:j];
 }
 
 getattr(attrs: list of ref Attr, key: string): string

@@ -562,7 +562,8 @@ validateingestpath(path: string): string
 hascontrol(s: string): int
 {
 	for(i := 0; i < len s; i++)
-		if(s[i] == '\n' || s[i] == '\r' || s[i] == '\t' || s[i] < ' ')
+		if(s[i] == ' ' || s[i] == '\n' || s[i] == '\r' ||
+		   s[i] == '\t' || s[i] == ',' || s[i] == '=' || s[i] < ' ')
 			return 1;
 	return 0;
 }
@@ -793,10 +794,16 @@ handlectl(cmd: string): string
 		path := "";
 		if(argv != nil)
 			path = hd argv;
+		if(argv != nil && tl argv != nil)
+			return "error: usage: ingest [path]";
 		return doingest(path);
 	"lint" =>
+		if(argv != nil)
+			return "error: usage: lint";
 		return dolint();
 	"reset" =>
+		if(argv != nil)
+			return "error: usage: reset";
 		llmclose();
 		return "ok: session closed";
 	* =>

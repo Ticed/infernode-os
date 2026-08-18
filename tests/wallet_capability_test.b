@@ -71,7 +71,31 @@ init(nil: ref Draw->Context, nil: list of string)
 		fail("cannot create test wallet account");
 		return;
 	}
+	if(writefile("/n/wallet/new", "eth ethereum bad/name") >= 0) {
+		fail("wallet accepted unsafe account name");
+		return;
+	}
+	if(writefile("/n/wallet/new", "eth ethereum extra tokens") >= 0) {
+		fail("wallet accepted extra account creation tokens");
+		return;
+	}
+	if(writefile("/n/wallet/ctl", "default bad/name") >= 0) {
+		fail("wallet accepted unsafe default account name");
+		return;
+	}
 	writefile("/n/wallet/ctl", "default captest");
+	if(writefile("/n/wallet/captest/pay", "1000 0x000000000000000000000000000000000000dEaD") <= 0) {
+		fail("trusted setup could not queue wallet payment proposal");
+		return;
+	}
+	if(writefile("/n/wallet/ctl", "deny 1 trailing") >= 0) {
+		fail("wallet accepted trailing tokens on pending denial");
+		return;
+	}
+	if(writefile("/n/wallet/ctl", "deny 1") <= 0) {
+		fail("wallet rejected exact pending denial");
+		return;
+	}
 
 	caps := ref NsConstruct->Capabilities("wallet" :: nil, "/n/wallet" :: nil,
 		nil, nil, nil, nil, 0, 0, -1, nil, nil);
@@ -84,17 +108,31 @@ init(nil: ref Draw->Context, nil: list of string)
 
 	if(!exists("/n/wallet/accounts") || !exists("/n/wallet/default") ||
 	   !exists("/n/wallet/captest/address") || !exists("/n/wallet/captest/pay") ||
-	   !exists("/n/wallet/captest/sign") || !exists("/n/wallet/captest/history")) {
+	   !exists("/n/wallet/captest/history")) {
 		fail("agent wallet proposal/read surface missing");
 		return;
 	}
 
 	if(exists("/n/wallet/ctl") || exists("/n/wallet/pending") ||
-	   exists("/n/wallet/new") || exists("/n/wallet/captest/ctl")) {
+	   exists("/n/wallet/new") || exists("/n/wallet/captest/ctl") ||
+	   exists("/n/wallet/captest/sign")) {
 		fail("trusted wallet commit/config files visible");
 		return;
 	}
+	if(writefile("/n/wallet/captest/sign",
+	    "9c22ff5f21f0b81b113e63f7db6da94fedef11b2119b4088b89664fb9a3cb658") >= 0) {
+		fail("wallet grant allowed raw hash signing");
+		return;
+	}
 
+	if(writefile("/n/wallet/captest/pay", "abc 0x000000000000000000000000000000000000dEaD") >= 0) {
+		fail("wallet accepted non-decimal payment amount");
+		return;
+	}
+	if(writefile("/n/wallet/captest/pay", "1000 not-an-address") >= 0) {
+		fail("wallet accepted unsafe payment recipient");
+		return;
+	}
 	if(writefile("/n/wallet/captest/pay", "1000 0x000000000000000000000000000000000000dEaD") <= 0) {
 		fail("agent could not queue wallet payment proposal");
 		return;
@@ -109,5 +147,5 @@ init(nil: ref Draw->Context, nil: list of string)
 		return;
 	}
 
-	sys->print("WALLETCAP PASS: wallet grant exposes proposals but hides commit/config authority\n");
+	sys->print("WALLETCAP PASS: wallet grant exposes proposals but hides commit/config/sign authority\n");
 }

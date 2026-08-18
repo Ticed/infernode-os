@@ -143,6 +143,20 @@ testWriteTool(t: ref T)
 	t.assert(hassubstr(doc, "Write"), "doc mentions Write");
 }
 
+testWriteRejectsControlDelimiterPath(t: ref T)
+{
+	tool := load Tool "/dis/veltro/tools/write.dis";
+	if(tool == nil) {
+		t.skip("cannot load write tool");
+		return;
+	}
+
+	result := tool->exec("/tmp/veltro/scratch/a=b content");
+	t.assert(hassubstr(result, "error: invalid path") &&
+		hassubstr(result, "control delimiter"),
+		"write rejects '=' in path before scratch/write checks");
+}
+
 # Test that Edit tool loads and has correct name/doc
 testEditTool(t: ref T)
 {
@@ -158,6 +172,39 @@ testEditTool(t: ref T)
 	t.assert(len doc > 0, "edit tool has documentation");
 	t.assert(hassubstr(doc, "Edit"), "doc mentions Edit");
 	t.assert(hassubstr(doc, "replace"), "doc mentions replace");
+}
+
+testEditRejectsControlDelimiterPath(t: ref T)
+{
+	tool := load Tool "/dis/veltro/tools/edit.dis";
+	if(tool == nil) {
+		t.skip("cannot load edit tool");
+		return;
+	}
+
+	result := tool->exec("/tmp/veltro/scratch/a=b old new");
+	t.assert(hassubstr(result, "error: invalid path") &&
+		hassubstr(result, "control delimiter"),
+		"edit rejects '=' in path before namespace/write checks");
+}
+
+testEditorRejectsControlDelimiterPath(t: ref T)
+{
+	tool := load Tool "/dis/veltro/tools/editor.dis";
+	if(tool == nil) {
+		t.skip("cannot load editor tool");
+		return;
+	}
+
+	result := tool->exec("name /tmp/veltro/scratch/a=b");
+	t.assert(hassubstr(result, "error: invalid path") &&
+		hassubstr(result, "control delimiter"),
+		"editor name rejects '=' in path before ctl write");
+
+	result = tool->exec("open /tmp/veltro/scratch/a=b");
+	t.assert(hassubstr(result, "error: invalid path") &&
+		hassubstr(result, "control delimiter"),
+		"editor open rejects '=' in path before stat/ctl write");
 }
 
 # Test that Exec tool loads and has correct name/doc
@@ -377,7 +424,10 @@ init(nil: ref Draw->Context, args: list of string)
 	run("FindTool", testFindTool);
 	run("SearchTool", testSearchTool);
 	run("WriteTool", testWriteTool);
+	run("WriteRejectsControlDelimiterPath", testWriteRejectsControlDelimiterPath);
 	run("EditTool", testEditTool);
+	run("EditRejectsControlDelimiterPath", testEditRejectsControlDelimiterPath);
+	run("EditorRejectsControlDelimiterPath", testEditorRejectsControlDelimiterPath);
 	run("ExecTool", testExecTool);
 	run("SpawnTool", testSpawnTool);
 

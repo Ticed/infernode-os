@@ -1299,10 +1299,46 @@ filepathof(args: string): string
 	(nil, toks) := sys->tokenize(args, " \t\n");
 	for(t := toks; t != nil; t = tl t) {
 		tok := hd t;
-		if(len tok > 1 && tok[0] == '/')
+		if(len tok > 1 && tok[0] == '/' && safeattrpath(tok))
 			return tok;
 	}
 	return nil;
+}
+
+safeattrpath(p: string): int
+{
+	if(p == nil || p == "" || p[0] != '/')
+		return 0;
+	for(i := 0; i < len p; i++) {
+		c := p[i];
+		if(c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
+		   c == ',' || c == '=')
+			return 0;
+	}
+	return 1;
+}
+
+safeattrtext(s: string): string
+{
+	out := "";
+	for(i := 0; i < len s; i++) {
+		c := s[i];
+		if(c == '=')
+			out[len out] = ':';
+		else if(c == '\n' || c == '\r' || c == '\t')
+			out[len out] = ' ';
+		else
+			out[len out] = c;
+	}
+	i = 0;
+	while(i < len out && out[i] == ' ')
+		i++;
+	j := len out;
+	while(j > i && out[j-1] == ' ')
+		j--;
+	if(i >= j)
+		return "";
+	return out[i:j];
 }
 
 # Return the last path component (basename).
@@ -1449,6 +1485,7 @@ applypathchanges()
 		base := pathbase(p);
 		if(base == nil || base == "")
 			base = p;
+		base = safeattrtext(base);
 		writefile(ctxpath, "resource upsert path=" + p +
 			" label=" + base + " type=fs status=idle via=bound");
 	}
@@ -1518,6 +1555,7 @@ handleslash(cmd: string): int
 				base := pathbase(cmdarg);
 				if(base == nil || base == "")
 					base = cmdarg;
+				base = safeattrtext(base);
 				writefile(ctxpath, "resource upsert path=" + cmdarg +
 					" label=" + base + " type=fs status=idle via=bound");
 				ack = "bound: " + cmdarg;
@@ -1541,11 +1579,17 @@ handleslash(cmd: string): int
 		if(len cmdarg == 0) {
 			ack = "usage: /tools +name or /tools -name";
 		} else if(cmdarg[0] == '+') {
-			writefile(toolctlmount(toolmount) + "/ctl", "add " + cmdarg[1:]);
-			ack = "tool added: " + cmdarg[1:];
+			ctlcmd := "add " + cmdarg[1:];
+			if(writefile(toolctlmount(toolmount) + "/ctl", ctlcmd) != len array of byte ctlcmd)
+				ack = "tool add failed: " + cmdarg[1:];
+			else
+				ack = "tool added: " + cmdarg[1:];
 		} else if(cmdarg[0] == '-') {
-			writefile(toolctlmount(toolmount) + "/ctl", "remove " + cmdarg[1:]);
-			ack = "tool removed: " + cmdarg[1:];
+			ctlcmd := "remove " + cmdarg[1:];
+			if(writefile(toolctlmount(toolmount) + "/ctl", ctlcmd) != len array of byte ctlcmd)
+				ack = "tool remove failed: " + cmdarg[1:];
+			else
+				ack = "tool removed: " + cmdarg[1:];
 		} else {
 			ack = "usage: /tools +name or /tools -name";
 		}
@@ -1950,6 +1994,7 @@ agentturn(input: string)
 				fpath := filepathof(eargs);
 				if(fpath != nil) {
 					base := pathbase(fpath);
+					base = safeattrtext(base);
 					ftype := "file";
 					if(fpath[len fpath - 1] == '/')
 						ftype = "dir";

@@ -654,7 +654,7 @@ restrictwallet(): string
 	if(err != nil)
 		return err;
 
-	acctallow := "address" :: "balance" :: "chain" :: "sign" ::
+	acctallow := "address" :: "balance" :: "chain" ::
 		"pay" :: "history" :: nil;
 	for(a = accts; a != nil; a = tl a) {
 		err = restrictdir("/n/wallet/" + hd a, acctallow, 1);
@@ -889,7 +889,8 @@ validatepath(p: string): string
 	if(p == "/")
 		return "root path is not grantable";
 	for(ci := 0; ci < len p; ci++)
-		if(p[ci] == ' ' || p[ci] == '\n' || p[ci] == '\r' || p[ci] == '\t' || p[ci] == ',')
+		if(p[ci] == ' ' || p[ci] == '\n' || p[ci] == '\r' ||
+		   p[ci] == '\t' || p[ci] == ',' || p[ci] == '=')
 			return "path contains control delimiter";
 
 	start := 1;

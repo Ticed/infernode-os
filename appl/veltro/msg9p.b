@@ -386,7 +386,10 @@ Serve:
 					srv.reply(ref Rmsg.Write(m.tag, len m.data));
 			Qdraft =>
 				perr := queuedraft(data);
-				srv.reply(ref Rmsg.Error(m.tag, perr));
+				if(perr != nil)
+					srv.reply(ref Rmsg.Error(m.tag, perr));
+				else
+					srv.reply(ref Rmsg.Write(m.tag, len m.data));
 			Qflag =>
 				(nil, fargs) := sys->tokenize(data, " \t\r\n");
 				ferr := doflag(fargs);
@@ -510,13 +513,13 @@ queuedraft(data: string): string
 	for(p := pendingSends; p != nil; p = tl p) {
 		count++;
 		if((hd p).data == data)
-			return sys->sprint("draft: approval required request %d", (hd p).id);
+			return nil;
 	}
 	if(count >= MAXPENDING)
 		return "draft: approval queue full";
 	id := nextSendID++;
 	pendingSends = ref PendingSend(id, data) :: pendingSends;
-	return sys->sprint("draft: approval required request %d", id);
+	return nil;
 }
 
 validreply(data: string): string
@@ -527,6 +530,10 @@ validreply(data: string): string
 	origid = msgstrip(origid);
 	if(src == "" || origid == "")
 		return "draft: want <srcname>\\n<origid>\\n<body>";
+	if(!safesrcname(src))
+		return "draft: unsafe source name";
+	if(hascontrol(origid))
+		return "draft: unsafe message id";
 	for(sl := sources; sl != nil; sl = tl sl)
 		if((hd sl).name == src)
 			return nil;
@@ -592,6 +599,10 @@ handlereply(data: string): string
 	origid = msgstrip(origid);
 	if(src == "" || origid == "")
 		return "reply: want <srcname>\\n<origid>\\n<body>";
+	if(!safesrcname(src))
+		return "reply: unsafe source name";
+	if(hascontrol(origid))
+		return "reply: unsafe message id";
 	for(sl := sources; sl != nil; sl = tl sl)
 		if((hd sl).name == src)
 			return (hd sl).mod->reply(origid, body);
@@ -642,11 +653,15 @@ dosend(srcname, recipient, body: string): string
 # flag semantics (SMS) implement setflag as an idempotent no-op.
 doflag(args: list of string): string
 {
-	if(args == nil || tl args == nil || tl tl args == nil)
+	if(args == nil || tl args == nil || tl tl args == nil || tl tl tl args != nil)
 		return "usage: flag <src> <origid> <seen|unseen|flagged|unflagged|urgent|draft>";
 	srcname := hd args;
 	origid := hd tl args;
 	word := str->tolower(hd tl tl args);
+	if(!safesrcname(srcname))
+		return "flag: unsafe source name";
+	if(hascontrol(origid))
+		return "flag: unsafe message id";
 
 	flag := 0;
 	add := 0;
@@ -676,6 +691,10 @@ doregister(args: list of string): string
 
 	srcname := hd args;
 	dispath := hd tl args;
+	if(!safesrcname(srcname))
+		return "register: unsafe source name";
+	if(!safedispath(dispath))
+		return "register: unsafe module path";
 
 	# Check for duplicate
 	for(sl := sources; sl != nil; sl = tl sl)
@@ -709,6 +728,53 @@ doregister(args: list of string): string
 
 	sys->fprint(stderr, "msg9p: registered source '%s' from %s\n", srcname, dispath);
 	return nil;
+}
+
+safesrcname(s: string): int
+{
+	if(s == nil || s == "" || s == "." || s == "..")
+		return 0;
+	for(i := 0; i < len s; i++) {
+		c := s[i];
+		if((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		   (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.')
+			continue;
+		return 0;
+	}
+	return 1;
+}
+
+safedispath(path: string): int
+{
+	if(path == nil || path == "" || path[0] != '/' || !hassuffix(path, ".dis"))
+		return 0;
+	if(hascontrol(path))
+		return 0;
+
+	part := "";
+	for(i := 1; i <= len path; i++) {
+		if(i == len path || path[i] == '/') {
+			if(part == "" || part == "." || part == "..")
+				return 0;
+			part = "";
+			continue;
+		}
+		part[len part] = path[i];
+	}
+	return 1;
+}
+
+hascontrol(s: string): int
+{
+	for(i := 0; i < len s; i++)
+		if(s[i] <= ' ' || s[i] == 16r7f)
+			return 1;
+	return 0;
+}
+
+hassuffix(s, suffix: string): int
+{
+	return len s >= len suffix && s[len s - len suffix:] == suffix;
 }
 
 dounregister(srcname: string): string
