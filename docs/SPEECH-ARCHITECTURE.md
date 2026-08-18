@@ -195,7 +195,7 @@ long-lived microphone stream, for example:
 ```
 cd <parakeet-checkout>
 <build-dir>/examples/cli/parakeet-cli transcribe \
-    --model models/parakeet_realtime_eou_120m-v1-f16.gguf \
+    --model models/realtime_eou_120m-v1-f16.gguf \
     --mic --stream --lines
 ```
 

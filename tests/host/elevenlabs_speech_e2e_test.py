@@ -20,6 +20,9 @@ import time
 ROOT = Path(os.environ.get("ROOT", Path(__file__).resolve().parents[2])).resolve()
 FIXTURES = ROOT / "tests/fixtures/speech/elevenlabs"
 MANIFEST = FIXTURES / "utterances.tsv"
+PARAKEET_MANIFEST = Path(
+    os.environ.get("PARAKEET_MANIFEST", ROOT / "tools/parakeet-eou.manifest")
+)
 REQUIRED = os.environ.get("INFERNODE_SPEECH_REAL_AUDIO_REQUIRED") == "1"
 SAMPLE_RATE = 16000
 BYTES_PER_SAMPLE = 2
@@ -68,13 +71,27 @@ def read_meta(path: Path) -> dict[str, str]:
     return values
 
 
+def manifest_pin(key: str) -> str:
+    # The installer sources this manifest to decide what it writes to disk,
+    # so reading it here keeps the two from drifting apart.
+    for raw in PARAKEET_MANIFEST.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, separator, value = line.partition("=")
+        if separator and name == key:
+            return value
+    fail(f"{PARAKEET_MANIFEST}: {key} is not declared")
+    raise AssertionError("unreachable")
+
+
 def find_runtime() -> tuple[Path, Path]:
     home = Path.home() / ".local/share/infernode-speech"
     binary = Path(os.environ.get("PARAKEET_STREAM_BIN", home / "bin/parakeet-stream"))
     model = Path(
         os.environ.get(
             "PARAKEET_MODEL",
-            home / "models/parakeet/parakeet_realtime_eou_120m-v1-f16.gguf",
+            home / "models/parakeet" / manifest_pin("PARAKEET_GGUF_FILE"),
         )
     )
     if not binary.is_file() or not os.access(binary, os.X_OK):

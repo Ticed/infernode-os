@@ -10,11 +10,16 @@
 # said would be spoken — the audio equivalent of reading the window.
 set -euo pipefail
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PARAKEET_MANIFEST=${PARAKEET_MANIFEST:-"$SCRIPT_DIR/parakeet-eou.manifest"}
+# shellcheck source=parakeet-eou.manifest
+source "$PARAKEET_MANIFEST"
+
 file=${1:?usage: transcribe-pcm.sh <file.pcm> [rate]}
 rate=${2:-16000}
 HELPERS=${INFERNODE_SPEECH_HOME:-$HOME/.local/share/infernode-speech}
 BIN=${PARAKEET_STREAM_BIN:-$HELPERS/bin/parakeet-stream}
-MODEL=${PARAKEET_MODEL:-$HELPERS/models/parakeet/parakeet_realtime_eou_120m-v1-f16.gguf}
+MODEL=${PARAKEET_MODEL:-$HELPERS/models/parakeet/$PARAKEET_GGUF_FILE}
 
 [ -x "$BIN" ] || { echo "transcribe-pcm: no STT helper at $BIN" >&2; exit 77; }
 [ -f "$MODEL" ] || { echo "transcribe-pcm: no model at $MODEL" >&2; exit 77; }
