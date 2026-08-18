@@ -6,6 +6,17 @@ surprises.
 
 ## Building
 
+**`mk nuke` at the repo root deletes the tracked `dis/` runtime tree.**
+Root nuke walks `$DIRS` (`$EMUDIRS` + `appl`). appl's nuke deletes
+`$DISBIN`, and for appl that is committed `dis/` — about 900 `.dis`
+files a fresh clone needs in order to boot. Afterward the emulator dies
+with `panic: loading "/dis/emuinit.dis": ... does not exist`, and
+`git status` shows a wall of deletions that look like a bad merge.
+Nothing is permanently lost: `git checkout -- .` restores the tree.
+`mk emunuke` walks `$EMUDIRS` only and is the safe emulator-only clean.
+On Posix, root `mk nuke` now refuses unless `NUKE_DIS=1` is set.
+`cd appl && mk nuke` is unguarded and still deletes `dis/`.
+
 **An Android build poisons the next host build.** `build-android-apk.sh`
 cross-compiles `lib9/`, `libmath/`, `libmp/`, `libsec/` **in place**,
 leaving ELF/aarch64 `.o` files in those source directories. A later host
