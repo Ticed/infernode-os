@@ -215,12 +215,36 @@ The phone contributes only its microphone; processing and playback stay
 wherever topology 1 or 2 put them. A Tailscale address is preferred because it
 is stable across Wi-Fi changes; a same-LAN Wi-Fi address is the fallback.
 
-Build and start the Android frontend from the Mac:
+Build and start the Android frontend from the Mac. No `ANDROID_*`
+exports are required when Android Studio is installed in its default
+location. Run the preflight first if you want every miss in one pass:
 
 ```sh
+tools/android-speech-preflight.sh
 ./build-android-apk.sh --gui sdl3 --abi arm64-v8a
 tools/android-speech-frontend.sh --install
 ```
+
+Resolved locations the scripts actually search (first usable wins):
+
+| Prerequisite | Where it is looked for | Fix |
+|---|---|---|
+| Android SDK | `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`, `~/Library/Android/sdk`, `~/Android/Sdk` | Install Android Studio |
+| Android NDK r29 | `$ANDROID_NDK_HOME`, `<sdk>/ndk/<29.*>`, `~/Android/Sdk/ndk/android-ndk-r29` | SDK Manager → NDK 29, or `sdkmanager --install "ndk;29.0.14206865"` |
+| Host `mk` + `limbo` | `$ROOT/{Linux/amd64,MacOSX/arm64,MacOSX/amd64}/bin`; macOS also needs `ndate` (`tools/ndate`) | `./makemk.sh && for d in lib9 libbio libmath libmp libsec; do (cd $d && mk nuke && mk install); done && (cd limbo && mk install)` |
+| JDK 17+ | `$JAVA_HOME`, `java` on `PATH`, Android Studio JBR | `export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"` |
+| Speech helpers + models | `$INFERNODE_SPEECH_HOME` or `~/.local/share/infernode-speech` | `tools/install-speech-helpers.sh` |
+| Playback device | `$INFERNODE_AUDIO_OUT`, then the system default output | Connect speakers, or `brew install --cask blackhole-2ch` |
+| Phone network | `adb` device `tailscale0` / `wlan0` IPv4 | Tailscale or same Wi-Fi, or `--ip ADDRESS` |
+
+`tools/android-speech-preflight.sh` prints which of those it used. A
+missing prerequisite is named, the searched paths are listed, and the
+fix command is included; every miss is reported before any build work
+starts. `build-android-apk.sh` runs the build half of that check and
+writes `android-app/local.properties` so a later `./gradlew` sees the
+same SDK. `tools/android-speech-frontend.sh` runs the helper, playback,
+and network half before it launches the phone.
+
 
 Pass `--device <adb-serial>` when more than one Android device is attached, or
 `--ip <phone-address>` to override the automatic `tailscale0`/`wlan0`
