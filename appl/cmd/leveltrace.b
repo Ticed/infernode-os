@@ -30,19 +30,32 @@ readfile(path: string): string
 	return string buf[0:n];
 }
 
+# One field from a level record, or dflt when missing.
+fieldof(s, key, dflt: string): string
+{
+	if(s == nil)
+		return dflt;
+	prefix := key + "=";
+	plen := len prefix;
+	(n, flds) := sys->tokenize(s, " \t\n\r");
+	for(; flds != nil; flds = tl flds) {
+		f := hd flds;
+		if(len f >= plen && f[0:plen] == prefix)
+			return f[plen:];
+	}
+	n = n;
+	return dflt;
+}
+
 # The mode token of a level record, or "unreadable" when the read failed.
 modeof(s: string): string
 {
 	if(s == nil)
 		return "unreadable";
-	(n, flds) := sys->tokenize(s, " \t\n\r");
-	for(; flds != nil; flds = tl flds) {
-		f := hd flds;
-		if(len f > 5 && f[0:5] == "mode=")
-			return f[5:];
-	}
-	n = n;
-	return "nomode";
+	m := fieldof(s, "mode", "");
+	if(m == "")
+		return "nomode";
+	return m;
 }
 
 init(nil: ref Draw->Context, args: list of string)
@@ -60,21 +73,32 @@ init(nil: ref Draw->Context, args: list of string)
 	t0 := sys->millisec();
 	last := "";
 	laststart := 0;
+	lasttick := -1000;
 	for(;;) {
 		now := sys->millisec() - t0;
 		if(now >= forms)
 			break;
-		m := modeof(readfile(path));
+		rec := readfile(path);
+		m := modeof(rec);
 		if(m != last) {
 			if(last != "")
-				sys->print("LEVEL run %s %d ms (%d..%d)\n",
-					last, now - laststart, laststart, now);
-			sys->print("LEVEL %6d ms mode=%s\n", now, m);
+				sys->print("LEVEL %s run %s %d ms (%d..%d)\n",
+					path, last, now - laststart, laststart, now);
+			sys->print("LEVEL %s %6d ms mode=%s in=%s out=%s\n",
+				path, now, m,
+				fieldof(rec, "input-rms", "-"),
+				fieldof(rec, "output-rms", "-"));
 			last = m;
 			laststart = now;
+		} else if(now - lasttick >= 1000) {
+			sys->print("LEVEL %s %6d ms tick mode=%s in=%s out=%s\n",
+				path, now, m,
+				fieldof(rec, "input-rms", "-"),
+				fieldof(rec, "output-rms", "-"));
+			lasttick = now;
 		}
 		sys->sleep(everyms);
 	}
-	sys->print("LEVEL run %s %d ms (%d..end)\n", last, forms - laststart, laststart);
-	sys->print("LEVEL done\n");
+	sys->print("LEVEL %s run %s %d ms (%d..end)\n", path, last, forms - laststart, laststart);
+	sys->print("LEVEL %s done\n", path);
 }

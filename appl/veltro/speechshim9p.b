@@ -108,6 +108,7 @@ duplex := "full";		# full | half
 duplextail := 300;		# ms of suppression after playback has drained
 capturedelay := 0;		# ms of capture-path delay to compensate (0 = local)
 suppressuntil := 0;		# sys->millisec() deadline; see suppressed()
+playuntil := 0;		# millisec when the device should finish emitting
 standby := 0;			# mic off: no helper (re)starts until the next listen/wake read
 listenoff := 0;			# listen off: the STT helper stays down until the next listen read
 
@@ -581,14 +582,22 @@ suppressed(): int
 	return suppressuntil - sys->millisec() > 0;
 }
 
+stillplaying(): int
+{
+	if(playing)
+		return 1;
+	return playuntil - sys->millisec() > 0;
+}
+
 readlevel(): string
 {
 	mode := "idle";
-	if(playing)
+	if(stillplaying())
 		mode = "output";
 	else if(suppressed())
-		# Distinct from "output": nothing is playing, but the microphone is
-		# still shut because our own sound has not finished reaching it.
+		# Distinct from "output": the device has drained, but the
+		# microphone is still shut because our own sound has not
+		# finished reaching it (duplextail + capturedelay).
 		mode = "suppressed";
 	else if(capturing)
 		mode = "input";
@@ -845,11 +854,9 @@ dosay(text: string): string
 	total := 0;
 	buf := array[8192] of byte;
 	status := "";
-	playing = 1;
-	# Stamped on the first sample handed to the device, not here: a TTS
-	# helper can take seconds to emit its first byte, and counting that
-	# wait as elapsed playback would retire the suppression window before
-	# the speaker has said anything.
+	# playing is armed on the first sample, not here: synthesis can
+	# take seconds, and the meter should not say "output" before any
+	# PCM has reached the device.
 	playstart := 0;
 	clearinputlevel();
 	clearoutputlevel();
@@ -863,25 +870,27 @@ dosay(text: string): string
 			break;
 		}
 		setoutputlevel(buf, n);
+		if(total == 0) {
+			playstart = sys->millisec();
+			playing = 1;
+		}
 		if(sys->write(afd, buf[0:n], n) < 0) {
 			status = sys->sprint("error: audio write failed: %r");
 			killproc(p);
 			break;
 		}
-		if(total == 0)
-			playstart = sys->millisec();
 		total += n;
 	}
 	clearoutputlevel();
-	# `sys->write` returns once the device *accepts* a sample, not once the
-	# speaker has emitted it, so at this point up to a full device buffer is
-	# still unplayed. Estimate the unplayed remainder as the audio we handed
-	# over minus the wall time since playback actually began: a loop that
-	# blocked on a full buffer took about as long as the audio lasts, leaving
-	# ~nothing, while a clip that fitted entirely in the buffer leaves almost
-	# all of it. Suppression runs from there, not from here.
+	# Keep mode=output until the device has had time to emit what we
+	# handed it. Writes returning is not the same as the speaker going
+	# quiet; the unplayed remainder is still audible.
+	remain := drainremaining(total, playstart);
+	until := sys->millisec() + remain;
+	if(until - playuntil > 0)
+		playuntil = until;
 	playing = 0;
-	holdsuppression(drainremaining(total, playstart));
+	holdsuppression(remain);
 	closeproc(p);
 	sayproc = nil;
 	if(status != "")
@@ -938,11 +947,12 @@ playchime(kind: string)
 	} else
 		sys->fprint(stderr, "speechshim9p: chime: %s\n", err);
 	clearoutputlevel();
-	# Chimes are short enough to sit entirely in the device buffer, so this
-	# path leaked the whole tone into the microphone before the pump could
-	# see it. Same drain accounting as dosay.
+	remain := drainremaining(total, start);
+	until := sys->millisec() + remain;
+	if(until - playuntil > 0)
+		playuntil = until;
 	playing = 0;
-	holdsuppression(drainremaining(total, start));
+	holdsuppression(remain);
 }
 
 startchime(kind: string)

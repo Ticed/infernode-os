@@ -316,6 +316,9 @@ helperctl(bindir: string)
 	modeldir := bindir + "/../models";
 	if(len bindir > 4 && bindir[len bindir - 4:] == "/bin")
 		modeldir = bindir[:len bindir - 4] + "/models";
+	# Same as boot.sh: without this, /n/speech/say uses the host `say`
+	# command and the shim never sees the playback (INF-29).
+	ctlwrite("engine kokoro");
 	ctlwrite("kokorobin " + bindir + "/kokoro-cli");
 	ctlwrite("whisperstreambin " + bindir + "/whisper-stream-cli");
 	ctlwrite("whispermodel " + modeldir + "/ggml-base.en.bin");
@@ -419,6 +422,7 @@ init(nil: ref Draw->Context, args: list of string)
 	}
 
 	if(bootstrap && !exists(speech + "/ctl")) {
+		sys->create("/n", Sys->OREAD, Sys->DMDIR | 8r755);
 		sys->print("speechtest: starting speech stack (speechshim9p + speech9p)\n");
 		err := startsrv(SHIMPATH, "speechshim9p" :: "-m" :: SHIMMNT :: nil,
 			SHIMMNT + "/ctl");
@@ -432,6 +436,11 @@ init(nil: ref Draw->Context, args: list of string)
 		ctlwrite("duplex half");
 	}
 
+	# -H and -C compose: helpers first (engine kokoro + bins), then the
+	# ctl script (leveltrace, extra topology). -C used to replace -H,
+	# which left /n/speech/say on the host `say` command (INF-29).
+	if(helperbin != "")
+		helperctl(helperbin);
 	if(ctlfile != "") {
 		sh := load Sh Sh->PATH;
 		if(sh == nil)
@@ -441,8 +450,6 @@ init(nil: ref Draw->Context, args: list of string)
 			fatal(sys->sprint("speech ctl file failed: %s: %s", ctlfile, err));
 		log("ctl file: " + ctlfile);
 	}
-	else if(helperbin != "")
-		helperctl(helperbin);
 	for(; ctllines != nil; ctllines = tl ctllines)
 		ctlwrite(hd ctllines);
 
