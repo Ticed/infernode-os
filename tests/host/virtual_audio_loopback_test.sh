@@ -74,7 +74,15 @@ echo "captured: ${fraction} of the energy at ${FREQ} Hz, rms ${rms}"
 if grep -q '^capture silent' "$log"; then
 	case "$device" in
 	BlackHole*)
-		fail "'$device' captured only silence — the loopback driver is not carrying playback to capture" ;;
+		# A muted device presents itself normally and passes zeros,
+		# which is indistinguishable from a broken driver until you
+		# look. Its volume is a device property, so it survives
+		# reboots and is not visible in the output most people check.
+		fail "'$device' captured only silence — the loopback driver is not carrying playback to capture.
+	Check first that the device is not muted:
+	    SwitchAudioSource -t output -s '$device'
+	    osascript -e 'set volume output volume 100' -e 'set volume without output muted'
+	    SwitchAudioSource -t output -s 'MacBook Pro Speakers'" ;;
 	*)
 		skip "'$device' captured only silence; this driver carries audio only while its application is running — $VA_INSTALL_HINT" ;;
 	esac

@@ -37,6 +37,18 @@ frequently configured to monitor to a physical output — in which case a
 test that thinks it is silent plays out loud through your speakers.
 Prefer BlackHole.
 
+A freshly installed BlackHole device can come up **muted**, and a muted
+device is a perfect impostor: it enumerates, it accepts playback, it
+clocks the writes at real time, and it hands its input nothing but
+zeros. Volume and mute are device properties, so a reboot does not clear
+them. Unmute it once:
+
+```sh
+SwitchAudioSource -t output -s 'BlackHole 2ch'      # brew install switchaudio-osx
+osascript -e 'set volume output volume 100' -e 'set volume without output muted'
+SwitchAudioSource -t output -s 'MacBook Pro Speakers'
+```
+
 Check what was found:
 
 ```sh
