@@ -136,7 +136,10 @@ Two small Swift helpers do the reading, built on demand into
 | --- | --- |
 | `tools/mac/window-info.swift` | Lists on-screen windows with their owning pid, so a test captures the window of the emulator it started rather than one the window server has not finished retiring. |
 | `tools/mac/ocr.swift` | Runs Vision text recognition over a screenshot, with bounding boxes. |
-| `tools/mac/ui-probe.py` | Reads one frame of the InferNode window: the Voice tile's status and the text of the conversation pane. Useful on its own: `python3 tools/mac/ui-probe.py $(.omx/tmp/bin/window-info o.emu \| head -1 \| cut -d' ' -f1)`. |
+| `tools/mac/ui-probe.py` | Reads one frame of the InferNode window: the Voice tile's status and the text of the conversation pane. |
+| `tools/mac/voice_session.py` | Drives the desktop — boot, Esc-V, wake word, speak, read the screen. Imported by the test; run it directly (`--watch`, `--say`) to see a turn happen. |
+| `tools/mac/ui-timeline.py` | Times what the window draws to 0.05s, via screen recording. OCR polling cannot see a tile that flashes for 0.15s. |
+| `tools/diagnose-virtual-audio.sh` | When the device is silent: separates the emulator's playback, its capture, the driver, and microphone authorization. |
 
 Milestone screenshots land in `.omx/tmp/gui-voice/`, which is the first
 place to look when the test fails: it captured what the screen actually

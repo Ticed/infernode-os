@@ -92,6 +92,7 @@ Detailed JIT documentation is in `docs/arm64-jit/` (27 files covering implementa
 | [PDF.md](PDF.md) | PDF support documentation |
 | [SPEECH-ARCHITECTURE.md](SPEECH-ARCHITECTURE.md) | **speech9p architecture** — file tree, three engines (cmd / api / local), TTS/STT data flow, devcmd bridge, Veltro + lucibridge integration, threat surface |
 | [SPEECH-REMOTE-AUDIO.md](SPEECH-REMOTE-AUDIO.md) | Cross-host speech via 9P namespace composition |
+| [SPEECH-VIRTUAL-AUDIO.md](SPEECH-VIRTUAL-AUDIO.md) | Testing audio and voice with no microphone and no speaker — loopback devices, the rig, and driving the desktop |
 | [RUNNING-ACME.md](RUNNING-ACME.md) | Running the Acme editor |
 | [SONARQUBE_WORK.md](SONARQUBE_WORK.md) | SonarQube static analysis work |
 
@@ -105,6 +106,13 @@ Detailed JIT documentation is in `docs/arm64-jit/` (27 files covering implementa
 | [TEMPFILE-EXHAUSTION.md](TEMPFILE-EXHAUSTION.md) | Temp file slot exhaustion |
 | [64-bit-alt-structure-fix.md](64-bit-alt-structure-fix.md) | 64-bit alt structure fix |
 | [FONT-RENDERING-DEBUG.md](FONT-RENDERING-DEBUG.md) | Font rendering debugging |
+
+## Testing and Workflow
+
+| Document | Description |
+|----------|-------------|
+| [VOICE-TESTING.md](VOICE-TESTING.md) | How to verify anything involving a microphone, a speaker, or voice mode — the test ladder, the tools, the traps, and the open defects |
+| [WORKFLOW-TRAPS.md](WORKFLOW-TRAPS.md) | Non-obvious ways this repository wastes an afternoon: build order, stale cross-compiled objects, and ctl writes that lie about failing |
 
 ## Formal Verification
 
