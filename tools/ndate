@@ -1,6 +1,0 @@
-#!/bin/sh
-# Plan 9 ndate: print seconds since the epoch.
-# mkfiles/mkhost-MacOSX sets NDATE=ndate. BSD date has no -n, so a Mac
-# host without utils/ndate left KERNDATE empty and emu.c failed with
-# `ulong kerndate = ;` (INF-17).
-exec date +%s
