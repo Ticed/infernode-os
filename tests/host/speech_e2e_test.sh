@@ -41,9 +41,10 @@ cleanup()
 }
 trap cleanup EXIT HUP INT TERM
 
-: > "$state/wake.next"
-: > "$state/listen.next"
 : > "$state/requests.jsonl"
+if [ -n "${SPEECH_E2E_ARM_DELAY:-}" ]; then
+	printf '%s\n' "$SPEECH_E2E_ARM_DELAY" > "$state/arm.delay"
+fi
 
 "$PYTHON" - "$state" >"$state/stub.log" 2>&1 <<'PY' &
 import json
@@ -168,7 +169,7 @@ if ! grep -q '^PASS$' "$log" || grep -q -- '^--- FAIL:' "$log"; then
 	echo "---- captured OpenAI requests ----" >&2
 	cat "$state/requests.jsonl" >&2
 	echo "---- speech helper state ----" >&2
-	for diagnostic in wake.next listen.next say.last say.log say.started say.done; do
+	for diagnostic in wake.next wake.armed wake.consumed listen.next listen.armed listen.consumed say.last say.log say.started say.done; do
 		if [ -f "$state/$diagnostic" ]; then
 			echo "[$diagnostic]" >&2
 			cat "$state/$diagnostic" >&2

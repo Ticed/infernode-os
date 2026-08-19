@@ -184,23 +184,63 @@ waitconversationrole(role, sub: string, ms: int): int
 	return 0;
 }
 
+clearfixtures()
+{
+	sys->remove(infernostate + "/wake.next");
+	sys->remove(infernostate + "/wake.next.tmp");
+	sys->remove(infernostate + "/wake.armed");
+	sys->remove(infernostate + "/wake.consumed");
+	sys->remove(infernostate + "/listen.next");
+	sys->remove(infernostate + "/listen.next.tmp");
+	sys->remove(infernostate + "/listen.armed");
+	sys->remove(infernostate + "/listen.consumed");
+}
+
+# Create dest as a new directory entry so a waiter that armed against a
+# missing or empty path cannot hold the inode we publish (INF-34).
+publishfixture(path, data: string): int
+{
+	tmp := path + ".tmp";
+	sys->remove(tmp);
+	if(createwithdata(tmp, data) <= 0)
+		return -1;
+	name := path;
+	for(i := len path - 1; i >= 0; i--)
+		if(path[i] == '/') {
+			name = path[i + 1:];
+			break;
+		}
+	nd := sys->nulldir;
+	nd.name = name;
+	sys->remove(path);
+	if(sys->wstat(tmp, nd) < 0)
+		return -1;
+	return 1;
+}
+
+# Arm is observed, then the fixture is published, then consume is
+# observed. Sending is the voicemode transition; its timeout is only a
+# safety net (INF-34).
 scriptvoiceturn(t: ref T, listen, why: string)
 {
-	t.assert(writefile(infernostate + "/wake.next", "wake e2e 0.99\n") > 0,
-		why + " wake event scripted");
-	t.assert(writefile(infernostate + "/listen.next", listen) > 0,
-		why + " transcript scripted");
+	clearfixtures();
 	t.assert(writefile("/mnt/ui/voice-control", "on source=compose-button") > 0,
 		why + " voice mode entered");
+	if(!waitpath(infernostate + "/wake.armed", 8000))
+		t.fatal(why + " wake helper armed");
+	t.assert(publishfixture(infernostate + "/wake.next", "wake e2e 0.99\n") > 0,
+		why + " wake event scripted");
+	if(!waitpath(infernostate + "/wake.consumed", 8000))
+		t.fatal(why + " wake helper consumed");
+	if(!waitpath(infernostate + "/listen.armed", 8000))
+		t.fatal(why + " listen helper armed");
+	t.assert(publishfixture(infernostate + "/listen.next", listen) > 0,
+		why + " transcript scripted");
+	if(!waitpath(infernostate + "/listen.consumed", 8000))
+		t.fatal(why + " listen helper consumed");
 	if(!waitcontains("/mnt/ui/activity/0/conversation/draft-status",
-			"Sending", 1500)) {
-		# INF-34: rewrite the same inode if the helper armed against an
-		# empty fixture and is still blocked in wait-for-input.
-		writefile(infernostate + "/listen.next", listen);
-		if(!waitcontains("/mnt/ui/activity/0/conversation/draft-status",
-				"Sending", 6500))
-			t.fatal(why + " reached grace window");
-	}
+			"Sending", 3000))
+		t.fatal(why + " reached grace window");
 }
 
 resourcecontains(sub: string): int
