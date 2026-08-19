@@ -268,6 +268,9 @@ testVoiceDraftPresentation(t: ref T)
 		"replacement editing stays isolated from the typed compose buffer");
 	t.assert(contains(conv, "state=disconnected\\n"),
 		"a missing queue mount becomes an explicit disconnected state");
+	t.assert(contains(conv, "queuedepth > 0"),
+		"delivered leftover queue status is not drawn as a follow-up");
+
 
 	boot := script_contents(t, "/appl/cmd/lucifer.b");
 	t.assert(contains(boot, "convEvCh <-= ev"),

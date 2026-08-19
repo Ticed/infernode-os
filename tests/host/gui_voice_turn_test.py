@@ -100,8 +100,11 @@ def normalize(text):
 TOOL_CALL_JSON = re.compile(r'\{\s*"?(name|tool|function)"?\s*[:=]', re.I)
 
 # Lines the pane draws about itself rather than about the conversation.
+# The live draft header is "username - not sent"; it is the next listen,
+# not a second copy of the turn that was just answered (INF-28).
 STATUS_LINE = re.compile(
-    r"^(queued follow-up|listening|speaking|voice ready|sending in|voice|thinking)", re.I)
+    r"^(queued follow-up|listening|speaking|voice ready|sending in|voice|thinking)|not sent\s*$", re.I)
+
 
 
 def answer_text(screen, seen):
@@ -228,6 +231,12 @@ def main():
                                      "the LLM never answered", "07-answer.png")
             answer = answer_text(after, seen)
             vs.note("answer on screen: " + answer)
+            # One spoken turn is one conversation entry. A leftover
+            # "Queued follow-up — not sent — delivered — 0/1" tile is INF-28.
+            if re.search(r"queued follow-up", after.left, re.I):
+                fail("the answered turn is also drawn as a queued follow-up "
+                     "(INF-28): " + after.left)
+
 
             # An answer is something a person can be read. A raw tool call
             # is not, and the fact that it was faithfully spoken is not a

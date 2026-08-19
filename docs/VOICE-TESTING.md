@@ -135,7 +135,6 @@ were found by driving the desktop.
 | Issue | Symptom |
 | --- | --- |
 | INF-27 | An unparsed tool call is drawn as the answer and read aloud — the audio transcribes as "name say parameters text ...". The GUI test fails on it deliberately: faithfully speaking JSON is the failure, not a mitigation. |
-| INF-28 | Every voice turn also leaves a "Queued follow-up — not sent — delivered — 0/1" block carrying the transcript of the turn that was already answered. |
 | INF-29 | The speaking indicator covers a fraction of the speech (2.3s of a 10.2s answer), flaps through five states in one turn, and its progress bar draws as a broken dashed line. |
 | INF-31 | No progressive view of what is being spoken, mirroring the user's partials. Wish, not a defect. |
 
