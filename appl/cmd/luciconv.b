@@ -121,6 +121,19 @@ inputbuf: string;
 inputpos := 0;		# cursor position within inputbuf
 draftbuf: string;		# replaceable STT hypothesis; never submitted
 draftstatusbuf: string;	# listening/countdown state shown with the hypothesis
+
+# A live tile is held across the state writes that would otherwise
+# create and destroy it. 300ms is just over the ~250ms notice threshold:
+# shorter than that reads as a flash, not a state.
+LIVEDWELL: con 300;
+livedraft: string;		# last shown hypothesis; held after the source clears
+livestatus: string;
+liveat := 0;			# millisec the live tile first appeared
+liveholding := 0;
+speakon := 0;			# speaking indicator is visible, including dwell
+speakat := 0;
+speakholding := 0;
+dwellc: chan of int;
 levelbuf: string;		# live /n/speech/level PCM telemetry
 queuebuf: string;		# server-owned queued follow-up; display-only
 queuestate: string;		# queue lifecycle state from conversation/voicequeue
@@ -228,6 +241,14 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 	inputpos = 0;
 	draftbuf = "";
 	draftstatusbuf = "";
+	livedraft = "";
+	livestatus = "";
+	liveat = 0;
+	liveholding = 0;
+	speakon = 0;
+	speakat = 0;
+	speakholding = 0;
+	dwellc = chan[4] of int;
 	queuebuf = "";
 	queuestate = "empty";
 	queueediting = 0;
@@ -502,6 +523,8 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 	queue := <-queuec =>
 		setqueue(queue);
 		redrawconv();
+	<-dwellc =>
+		redrawconv();
 	newimg := <-rsz =>
 		mainwin = newimg;
 		# Skip the redraw when the sub-image is a 1×1 mobile-accordion
@@ -575,6 +598,13 @@ handleevent(ev: string)
 			actid_g = newid;
 			draftbuf = "";
 			draftstatusbuf = "";
+			livedraft = "";
+			livestatus = "";
+			liveat = 0;
+			liveholding = 0;
+			speakon = 0;
+			speakat = 0;
+			speakholding = 0;
 			queuebuf = "";
 			queuestate = "empty";
 			queueediting = 0;
@@ -589,6 +619,14 @@ handleevent(ev: string)
 			reqkbd(0);
 			if(softkbd != nil)
 				softkbd->clear_rect();
+		} else {
+			livedraft = "";
+			livestatus = "";
+			liveat = 0;
+			liveholding = 0;
+			speakon = 0;
+			speakat = 0;
+			speakholding = 0;
 		}
 	} else if(ev == "conversation draft") {
 		loaddraft();
@@ -676,13 +714,38 @@ drawconversation(zone: Rect)
 		(zone.max.x - pad, zone.max.y));
 	inputrect = inputr;
 	locked := voiceactive();
+	now := sys->millisec();
+	lmode := getattr(parseattrs(levelbuf), "mode");
+	if(lmode == "output") {
+		speakat = now;
+		speakon = 1;
+		speakholding = 0;
+	} else if(speakon) {
+		if(now - speakat < LIVEDWELL) {
+			if(!speakholding) {
+				speakholding = 1;
+				remain := LIVEDWELL - (now - speakat);
+				if(remain < 1)
+					remain = 1;
+				armdwell(remain);
+			}
+		} else {
+			speakon = 0;
+			speakholding = 0;
+		}
+	}
 	meterh := 0;
 	if(locked) {
 		meterh = mainfont.height + 24;
-		meterr := Rect((zone.min.x + pad, inputr.min.y - meterh - 2),
-			(zone.max.x - pad, inputr.min.y - 2));
-		drawvoicemeter(meterr);
-		msgy -= meterh + 2;
+		# Speaking belongs with the assistant turn. Listening and
+		# idle stay in the composer so the microphone state stays
+		# next to the input it describes.
+		if(!speakon) {
+			meterr := Rect((zone.min.x + pad, inputr.min.y - meterh - 2),
+				(zone.max.x - pad, inputr.min.y - 2));
+			drawvoicemeter(meterr);
+			msgy -= meterh + 2;
+		}
 	}
 	inputfill := inputcol;
 	if(locked)
@@ -794,9 +857,46 @@ drawconversation(zone: Rect)
 		mainwin.draw(Rect((cx, cy), (cx + cw, cy + ch)), cursorcol, nil, (0, 0));
 	}
 
-	hasdraft := draftbuf != nil && draftbuf != "";
+	srcdraft := (draftbuf != nil && draftbuf != "") ||
+		(draftstatusbuf != nil && draftstatusbuf != "") ||
+		lmode == "input";
+	if(srcdraft) {
+		if(livedraft == "" && livestatus == "")
+			liveat = now;
+		if(draftbuf != nil && draftbuf != "")
+			livedraft = draftbuf;
+		else if(lmode == "input" && humanreplaced(livedraft))
+			livedraft = "";
+		if(draftstatusbuf != nil && draftstatusbuf != "")
+			livestatus = draftstatusbuf;
+		else if((livestatus == nil || livestatus == "") && lmode == "input")
+			livestatus = "Listening...";
+		liveholding = 0;
+	} else if(livedraft != "" || livestatus != "") {
+		if(humanreplaced(livedraft) || now - liveat >= LIVEDWELL) {
+			livedraft = "";
+			livestatus = "";
+			liveat = 0;
+			liveholding = 0;
+		} else if(!liveholding) {
+			liveholding = 1;
+			remain := LIVEDWELL - (now - liveat);
+			if(remain < 1)
+				remain = 1;
+			armdwell(remain);
+		}
+	}
+	hasdraft := (livedraft != nil && livedraft != "") ||
+		(livestatus != nil && livestatus != "");
 	hasqueue := queuebuf != nil && queuebuf != "" && queuestate != "empty";
+	lastasst := -1;
+	for(ai := 0; ai < nmsg; ai++)
+		if(isassistant(msgstore[ai]))
+			lastasst = ai;
+	hasspeak := speakon && lastasst < 0;
 	drawn := nmsg;
+	if(hasspeak)
+		drawn++;
 	if(hasqueue)
 		drawn++;
 	if(hasdraft)
@@ -831,6 +931,13 @@ drawconversation(zone: Rect)
 	for(mi := 0; mi < nmsg; mi++)
 		marr[mi] = msgstore[mi];
 	nextmsg := nmsg;
+	if(hasspeak) {
+		role := agentname;
+		if(role == "")
+			role = "veltro";
+		marr[nextmsg++] = ref ConvMsg(role, "", "", nil,
+			"voice-speak", "", "", "");
+	}
 	if(hasqueue) {
 		qtext := queuebuf;
 		qoptions := "";
@@ -845,8 +952,8 @@ drawconversation(zone: Rect)
 			"voice-queue", qtitle, "", qoptions);
 	}
 	if(hasdraft)
-		marr[nextmsg] = ref ConvMsg("human", draftbuf, "", nil,
-			"voice-draft", draftstatusbuf, "", "");
+		marr[nextmsg] = ref ConvMsg("human", livedraft, "", nil,
+			"voice-draft", livestatus, "", "");
 
 	# Pass 1: estimate heights
 	harr := array[drawn] of int;
@@ -863,6 +970,13 @@ drawconversation(zone: Rect)
 				h += mainfont.height;
 			harr[pi] = h;
 			total_h += h + tilegap;
+			continue;
+		}
+		if(marr[pi].dtype == "voice-speak") {
+			harr[pi] = meterh + 2 * tpadv;
+			if(harr[pi] < meterh)
+				harr[pi] = meterh;
+			total_h += harr[pi] + tilegap;
 			continue;
 		}
 		# Dialogue tiles have their own height calculation
@@ -921,6 +1035,10 @@ drawconversation(zone: Rect)
 		harr[pi] = mainfont.height + imgh + 2 * tpadv;
 		total_h += harr[pi] + tilegap;
 	}
+	if(speakon && lastasst >= 0 && lastasst < drawn && meterh > 0) {
+		harr[lastasst] += meterh + 2;
+		total_h += meterh + 2;
+	}
 
 	viewport_h = msgy - zone.min.y;
 	newmax := total_h - viewport_h;
@@ -947,6 +1065,7 @@ drawconversation(zone: Rect)
 			marr[ri].text[len marr[ri].text - 1] == 16r258C;
 		if(marr[ri].rendimg == nil && rlay != nil && marr[ri].role != "human" &&
 				marr[ri].dtype != "dialogue" && marr[ri].dtype != "form" &&
+				marr[ri].dtype != "voice-speak" &&
 				!streaming) {
 			bgc_r := veltrocol;
 			style_r := ref Rlayout->Style(
@@ -979,14 +1098,21 @@ drawconversation(zone: Rect)
 			break;
 
 		msg := marr[i];
-		isdialogue := msg.dtype == "dialogue" || msg.dtype == "form" ||
-			msg.dtype == "voice-queue";
+		isqueue := msg.dtype == "voice-queue";
+		isspeak := msg.dtype == "voice-speak";
+		isdialogue := msg.dtype == "dialogue" || msg.dtype == "form";
 		pending := msg.dtype == "voice-draft";
 		human := msg.role == "human" && !isdialogue;
 		errrole := msg.role == "error" && !isdialogue;
 		tilecol: ref Image;
 		rolecol: ref Image;
 		if(isdialogue) {
+			tilecol = veltrocol;
+			rolecol = accentcol;
+		} else if(isqueue) {
+			tilecol = humancol;
+			rolecol = text2col;
+		} else if(isspeak) {
 			tilecol = veltrocol;
 			rolecol = accentcol;
 		} else if(pending) {
@@ -1121,6 +1247,79 @@ drawconversation(zone: Rect)
 			y = tiletop;
 			continue;
 		}
+		if(isqueue) {
+			DLGPAD := 8;
+			BTNROW_H := 24;
+			dx := tilex + DLGPAD;
+			dw := tilew - 2 * DLGPAD;
+			dy := tiletop + DLGPAD;
+			if(msg.title != "") {
+				tx := tilex + tilew - DLGPAD - mainfont.width(msg.title);
+				if(dy >= zone.min.y && dy + mainfont.height <= msgy)
+					mainwin.text((tx, dy), text2col, (0, 0), mainfont, msg.title);
+				dy += mainfont.height + 4;
+			}
+			bodytext := strip(msg.text);
+			if(bodytext != "") {
+				lines := wraptext(bodytext, dw);
+				for(ll := lines; ll != nil; ll = tl ll) {
+					if(dy >= msgy) break;
+					if(dy + mainfont.height > zone.min.y) {
+						lx := tilex + tilew - DLGPAD - mainfont.width(hd ll);
+						mainwin.text((lx, dy), textcol, (0, 0), mainfont, hd ll);
+					}
+					dy += mainfont.height;
+				}
+				dy += 4;
+			}
+			if(msg.options != "") {
+				(nil, opts) := sys->tokenize(msg.options, ",");
+				if(mobile) {
+					mbtnh := mainfont.height + 24;
+					if(mbtnh < 132) mbtnh = 132;
+					for(; opts != nil; opts = tl opts) {
+						opt := hd opts;
+						br := Rect((dx, dy), (dx + dw, dy + mbtnh));
+						if(br.min.y < msgy && br.max.y > zone.min.y) {
+							drawdlgbutton(br, opt);
+							if(nqueuebuttons < len queuebuttons)
+								queuebuttons[nqueuebuttons++] = ref QueueButton(br, opt);
+						}
+						dy += mbtnh + 6;
+					}
+				} else {
+					rev: list of string;
+					for(; opts != nil; opts = tl opts)
+						rev = hd opts :: rev;
+					bx := dx + dw;
+					for(; rev != nil; rev = tl rev) {
+						opt := hd rev;
+						bw := mainfont.width(opt) + 24;
+						bx -= bw;
+						if(bx < dx)
+							break;
+						br := Rect((bx, dy), (bx + bw, dy + BTNROW_H));
+						if(br.min.y < msgy && br.max.y > zone.min.y) {
+							drawdlgbutton(br, opt);
+							if(nqueuebuttons < len queuebuttons)
+								queuebuttons[nqueuebuttons++] = ref QueueButton(br, opt);
+						}
+						bx -= 8;
+					}
+					dy += BTNROW_H + 4;
+				}
+			}
+			y = tiletop;
+			continue;
+		}
+
+		if(isspeak && meterh > 0) {
+			meterr := Rect((tilex, tiletop + tpadv),
+				(tilex + tilew, tiletop + tileh - tpadv));
+			drawvoicemeter(meterr);
+			y = tiletop;
+			continue;
+		}
 
 		ty := tiletop + tpadv;
 		rolelabel := msg.role;
@@ -1187,6 +1386,11 @@ drawconversation(zone: Rect)
 			}
 		}
 
+		if(speakon && i == lastasst && meterh > 0) {
+			meterr := Rect((tilex, tiletop + tileh - meterh),
+				(tilex + tilew, tiletop + tileh));
+			drawvoicemeter(meterr);
+		}
 		y = tiletop;
 	}
 }
@@ -1206,16 +1410,18 @@ drawvoicemeter(r: Rect)
 	peak := 0;
 	label := "Voice ready";
 	barcol := dimcol;
-	if(mode == "input") {
+	if(mode == "output" || speakon) {
+		if(mode == "output") {
+			rms = strtoint(getattr(attrs, "output-rms"));
+			peak = strtoint(getattr(attrs, "output-peak"));
+		}
+		label = "Speaking";
+		barcol = progfgcol;
+	} else if(mode == "input") {
 		rms = strtoint(getattr(attrs, "input-rms"));
 		peak = strtoint(getattr(attrs, "input-peak"));
 		label = "Listening";
 		barcol = accentcol;
-	} else if(mode == "output") {
-		rms = strtoint(getattr(attrs, "output-rms"));
-		peak = strtoint(getattr(attrs, "output-peak"));
-		label = "Speaking";
-		barcol = progfgcol;
 	} else if(mode == "suppressed") {
 		label = "Suppressed";
 		barcol = dimcol;
@@ -1251,7 +1457,7 @@ drawvoicemeter(r: Rect)
 		if(level > 0 && h < 1)
 			h = 1;
 		x := barminx + i * (barw + gap);
-		if(mode == "output") {
+		if(mode == "output" || speakon) {
 			h /= 2;
 			mainwin.draw(Rect((x, centery - h), (x + barw, centery + h + 1)),
 				barcol, nil, (0, 0));
@@ -1651,6 +1857,47 @@ writestring(path, text: string)
 		return;
 	b := array of byte text;
 	sys->write(fd, b, len b);
+}
+
+armdwell(ms: int)
+{
+	spawn dwellsleep(ms);
+}
+
+dwellsleep(ms: int)
+{
+	sys->sleep(ms);
+	dwellc <-= 1;
+}
+
+isassistant(m: ref ConvMsg): int
+{
+	if(m == nil)
+		return 0;
+	if(m.role == "human" || m.role == "error")
+		return 0;
+	if(m.dtype == "dialogue" || m.dtype == "form" ||
+			m.dtype == "voice-queue" || m.dtype == "voice-draft" ||
+			m.dtype == "voice-speak")
+		return 0;
+	t := strip(m.text);
+	if(t == "" || t == "▌" || t == "…")
+		return 0;
+	return 1;
+}
+
+humanreplaced(text: string): int
+{
+	t := strip(text);
+	if(t == "")
+		return 0;
+	for(i := nmsg - 1; i >= 0; i--) {
+		m := msgstore[i];
+		if(m.role == "human" && (m.dtype == nil || m.dtype == "") &&
+				strip(m.text) == t)
+			return 1;
+	}
+	return 0;
 }
 
 # --- Word wrapping ---

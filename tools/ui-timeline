@@ -1,0 +1,5 @@
+#!/bin/sh
+# Drive the conversation-pane timing harness. See tools/mac/ui-timeline.py.
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+export ROOT
+exec python3 "$ROOT/tools/mac/ui-timeline.py" "$@"

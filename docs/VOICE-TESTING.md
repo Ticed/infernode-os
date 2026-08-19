@@ -43,7 +43,7 @@ them — no loopback driver, no speech helpers, no LLM, no display.
 | `tools/transcribe-pcm.sh` | Turn a recording back into text with the same local STT helper the stack uses. How you check what was actually said. |
 | `tools/mac/voice_session.py` | Drive the desktop: boot it, enter voice mode, say the wake word, speak a request, read the screen. Importable, and runnable on its own (`--watch`) to print every state the screen goes through. |
 | `tools/mac/ui-probe.py` | One frame of the window: the Voice tile's status and the conversation pane's text. |
-| `tools/mac/ui-timeline.py` | Sub-second UI timing, via screen recording. OCR polling takes ~0.6s a frame and structurally cannot see a tile that flashes for 0.15s. |
+| `tools/mac/ui-timeline.py` (`tools/ui-timeline`) | Sub-second UI timing via screen recording. Emits one TSV row per frame (`t`, accent, blue, tile). `--check` fails if a signal is visible for less than `--dwell` (default 0.30s) or the pane blanks at send. OCR polling cannot see these events. |
 | `tools/mac/window-info.swift`, `ocr.swift` | The screen readers, built on demand into `.omx/tmp/bin/`. |
 
 Milestone screenshots from the GUI test land in `.omx/tmp/gui-voice/`.
@@ -121,9 +121,7 @@ were found by driving the desktop.
 | INF-27 | An unparsed tool call is drawn as the answer and read aloud — the audio transcribes as "name say parameters text ...". The GUI test fails on it deliberately: faithfully speaking JSON is the failure, not a mitigation. |
 | INF-28 | Every voice turn also leaves a "Queued follow-up — not sent — delivered — 0/1" block carrying the transcript of the turn that was already answered. |
 | INF-29 | The speaking indicator covers a fraction of the speech (2.3s of a 10.2s answer), flaps through five states in one turn, and its progress bar draws as a broken dashed line. |
-| INF-30 | The speaking animation is drawn in the *user's* composer slot, and the user's transcript is drawn on the assistant's side (`luciconv.b:982` folds `voice-queue` into `isdialogue`). |
 | INF-31 | No progressive view of what is being spoken, mirroring the user's partials. Wish, not a defect. |
-| INF-32 | Tiles flash in and out at turn boundaries: ~0.15s before the unsent turn appears, and a one-frame full-pane blank at send. |
 
 ## Prerequisites
 

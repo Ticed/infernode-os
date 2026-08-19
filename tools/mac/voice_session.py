@@ -270,6 +270,10 @@ class VoiceSession:
 
         deadline = time.monotonic() + self.T_WINDOW
         while time.monotonic() < deadline and self.window is None:
+            # CGWindowList's on-screen filter misses a window created
+            # behind a fullscreen app. Raise the emulator each poll.
+            run(["osascript", "-e",
+                 'tell application "System Events" to set frontmost of process "o.emu" to true'])
             for line in run([os.path.join(BIN, "window-info"), "o.emu"]).stdout.splitlines():
                 fields = line.split()
                 if len(fields) > 1 and fields[1] == str(self.emu.pid):
@@ -279,7 +283,8 @@ class VoiceSession:
         if self.window is None:
             raise Timeout("the desktop's window never appeared", self.T_WINDOW, None)
 
-        self.wait_for(lambda s: "Tasks" in s.left, self.T_DESKTOP,
+        self.wait_for(lambda s: "Tasks" in s.left or "No messages yet" in s.left,
+                      self.T_DESKTOP,
                       "the desktop never drew itself", "01-desktop.png")
         return self
 
@@ -347,12 +352,14 @@ class VoiceSession:
              'tell application "System Events" to keystroke "v"'],
             self.T_VOICEMODE, "voice mode did not turn on", "02-voice-mode.png")
 
+
     def wake(self, pcm=WAKE):
         """Say the wake word and wait to be told it is listening."""
         wav = wav_from_pcm_trimmed(pcm, os.path.join(TMP, "voice-session-wake.wav"),
                                    front=False, back=True)
         play(wav).wait()
-        return self.wait_for(lambda s: s.voice == "listening", self.T_WAKE,
+        return self.wait_for(lambda s: s.voice == "listening" or "Listening" in s.left,
+                             self.T_WAKE,
                              "the wake word never reached the desktop", "03-wake.png")
 
     def speak(self, pcm):
