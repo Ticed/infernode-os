@@ -4,11 +4,11 @@ implement VoicemeterTest;
 # Contract for the voice-meter height map in luciconv.b (INF-44).
 # The function here must stay identical to voicemeterlevel() there.
 #
-# Measured /n/speech/level speech energy (pcmlevel, 0..1000):
-#   listen (elevenlabs fixtures): p50=46 p90=72 max=90
-#   speak  (kokoro TTS):          p50=56-74 p90=95-111 max=215
-#   live BlackHole+afplay listen: p50=3 p90=11 max=15 (attenuated path)
-# Linear h = maxh*rms/1000 draws all of those as 1px at maxh≈30.
+# Calibrated to /n/speech/level as delivered on the test rig
+# (BlackHole both sides, default system volume): input-rms p50=3
+# p90=11 max=15. Linear h = maxh*rms/1000 draws every value there
+# as 0-1px at maxh≈30; a dB map from 1..25 fills the bank for the
+# arriving range and leaves the top for louder turns.
 #
 
 include "sys.m";
@@ -30,8 +30,8 @@ VoicemeterTest: module
 
 SRCFILE: con "/tests/voicemeter_test.b";
 
-MeterFloor: con 8;
-MeterFull: con 400;
+MeterFloor: con 1;
+MeterFull: con 25;
 
 passed := 0;
 failed := 0;
@@ -95,45 +95,58 @@ testSilenceIsZero(t: ref T)
 
 testMeasuredSpeechUsesHeight(t: ref T)
 {
-	# Source-PCM range, not the attenuated BlackHole+afplay path.
-	# Diagnosis: rms=20 at maxh=30 was 1px linear.
-	lh := barh(20, 30, 0);
-	t.assert(lh >= 6, sys->sprint("listen rms=20 -> %d, want >= 6", lh));
-	t.assert(lh <= 12, sys->sprint("listen rms=20 -> %d, want <= 12", lh));
+	# Feed as delivered on the rig (BlackHole, default volume):
+	# input-rms p50=3 p90=11 max=15. Each must use real bar height.
+	l3 := barh(3, 30, 0);
+	t.assert(l3 >= 6 && l3 <= 12,
+		sys->sprint("listen rms=3 -> %d, want 6..12", l3));
+	l11 := barh(11, 30, 0);
+	t.assert(l11 >= 18 && l11 <= 26,
+		sys->sprint("listen rms=11 -> %d, want 18..26", l11));
+	l15 := barh(15, 30, 0);
+	t.assert(l15 >= 21, sys->sprint("listen rms=15 -> %d, want >= 21", l15));
 
-	lp50 := barh(46, 30, 0);
-	t.assert(lp50 >= 12, sys->sprint("listen p50=46 -> %d, want >= 12", lp50));
-	sp50 := barh(70, 30, 1);
-	t.assert(sp50 >= 7, sys->sprint("speak p50=70 after h/2 -> %d, want >= 7", sp50));
-
-	sh := barh(20, 30, 1);
-	t.assert(sh >= 3, sys->sprint("speak rms=20 after h/2 -> %d, want >= 3", sh));
+	# Speaking: the same curve, halved for the centre-out shape.
+	s11 := barh(11, 30, 1);
+	t.assert(s11 >= 9 && s11 <= 13,
+		sys->sprint("speak rms=11 after h/2 -> %d, want 9..13", s11));
+	s3 := barh(3, 30, 1);
+	t.assert(s3 >= 3, sys->sprint("speak rms=3 after h/2 -> %d, want >= 3", s3));
 }
 
 testFullDoesNotOverflow(t: ref T)
 {
-	t.asserteq(barh(400, 30, 0), 30, "rms=full fills listening height");
+	t.asserteq(barh(25, 30, 0), 30, "rms=full fills listening height");
 	t.asserteq(barh(1000, 30, 0), 30, "clipped full-scale still fits");
-	t.asserteq(barh(400, 30, 1), 15, "rms=full speaking is half height");
-	# Loudest measured kokoro window is 215: must not peg.
-	loud := barh(215, 30, 0);
-	t.assert(loud < 30, sys->sprint("speak max=215 -> %d, must not peg", loud));
-	t.assert(loud >= 20, sys->sprint("speak max=215 -> %d, want >= 20", loud));
+	t.asserteq(barh(25, 30, 1), 15, "rms=full speaking is half height");
+	# Measured rig max (15) stays under the full-scale peg.
+	t.assert(barh(15, 30, 0) < 30, "rig max rms=15 must not peg");
+}
+
+testMonotonicNonDecreasing(t: ref T)
+{
+	prev := 0;
+	for(raw := 0; raw <= 60; raw++) {
+		h := barh(raw, 30, 0);
+		if(h < prev)
+			t.assert(0, sys->sprint("dB map drops at raw=%d (%d < %d)", raw, h, prev));
+		prev = h;
+	}
 }
 
 testLinearWouldStayFlat(t: ref T)
 {
-	# Guard against reverting to linear /1000: that map is 1px
-	# for every measured speech value at maxh=30.
-	t.assert(30 * 46 / 1000 <= 1, "linear listen p50 is still 1px");
-	t.assert(barh(46, 30, 0) > 30 * 46 / 1000,
-		"dB map is taller than linear at listen p50");
+	# Guard against reverting to linear /1000: that map is 0-1px
+	# for the whole arriving range at maxh=30.
+	t.assert(30 * 15 / 1000 <= 1, "linear rig max is still 0-1px");
+	t.assert(barh(15, 30, 0) > 30 * 15 / 1000,
+		"dB map is taller than linear at rig max rms=15");
 }
 
 testSubFloorIsOnePixel(t: ref T)
 {
-	t.asserteq(barh(1, 30, 0), 1, "sub-floor listen is 1px, not empty");
-	t.asserteq(barh(1, 30, 1), 1, "sub-floor speak clamps after h/2");
+	t.asserteq(barh(1, 30, 0), 1, "floor-adjacent listen is 1px, not empty");
+	t.asserteq(barh(1, 30, 1), 1, "floor-adjacent speak clamps after h/2");
 }
 
 init(nil: ref Draw->Context, args: list of string)
@@ -153,6 +166,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("SilenceIsZero", testSilenceIsZero);
 	run("MeasuredSpeechUsesHeight", testMeasuredSpeechUsesHeight);
 	run("FullDoesNotOverflow", testFullDoesNotOverflow);
+	run("MonotonicNonDecreasing", testMonotonicNonDecreasing);
 	run("LinearWouldStayFlat", testLinearWouldStayFlat);
 	run("SubFloorIsOnePixel", testSubFloorIsOnePixel);
 

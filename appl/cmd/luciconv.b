@@ -1405,12 +1405,12 @@ drawconversation(zone: Rect)
 }
 
 # Provider RMS/peak is linear 0..1000 in shifted-sample energy.
-# Spoken turns sit well below full scale, so a linear height map
-# draws every bar at 1px. A dB map from 8..400 (INF-44) puts
-# typical speech mid-meter and leaves headroom so a loud reply
-# does not clip flat. Sub-floor energy stays 1px.
-MeterFloor: con 8;
-MeterFull: con 400;
+# The feed's speech energy sits far below full scale, so a linear
+# height map draws every bar at 1px. A dB map from 1..25 (INF-44)
+# fits the energy that actually arrives at the meter and leaves
+# the top for louder turns. Sub-floor energy stays 1px.
+MeterFloor: con 1;
+MeterFull: con 25;
 
 voicemeterlevel(raw: int): int
 {

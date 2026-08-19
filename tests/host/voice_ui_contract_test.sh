@@ -51,9 +51,9 @@ require_literal appl/cmd/luciconv.b 'Rect((x, basey - h), (x + barw, basey))' \
   'microphone meter no longer uses bottom-up bars'
 require_literal appl/cmd/luciconv.b 'Rect((x, centery - h), (x + barw, centery + h + 1))' \
   'playback meter no longer uses its distinct symmetric shape'
-require_literal appl/cmd/luciconv.b 'MeterFloor: con 8;' \
+require_literal appl/cmd/luciconv.b 'MeterFloor: con 1;' \
   'voice meter lost the speech-fitted dB floor (INF-44)'
-require_literal appl/cmd/luciconv.b 'MeterFull: con 400;' \
+require_literal appl/cmd/luciconv.b 'MeterFull: con 25;' \
   'voice meter lost the speech-fitted dB full-scale (INF-44)'
 require_literal appl/cmd/luciconv.b 'rms = voicemeterlevel(rms);' \
   'voice meter no longer maps provider RMS through the dB curve'
