@@ -149,17 +149,16 @@ testCapsRoundTripOver9P(t: ref T)
 	{
 		mountadev(t);
 
-		# Linux/OSS never registers audio_bufcaps_register.
-		# A NULL accessor prints play_buffer_ms 0; a write either
-		# errors (audioparse rejects the verb) or is a sink
-		# (Bionic stub). Either way 80 does not come back.
-		# macOS/SDL3 stores the verb, so the probe succeeds.
-		probe := writefile(MNT + "/audioctl", "play_buffer_ms 80\n");
+		# Skip on absence of the mechanism, not a wrong value.
+		# Linux/OSS never registers, so the line is omitted.
+		# A present line with the wrong number is a FAIL.
 		s0 := readfile(MNT + "/audioctl");
-		if(probe <= 0 || extract(s0, "play_buffer_ms") != "80") {
-			t.skip("audioctl buffer caps are macOS/SDL3 only; this backend registers no accessor");
+		if(!contains(s0, "play_buffer_ms")) {
+			t.skip("this audio backend registers no buffer-cap accessor");
 			return;
 		}
+
+
 
 
 		n := writefile(MNT + "/audioctl", "play_buffer_ms 80\n");

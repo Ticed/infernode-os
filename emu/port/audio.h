@@ -79,8 +79,9 @@ void	audio_devops_register(Audiodevops*);
 /*
  * Optional live queue-cap readback (INF-19). Backends that keep
  * play_buffer_ms / rec_buffer_ms register a getter from
- * audio_file_init. ctlsummary prints 0 for both when unset.
+ * audio_file_init. ctlsummary omits both lines when unset.
  */
+
 void	audio_bufcaps_register(void (*get)(int *play_ms, int *rec_ms));
 
 

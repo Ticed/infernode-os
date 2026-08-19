@@ -420,16 +420,14 @@ ctlsummary(char *buf, int bsize, Audio_t *adev)
 		in->rate, in->chan, in->bits);
 	p = seprint(p, e, "out rate %lud chans %lud bits %lud\n",
 		out->rate, out->chan, out->bits);
-	{
+	if(bufcaps){
 		int play_ms, rec_ms;
 
-		play_ms = 0;
-		rec_ms = 0;
-		if(bufcaps)
-			bufcaps(&play_ms, &rec_ms);
+		bufcaps(&play_ms, &rec_ms);
 		p = seprint(p, e, "play_buffer_ms %d\n", play_ms);
 		p = seprint(p, e, "rec_buffer_ms %d\n", rec_ms);
 	}
+
 
 
 	return p-buf;
