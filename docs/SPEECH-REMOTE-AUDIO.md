@@ -261,6 +261,16 @@ detection. The tool grants `RECORD_AUDIO`, launches the real SDL activity in
 activity is required: `/dev/audio` uses SDL3's Android AAudio backend, so the
 legacy interactive-shell activity is not a valid audio-service host.
 
+USB criterion 1 (a working export with no IP connectivity required
+between Mac and phone) was exercised on a physical Redmi Note 11
+(`4936c22b`, `spes` / 2201117TG) on 2026-08-20. `--transport usb`
+printed `tcp!127.0.0.1!17010`, Inferno mounted that address and saw
+`/dev/audio` plus a live `audioctl`, and `--stop` removed the
+`adb forward`. Tailscale on the phone stayed up and unused; the USB
+path never queried `tailscale0`/`wlan0`. Criteria 2–4 (flag parsing,
+no-IP fake device, `--stop` teardown) remain on the fake-adb harness
+in `tests/host/android_speech_frontend_test.sh`.
+
 #### Choosing the local input device: `#A/audiodev`
 
 The desktop version of the same failure is a *virtual* input device. The
@@ -545,6 +555,7 @@ listener cleanup depends.
 | Local capture: choosing an input device, and naming a silent one | `audio_device_select_test.sh` | `#A/audiodev` enumerates host devices, a name from that list round-trips through the readback, `default` restores the system default, an unknown name is refused, and a capture reports `active`/`silent`/`idle` rather than leaving a zero-sample device indistinguishable from a quiet room. |
 | Local playback and capture with no hardware in the path | `virtual_audio_loopback_test.sh`, `virtual_mic_speech_test.sh` | A tone played by InferNode returns through a loopback audio device concentrated at the frequency played, and a committed speech fixture played into the same device is transcribed by the live stack — partials stream and a turn commits from audio that never reaches end-of-file. See [SPEECH-VIRTUAL-AUDIO.md](SPEECH-VIRTUAL-AUDIO.md). |
 | Remote capture: Android microphone authorization | `android_speech_frontend_test.sh` | The manifest declares the `microphone` foreground-service type, `speech-export` mode holds that service and keeps the screen on, and the launcher refuses to report readiness when the service is absent or a live session is `silenced` — while ignoring a `silenced` verdict from an ended session. |
+| Remote capture: USB adb-forward with no phone IP | `android_speech_frontend_test.sh` | `--transport usb` on a fake device with no `tailscale0`/`wlan0` prints `tcp!127.0.0.1!<port>`, sets `adb forward`, probes localhost, and does not query phone interfaces. `--stop` removes the forward. |
 
 The matrix covers deterministic, non-physical lifecycle transitions. New
 remote lifecycle behaviour must either extend an existing owner or add a row
