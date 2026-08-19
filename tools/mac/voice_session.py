@@ -45,7 +45,13 @@ TMP = os.path.join(ROOT, ".omx/tmp")
 BIN = os.path.join(TMP, "bin")
 HELPERS = os.environ.get("INFERNODE_SPEECH_HOME",
                          os.path.expanduser("~/.local/share/infernode-speech"))
+# Scripted user speech must not share Veltro's TTS voice. The same voice
+# on both sides makes a recording ambiguous (who said what) and weakens
+# any self-pickup or barge-in assertion. Distinct gender and accent.
+VELTRO_VOICE = "af_bella"  # American female — the stack's default TTS
+USER_VOICE = "bm_george"   # British male — committed user fixtures
 WAKE = os.path.join(ROOT, "tests/fixtures/speech/kokoro/hey_jarvis.pcm")
+REQUEST = os.path.join(ROOT, "tests/fixtures/speech/kokoro/what_is_your_name.pcm")
 RATE = 16000
 
 _spec = importlib.util.spec_from_file_location(
