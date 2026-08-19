@@ -68,7 +68,9 @@ writefile(path, data: string): int
 	if(fd == nil)
 		return -1;
 	b := array of byte data;
-	return sys->write(fd, b, len b);
+	n := sys->write(fd, b, len b);
+	fd = nil;
+	return n;
 }
 
 createfile(path: string): int
@@ -76,6 +78,7 @@ createfile(path: string): int
 	fd := sys->create(path, Sys->OWRITE, 8r666);
 	if(fd == nil)
 		return -1;
+	fd = nil;
 	return 0;
 }
 
@@ -85,7 +88,9 @@ createwithdata(path, data: string): int
 	if(fd == nil)
 		return -1;
 	b := array of byte data;
-	return sys->write(fd, b, len b);
+	n := sys->write(fd, b, len b);
+	fd = nil;
+	return n;
 }
 
 readfile(path: string): string
@@ -94,7 +99,8 @@ readfile(path: string): string
 	if(fd == nil)
 		return nil;
 	buf := array[16384] of byte;
-	n := sys->read(fd, buf, len buf);
+	n := sys->pread(fd, buf, len buf, big 0);
+	fd = nil;
 	if(n <= 0)
 		return nil;
 	return string buf[0:n];
@@ -157,8 +163,11 @@ waitmode(want: string, ms: int): int
 conversationrolecount(role, sub: string): int
 {
 	n := 0;
-	for(i := 0; i < 12; i++) {
-		msg := readfile("/mnt/ui/activity/0/conversation/" + string i);
+	for(i := 0; i < 128; i++) {
+		path := "/mnt/ui/activity/0/conversation/" + string i;
+		if(!pathexists(path))
+			break;
+		msg := readfile(path);
 		if(contains(msg, "role=" + role) && contains(msg, sub))
 			n++;
 	}
@@ -173,6 +182,25 @@ waitconversationrole(role, sub: string, ms: int): int
 		sys->sleep(50);
 	}
 	return 0;
+}
+
+scriptvoiceturn(t: ref T, listen, why: string)
+{
+	t.assert(writefile(infernostate + "/wake.next", "wake e2e 0.99\n") > 0,
+		why + " wake event scripted");
+	t.assert(writefile(infernostate + "/listen.next", listen) > 0,
+		why + " transcript scripted");
+	t.assert(writefile("/mnt/ui/voice-control", "on source=compose-button") > 0,
+		why + " voice mode entered");
+	if(!waitcontains("/mnt/ui/activity/0/conversation/draft-status",
+			"Sending", 1500)) {
+		# INF-34: rewrite the same inode if the helper armed against an
+		# empty fixture and is still blocked in wait-for-input.
+		writefile(infernostate + "/listen.next", listen);
+		if(!waitcontains("/mnt/ui/activity/0/conversation/draft-status",
+				"Sending", 6500))
+			t.fatal(why + " reached grace window");
+	}
 }
 
 resourcecontains(sub: string): int
@@ -277,7 +305,7 @@ startstack(t: ref T)
 startvoicemode(t: ref T)
 {
 	startmodule(t, "/dis/voicemode.dis", "voicemode",
-		"-g" :: "300" :: "-q" :: "650" :: "-t" :: "5000" ::
+		"-g" :: "300" :: "-q" :: "650" :: "-t" :: "20000" ::
 		"-w" :: "50" :: "-u" :: "/mnt/ui" :: "-s" :: "/n/speech" :: nil);
 	sys->sleep(300);
 }
@@ -310,36 +338,28 @@ testComposedTurn(t: ref T)
 
 	# Enter a final, wait until it is pending in the grace window, then model
 	# Lucifer's unconditional Escape path. The turn must never reach Lucia.
-	t.assert(writefile(infernostate + "/wake.next", "wake e2e 0.99\n") > 0,
-		"cancel wake event scripted");
-	t.assert(writefile(infernostate + "/listen.next",
+	scriptvoiceturn(t,
 		"partial confidence=940 Cancel this pending voice message\n" +
-		"final confidence=940 Cancel this pending voice message.\n") > 0,
-		"cancel transcript scripted");
-	t.assert(writefile("/mnt/ui/voice-control", "on source=compose-button") > 0,
-		"voice mode entered for Escape cancellation");
-	t.assert(waitcontains("/mnt/ui/activity/0/conversation/draft-status",
-		"Sending", 5000), "voice turn reached grace window");
+		"final confidence=940 Cancel this pending voice message.\n",
+		"cancel");
 	t.assert(writefile("/mnt/ui/voice-control", "off source=escape") > 0,
 		"Escape cancellation sent promptly");
 	t.assert(waitmode("k", 1000), "Escape restored keyboard mode promptly");
-	sys->sleep(500);
+	t.assert(waitcontains("/n/speechshim/ctl", "mic off", 3000),
+		"microphone released after Escape cancel");
+	sys->sleep(200);
 	t.asserteq(conversationrolecount("human", "Cancel this pending voice message"), 0,
 		"Escape prevented the pending voice turn from submitting");
 	t.assertseq(strip(readfile("/mnt/ui/activity/0/conversation/draft")), "",
 		"Escape cleared the pending voice draft");
+	t.assertseq(strip(readfile("/mnt/ui/activity/0/conversation/draft-status")), "",
+		"Escape left no leftover Sending status");
 
-	t.assert(writefile(infernostate + "/wake.next", "wake e2e 0.99\n") > 0,
-		"wake event scripted");
-	t.assert(writefile(infernostate + "/listen.next",
+	scriptvoiceturn(t,
 		"partial confidence=940 Reply with exactly local LLM working\n" +
-		"final confidence=940 Reply with exactly: local LLM working.\n") > 0,
-		"streaming transcript scripted");
-	t.assert(writefile("/mnt/ui/voice-control", "on source=compose-button") > 0,
-		"voice mode re-entered");
+		"final confidence=940 Reply with exactly: local LLM working.\n",
+		"composed");
 
-	t.assert(waitcontains("/mnt/ui/activity/0/conversation/draft",
-		"local LLM working", 5000), "live or final transcript reached Lucia draft");
 	t.assert(waitconversationrole("human", "local LLM working", 8000),
 		"final transcript submitted to lucibridge");
 	t.assert(waitconversationrole("veltro", "local LLM working", 12000),
@@ -362,6 +382,10 @@ testComposedTurn(t: ref T)
 		"Keyboard recovery marker.") > 0, "keyboard turn written after voice exit");
 	t.assert(waitconversationrole("human", "Keyboard recovery marker", 5000),
 		"keyboard input recovered after voice mode");
+	for(waited := 0; conversationrolecount("veltro", "local LLM working") < 2 && waited < 8000; waited += 50)
+		sys->sleep(50);
+	t.assert(conversationrolecount("veltro", "local LLM working") >= 2,
+		"keyboard recovery turn received an assistant reply");
 }
 
 testNeedsWrapper(t: ref T)

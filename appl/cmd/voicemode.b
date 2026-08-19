@@ -755,6 +755,7 @@ voiceloop()
 	lastappend := "";
 	lastwake := -wakecooldown;
 	errorshown := 0;
+	listenretries := 0;
 	cleardraft(actid);
 	ctxstatus(actid, "waiting");
 	chime("on");
@@ -880,24 +881,40 @@ voiceloop()
 			(kind, text, confidence) := parselisten(rec.text);
 			if(kind == LISTEN_EMPTY || kind == LISTEN_PARTIAL) {
 				errorshown = 0;
+				listenretries = 0;
 				if(kind == LISTEN_PARTIAL) {
 					ctxpartial(actid);
 					draftinput(actid, text);
+					# Partial speech is progress; the timeout is
+					# silence from the last heard speech, not
+					# wall time since wake.
+					spawn timer(timerch, listentimeout, listengen);
 				}
 				sys->sleep(100);
 				requestlisten(listengen);
 				continue;
 			}
 			if(kind == LISTEN_ERROR) {
-				logerr("listen: " + strip(rec.text));
+				err := strip(rec.text);
+				logerr("listen: " + err);
+				# INF-34: helper start and "listen busy" are transient.
+				# mic/listen off means the session ended.
+				if(!hasprefix(err, "error: mic off") &&
+				   !hasprefix(err, "error: listen off") &&
+				   listenretries < 3) {
+					listenretries++;
+					sys->sleep(100);
+					requestlisten(listengen);
+					continue;
+				}
 				listenseq++;
 				listengen = listenseq;
 				state = WAITING;
 				listenoff();
 				cleardraft(actid);
 				if(!errorshown) {
-					ctxerror(actid, strip(rec.text));
-					noticevoiceerror(actid, strip(rec.text));
+					ctxerror(actid, err);
+					noticevoiceerror(actid, err);
 					errorshown = 1;
 				} else
 					ctxstatus(actid, "waiting");
@@ -908,6 +925,7 @@ voiceloop()
 			listenseq++;
 			listengen = listenseq;
 			errorshown = 0;
+			listenretries = 0;
 			if(junkfinal(text)) {
 				state = WAITING;
 				listenoff();
