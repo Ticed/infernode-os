@@ -15,6 +15,7 @@ include "draw.m";
 
 Leveltrace: module
 {
+	PATH: con "/dis/leveltrace.dis";
 	init: fn(nil: ref Draw->Context, args: list of string);
 };
 
@@ -65,15 +66,17 @@ init(nil: ref Draw->Context, args: list of string)
 	path := "/n/speech/level";
 	everyms := 50;
 	forms := 20000;
+	tickms := 1000;
 	args = tl args;
 	if(args != nil) { path = hd args; args = tl args; }
 	if(args != nil) { everyms = int hd args; args = tl args; }
 	if(args != nil) { forms = int hd args; args = tl args; }
+	if(args != nil) { tickms = int hd args; args = tl args; }
 
 	t0 := sys->millisec();
 	last := "";
 	laststart := 0;
-	lasttick := -1000;
+	lasttick := -tickms;
 	for(;;) {
 		now := sys->millisec() - t0;
 		if(now >= forms)
@@ -84,17 +87,21 @@ init(nil: ref Draw->Context, args: list of string)
 			if(last != "")
 				sys->print("LEVEL %s run %s %d ms (%d..%d)\n",
 					path, last, now - laststart, laststart, now);
-			sys->print("LEVEL %s %6d ms mode=%s in=%s out=%s\n",
+			sys->print("LEVEL %s %6d ms mode=%s in=%s inpeak=%s out=%s outpeak=%s\n",
 				path, now, m,
 				fieldof(rec, "input-rms", "-"),
-				fieldof(rec, "output-rms", "-"));
+				fieldof(rec, "input-peak", "-"),
+				fieldof(rec, "output-rms", "-"),
+				fieldof(rec, "output-peak", "-"));
 			last = m;
 			laststart = now;
-		} else if(now - lasttick >= 1000) {
-			sys->print("LEVEL %s %6d ms tick mode=%s in=%s out=%s\n",
+		} else if(tickms == 0 || now - lasttick >= tickms) {
+			sys->print("LEVEL %s %6d ms tick mode=%s in=%s inpeak=%s out=%s outpeak=%s\n",
 				path, now, m,
 				fieldof(rec, "input-rms", "-"),
-				fieldof(rec, "output-rms", "-"));
+				fieldof(rec, "input-peak", "-"),
+				fieldof(rec, "output-rms", "-"),
+				fieldof(rec, "output-peak", "-"));
 			lasttick = now;
 		}
 		sys->sleep(everyms);

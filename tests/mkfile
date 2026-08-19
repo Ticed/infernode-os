@@ -100,6 +100,7 @@ TARG=\
 	speechshim_test.dis\
 	speechtest_test.dis\
 	voicemode_test.dis\
+	voicemeter_test.dis\
 	taskparse_test.dis\
 	ssl_transport_test.dis\
 	stderr_test.dis\
