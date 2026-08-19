@@ -14,13 +14,17 @@ MsgInject: module {
 	init: fn(nil: ref Draw->Context, args: list of string);
 };
 
-init(nil: ref Draw->Context, nil: list of string)
+init(nil: ref Draw->Context, args: list of string)
 {
 	sys = load Sys Sys->PATH;
+	# Standalone / runner invocation has no driver arg. inferno/msg_inject.sh
+	# passes "msgreader" after setting up /mnt/ui (INF-41).
+	if(args == nil || tl args == nil || hd tl args == "-v")
+		raise "skip:msg inject helper is driven by inferno/msg_inject.sh";
 	fd := sys->open("/mnt/ui/activity/0/conversation/input", Sys->OREAD);
 	if(fd == nil) {
 		sys->print("MSGINJECT: FAIL cannot open activity-0 input: %r\n");
-		return;
+		raise "fail:no activity-0 input";
 	}
 	buf := array[16384] of byte;
 	n := sys->read(fd, buf, len buf);	# blocks until msgwatch relays a turn

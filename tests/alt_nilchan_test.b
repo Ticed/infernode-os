@@ -132,7 +132,7 @@ testDeliverEventRace(t: ref T)
 	spawn deliverer(ch, done);
 
 	# Wait for deliverer to finish
-	timeout := chan of int;
+	timeout := chan[1] of int;
 	spawn sleeper(timeout, 500);
 	alt {
 	<-done =>

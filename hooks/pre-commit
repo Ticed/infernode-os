@@ -39,3 +39,10 @@ if ! "$ROOT/tools/verify-dis-paths.sh"; then
 	echo "  Bypass (don't): git commit --no-verify" >&2
 	exit 1
 fi
+
+if [ -x "$ROOT/tools/verify-test-targs.sh" ] && ! "$ROOT/tools/verify-test-targs.sh"; then
+	echo "" >&2
+	echo "pre-commit: refusing to commit an unwired tests/*_test.b (INF-41)." >&2
+	echo "  Fix: add <name>_test.dis to the TARG list in tests/mkfile." >&2
+	exit 1
+fi

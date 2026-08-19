@@ -9,6 +9,7 @@ TARG=\
 	auditsign_test.dis\
 	auditverify_test.dis\
 	alpha_test.dis\
+	alt_nilchan_test.dis\
 	agentlib_test.dis\
 	agentlib_mcp_test.dis\
 	agent_test.dis\
@@ -25,6 +26,7 @@ TARG=\
 	cowfs_test.dis\
 	cut_test.dis\
 	crypto_test.dis\
+	ethcrypto_test.dis\
 	delegation_budget_test.dis\
 	dial_test.dis\
 	dialnorm_test.dis\
@@ -32,6 +34,7 @@ TARG=\
 	editor_test.dis\
 	example_test.dis\
 	factotum_test.dis\
+	factotum_grant_test.dis\
 	font_format_test.dis\
 	git_test.dis\
 	goroutine_leak_test.dis\
@@ -43,17 +46,21 @@ TARG=\
 	jit_test.dis\
 	json_test.dis\
 	llmclient_think_gating_test.dis\
+	llmclient_sse_fallback_test.dis\
 	llmclient_reqshape_test.dis\
 	llmsrv_test.dis\
 	keyring_test.dis\
 	mail_provision_test.dis\
 	lists_test.dis\
+	lock_stress_test.dis\
 	lucifer_flicker_test.dis\
 	lucifer_zorder_test.dis\
 	mail9p_test.dis\
 	msg_approval_test.dis\
 	msg_badsrc.dis\
 	msg_capability_test.dis\
+	msg_inject_test.dis\
+	msg_triage_test.dis\
 	msg_notification_escape_test.dis\
 	msg_register_test.dis\
 	ninepsrc_config_test.dis\
@@ -63,6 +70,7 @@ TARG=\
 	outlinefont_test.dis\
 	pdf_conformance_test.dis\
 	pdf_test.dis\
+	plan_test.dis\
 	pqauth_test.dis\
 	publicnet_test.dis\
 	interop_test.dis\
@@ -74,11 +82,14 @@ TARG=\
 	handshake_fuzz_test.dis\
 	regex_test.dis\
 	remote_speech_topology_test.dis\
+	rfc3339_test.dis\
 	render_registry_test.dis\
 	runner.dis\
 	sdl3_test.dis\
 	sort_test.dis\
 	spawn_test.dis\
+	spawn_exec_test.dis\
+	spawn_schedule_test.dis\
 	speech9p_voice_test.dis\
 	speech_kokoro_test.dis\
 	speech_listen_test.dis\
@@ -101,8 +112,10 @@ TARG=\
 	tls_live_test.dis\
 	tls_protocol_test.dis\
 	webclient_test.dis\
+	webfs_test.dis\
 	wireformat_test.dis\
 	veltro_concurrent_test.dis\
+	veltro_cc_alignment_test.dis\
 	veltro_charon_security_test.dis\
 	veltro_launch_test.dis\
 	veltro_present_security_test.dis\
@@ -115,6 +128,7 @@ TARG=\
 	pres_launch_test.dis\
 	sha3_test.dis\
 	mlkem_test.dis\
+	secp256k1_test.dis\
 	mldsa_test.dis\
 	slhdsa_test.dis\
 	mlkem_stress_test.dis\
@@ -123,6 +137,7 @@ TARG=\
 	tls_pq_test.dis\
 	x509_test.dis\
 	xml_test.dis\
+	x402_test.dis\
 	xenith_concurrency_test.dis\
 	xenith_exit_test.dis\
 	wmsrv_zorder_test.dis\
@@ -144,6 +159,7 @@ TARG=\
 	opus_test.dis\
 	keyringinst_test.dis\
 	wallet_capability_test.dis\
+	wallet9p_test.dis\
 	wiki9p_security_probe.dis\
 	contacts_tool_test.dis\
 	sms_tool_test.dis\
@@ -162,6 +178,7 @@ SYSMODULES=\
 	html.m\
 	imap.m\
 	asn1.m\
+	ethcrypto.m\
 	bufio.m\
 	daytime.m\
 	draw.m\
@@ -184,6 +201,7 @@ SYSMODULES=\
 	readdir.m\
 	regex.m\
 	renderer.m\
+	rfc3339.m\
 	security.m\
 	sh.m\
 	sort.m\
@@ -196,6 +214,7 @@ SYSMODULES=\
 	webclient.m\
 	x509.m\
 	xml.m\
+	x402.m\
 
 DISBIN=$ROOT/dis/tests
 
@@ -229,3 +248,11 @@ pres_launch_test.dis: pres_launch_test.b $ROOT/appl/veltro/nsconstruct.m
 # render_registry_test needs -I for appl/xenith/render.m
 render_registry_test.dis: render_registry_test.b $ROOT/appl/xenith/render.m
 	limbo -I$ROOT/module -I$ROOT/appl/xenith -gw render_registry_test.b
+
+# spawn_exec_test needs -I for appl/veltro/tool.m
+spawn_exec_test.dis: spawn_exec_test.b $ROOT/appl/veltro/tool.m
+	limbo -I$ROOT/module -I$ROOT/appl/veltro -gw spawn_exec_test.b
+
+# veltro_cc_alignment_test needs -I for appl/veltro/agentlib.m
+veltro_cc_alignment_test.dis: veltro_cc_alignment_test.b $ROOT/appl/veltro/agentlib.m
+	limbo -I$ROOT/module -I$ROOT/appl/veltro -gw veltro_cc_alignment_test.b

@@ -25,3 +25,5 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Verify dis paths
         run: ./tools/verify-dis-paths.sh
+      - name: Verify every tests/*_test.b is in TARG
+        run: ./tools/verify-test-targs.sh
