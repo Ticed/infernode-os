@@ -67,6 +67,47 @@
 
 #include "audio-tbls.c"
 
+/*
+ * Per-stream queue caps in milliseconds (INFR-194, INF-19). Shared
+ * by the SDL3 backend and the headless stub so audioctl can report
+ * what was written even when there is no queue to cap.
+ *
+ * Defaults are 0 (no cap) so non-voice workloads — audiotone, music
+ * playback, anything that bulk-writes ahead of the device — keep
+ * smooth, unbounded queueing. Voice opts in by writing to the ctl:
+ *
+ *   echo 'play_buffer_ms 100' > /dev/audioctl
+ *   echo 'rec_buffer_ms  100' > /dev/audioctl
+ *
+ * Drop policy on the SDL3 path is HEAD-drop. Headless stores the
+ * verbs only.
+ */
+static int play_buffer_ms = 0;
+static int rec_buffer_ms  = 0;
+
+static void
+audio_get_buffer_ms(int *play, int *rec)
+{
+	*play = play_buffer_ms;
+	*rec = rec_buffer_ms;
+}
+
+static int
+audio_parse_buffer_ms(char *s, long n)
+{
+	if(n > 15 && memcmp(s, "play_buffer_ms ", 15) == 0){
+		play_buffer_ms = atoi(s + 15);
+		return 1;
+	}
+	if(n > 14 && memcmp(s, "rec_buffer_ms ", 14) == 0){
+		rec_buffer_ms = atoi(s + 14);
+		return 1;
+	}
+	return 0;
+}
+
+
+
 #ifdef GUI_SDL3
 
 /*
@@ -117,26 +158,10 @@ select_audio_driver(void)
 static Audio_t av;			/* current format (in.rate / chan / bits, out.*) */
 
 /*
- * Per-stream queue caps in milliseconds (INFR-194). Without these
- * SDL_AudioStream queues are unbounded; on a sustained 9P voice flow
- * the macOS playback side accumulates whatever the network feeds it
- * and the audio drifts minutes behind the speaker.
- *
- * Defaults are 0 (no cap) so non-voice workloads — audiotone, music
- * playback, anything that bulk-writes ahead of the device — keep
- * smooth, unbounded queueing. Voice opts in by writing to the ctl:
- *
- *   echo 'play_buffer_ms 100' > /dev/audioctl
- *   echo 'rec_buffer_ms  100' > /dev/audioctl
- *
- * voice/listen and voice/dial both set these as part of their setup,
- * so end users don't have to think about it.
- *
- * Drop policy is HEAD-drop (clear the stale catch-up backlog, keep
- * the freshest data). For voice that's always right.
+ * SDL3 applies play_buffer_ms / rec_buffer_ms as queue depth caps
+ * (INFR-194). See the shared statics above audio_get_buffer_ms.
  */
-static int play_buffer_ms = 0;
-static int rec_buffer_ms  = 0;
+
 
 /* bytes-per-second for a given Audio_d — used to translate the
  * per-direction buffer cap from ms to bytes against the live format. */
@@ -475,6 +500,8 @@ audio_file_init(void)
 {
 	audio_info_init(&av);
 	audio_devops_register(&sdl_devops);
+	audio_bufcaps_register(audio_get_buffer_ms);
+
 	devnames_from_env();
 	/* SDL_InitSubSystem is deferred until first open so a headless
 	 * build with no audio HW (e.g. CI runners) doesn't pay startup
@@ -650,21 +677,11 @@ audio_ctl_write(Chan *c, void *va, long n, vlong off)
 	/*
 	 * Buffer-cap verbs (INFR-194). Parsed and stripped here before
 	 * audioparse sees the rest of the line so audioparse doesn't
-	 * have to learn about non-format verbs. Each verb is a key + int.
-	 * "play_buffer_ms N" — cap playback queue depth, 0 = unbounded
-	 * "rec_buffer_ms  N" — cap capture queue depth, 0 = unbounded
+	 * have to learn about non-format verbs.
 	 */
-	{
-		char *s = (char*)va;
-		if(n > 16 && memcmp(s, "play_buffer_ms ", 15) == 0) {
-			play_buffer_ms = atoi(s + 15);
-			return n;
-		}
-		if(n > 15 && memcmp(s, "rec_buffer_ms ", 14) == 0) {
-			rec_buffer_ms = atoi(s + 14);
-			return n;
-		}
-	}
+	if(audio_parse_buffer_ms((char*)va, n))
+		return n;
+
 
 	/* Parse the verb into a scratch struct first so a malformed line
 	 * leaves the live av untouched. audioparse mutates only the
@@ -765,7 +782,9 @@ void
 audio_file_init(void)
 {
 	audio_info_init(&av);
+	audio_bufcaps_register(audio_get_buffer_ms);
 }
+
 
 void
 audio_ctl_init(void)
@@ -801,9 +820,13 @@ audio_file_write(Chan *c, void *va, long n, vlong off)
 long
 audio_ctl_write(Chan *c, void *va, long n, vlong off)
 {
-	USED(c); USED(va); USED(off);
+	USED(c); USED(off);
+	if(audio_parse_buffer_ms((char*)va, n))
+		return n;
+	USED(va);
 	return n;
 }
+
 
 void
 audio_file_close(Chan *c)
