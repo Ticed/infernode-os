@@ -683,7 +683,7 @@ _sseconsume(conn: Sys->Connection, rch: chan of (int, array of byte),
 			}
 		}
 	}
-	if(bodymode == 1 || ssebodymode(bodybuf) == 1)
+	if(bodymode == 1)
 		return parseopenairesponse(string bodybuf, req);
 	return _ssebuild_response(st, req);
 }
