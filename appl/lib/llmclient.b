@@ -606,6 +606,7 @@ _sseconsume(conn: Sys->Connection, rch: chan of (int, array of byte),
 	headersbuf := array[0] of byte;
 	bodybuf := array[0] of byte;
 	in_body := 0;
+	bodymode := 0;	# 0=unknown, 1=json object, 2=SSE
 	status := "";
 	idle_ms := 0;
 	done := 0;
@@ -659,10 +660,14 @@ _sseconsume(conn: Sys->Connection, rch: chan of (int, array of byte),
 				bodybuf[len old:] = rdata[0:n];
 			}
 			if(in_body) {
-				(remaining, ssedone) := _ssedrain_lines(bodybuf, st, req);
-				bodybuf = remaining;
-				if(ssedone)
-					done = 1;
+				if(bodymode == 0)
+					bodymode = ssebodymode(bodybuf);
+				if(bodymode == 2) {
+					(remaining, ssedone) := _ssedrain_lines(bodybuf, st, req);
+					bodybuf = remaining;
+					if(ssedone)
+						done = 1;
+				}
 			}
 		* =>
 			sys->sleep(HTTP_POLL_MS);
@@ -678,6 +683,8 @@ _sseconsume(conn: Sys->Connection, rch: chan of (int, array of byte),
 			}
 		}
 	}
+	if(bodymode == 1 || ssebodymode(bodybuf) == 1)
+		return parseopenairesponse(string bodybuf, req);
 	return _ssebuild_response(st, req);
 }
 
@@ -1581,7 +1588,7 @@ trytoolcalltag(s: string, pos: int, opentag, closetag: string): (int, int, strin
 	argsv := jsontoolargs(jv);
 	args := "{}";
 	if(argsv != nil)
-		args = argsv.text();
+		args = jsonunslash(argsv.text());
 
 	return (1, endpos, name, args);
 }
@@ -1665,7 +1672,7 @@ trytoolcallsarray(s: string, pos: int): (int, int, list of (string, string))
 			argsv := jsontoolargs(entry);
 			args := "{}";
 			if(argsv != nil)
-				args = argsv.text();
+				args = jsonunslash(argsv.text());
 			calls = (name, args) :: calls;
 		}
 	* =>
@@ -1691,6 +1698,37 @@ jsontoolargs(jv: ref JValue): ref JValue
 	return av;
 }
 
+# json.text() escapes '/' as '\/' so "</tag>" cannot look like XML.
+# Tool args are not XML; keep the slash so paths survive on the TOOL: line.
+jsonunslash(s: string): string
+{
+	out := "";
+	for(i := 0; i < len s; i++) {
+		if(s[i] == '\\' && i + 1 < len s && s[i+1] == '/') {
+			out[len out] = '/';
+			i++;
+		} else
+			out[len out] = s[i];
+	}
+	return out;
+}
+
+# First non-whitespace byte of an HTTP body: '{' means a complete
+# chat.completion object (server ignored stream:true), anything else
+# is treated as SSE. 0 if the body is still empty or all whitespace.
+ssebodymode(buf: array of byte): int
+{
+	for(i := 0; i < len buf; i++) {
+		c := int buf[i];
+		if(c == ' ' || c == '\t' || c == '\r' || c == '\n')
+			continue;
+		if(c == '{')
+			return 1;
+		return 2;
+	}
+	return 0;
+}
+
 # trybarejsontoolcall accepts content only when the whole string
 # (whitespace-stripped) is one JSON object with a string "name" and
 # either "arguments" or "parameters". Surrounding prose is rejected
@@ -1713,7 +1751,7 @@ trybarejsontoolcall(content: string): (int, string, string)
 	argsv := jsontoolargs(jv);
 	if(argsv == nil)
 		return (0, "", "");
-	return (1, name, argsv.text());
+	return (1, name, jsonunslash(argsv.text()));
 }
 
 # jsonobjectend returns the index after the matching '}' for an object
