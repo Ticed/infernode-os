@@ -3,7 +3,8 @@
 #
 # The phone exports /dev over unauthenticated 9P for development. The Mac
 # imports only /dev/audio through speech-capture; processing and playback stay
-# on the Mac. Prefer a Tailscale address and do not expose the port publicly.
+# on the Mac. --transport ip (default) prefers Tailscale, then Wi-Fi.
+# --transport usb uses adb forward to 127.0.0.1 and needs no phone IP route.
 
 set -eu
 
@@ -19,6 +20,7 @@ port=17010
 wait_seconds=30
 install=0
 stop=0
+transport=ip
 apk="$ROOT/android-app/app/build/outputs/apk/debug/app-debug.apk"
 
 . "$ROOT/tools/android-speech-preflight.sh"
@@ -31,6 +33,7 @@ usage: tools/android-speech-frontend.sh [options]
 
   --device SERIAL    adb device serial (auto-selected when exactly one exists)
   --ip ADDRESS       phone address (auto-detects tailscale0, then wlan0)
+  --transport usb|ip usb: adb forward to 127.0.0.1; ip: phone address (default)
   --port PORT        development 9P port (default: 17010)
   --install          install/reinstall the default debug APK before launch
   --apk PATH         install this APK before launch (implies --install)
@@ -50,6 +53,8 @@ while [ "$#" -gt 0 ]; do
 	--device=*) device=${1#*=}; shift ;;
 	--ip) phone_ip=$2; shift 2 ;;
 	--ip=*) phone_ip=${1#*=}; shift ;;
+	--transport) transport=$2; shift 2 ;;
+	--transport=*) transport=${1#*=}; shift ;;
 	--port) port=$2; shift 2 ;;
 	--port=*) port=${1#*=}; shift ;;
 	--wait) wait_seconds=$2; shift 2 ;;
@@ -73,6 +78,15 @@ fi
 case "$wait_seconds" in
 ''|*[!0-9]*) echo "android-speech-frontend: invalid wait: $wait_seconds" >&2; exit 2 ;;
 esac
+
+case "$transport" in
+ip|usb) ;;
+*) echo "android-speech-frontend: invalid transport: $transport" >&2; exit 2 ;;
+esac
+if [ "$transport" = usb ]; then
+	# USB presents the export at 127.0.0.1 via adb forward (INF-20).
+	phone_ip=127.0.0.1
+fi
 
 if [ "$stop" -eq 0 ]; then
 	android_preflight_init
@@ -124,6 +138,7 @@ fi
 
 if [ "$stop" -eq 1 ]; then
 	android_preflight_finish || exit 1
+	"$ADB" -s "$device" forward --remove "tcp:$port" >/dev/null 2>&1 || true
 	"$ADB" -s "$device" shell am force-stop "$PKG"
 	echo "Stopped $PKG on $device."
 	exit 0
@@ -145,7 +160,7 @@ if [ -n "$device" ] && [ "$install" -eq 0 ]; then
 	fi
 fi
 
-if [ -z "$phone_ip" ] && [ -n "$device" ]; then
+if [ "$transport" != usb ] && [ -z "$phone_ip" ] && [ -n "$device" ]; then
 	for iface in tailscale0 wlan0; do
 		phone_ip=$("$ADB" -s "$device" shell ip -4 -o addr show "$iface" 2>/dev/null |
 			sed -n 's/.* inet \([0-9.]*\)\/.*/\1/p' | head -n 1 | tr -d '\r')
@@ -202,6 +217,13 @@ adb_device shell am force-stop "$PKG"
 adb_device shell am start -n "$PKG/.InfernodeSDLActivity" \
 	--es io.infernode.extra.MODE speech-export \
 	--ei io.infernode.extra.SPEECH_PORT "$port" >/dev/null
+
+if [ "$transport" = usb ]; then
+	if ! adb_device forward "tcp:$port" "tcp:$port" >/dev/null; then
+		echo "android-speech-frontend: adb forward tcp:$port failed" >&2
+		exit 1
+	fi
+fi
 
 if ! command -v "$NC" >/dev/null 2>&1; then
 	echo "android-speech-frontend: nc not found; launch sent but reachability is unverified" >&2
