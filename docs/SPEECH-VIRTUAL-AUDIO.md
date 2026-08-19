@@ -163,6 +163,7 @@ endpoint to answer the turn.
   microphone. The tests report that as a skip, not a pass.
 - **The wake fixture needs the Kokoro helper to regenerate.**
   `tests/fixtures/speech/kokoro/hey_jarvis.pcm` is committed, and its
-  `.meta` carries the one-line command that produced it. A different
-  wake word means synthesizing a new one, and openWakeWord ships a
-  pretrained model only for "hey jarvis".
+  `.meta` carries the one-line command that produced it. Use
+  `USER_VOICE` (`bm_george`) from `tools/mac/voice_session.py`, not
+  Veltro's `af_bella`. A different wake word means synthesizing a new
+  one, and openWakeWord ships a pretrained model only for "hey jarvis".

@@ -162,5 +162,10 @@ stack, real LLM, real helpers, with no password prompt.
   `tools/generate-elevenlabs-speech-fixtures.py` (needs an API key).
 - `tests/fixtures/speech/kokoro/` — synthesized locally with the Kokoro
   helper, no key and no network. Each `.meta` carries the one-line
-  command that produced it. `hey_jarvis.pcm` is the wake word;
-  openWakeWord ships a pretrained model only for "hey jarvis".
+  command that produced it. Scripted user speech uses `USER_VOICE`
+  (`bm_george`, British male) in `tools/mac/voice_session.py`; Veltro's
+  reply stays on `VELTRO_VOICE` (`af_bella`, American female), the
+  stack default. The pair is different gender and accent so a recording
+  of both sides on one speaker is unambiguous. `hey_jarvis.pcm` is the
+  wake word; openWakeWord ships a pretrained model only for "hey jarvis".
+  Play the committed `.pcm` files; do not call `kokoro-cli` from a test.

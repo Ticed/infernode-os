@@ -60,8 +60,7 @@ SHOTS = os.path.join(TMP, "gui-voice")
 # voice path — and a model that answers it with an unparsed tool call
 # (INF-27) fails here for a reason that has nothing to do with audio.
 # Ordinary conversation is also what voice mode is mostly used for.
-REQUEST = os.environ.get("GUI_VOICE_REQUEST",
-                         "tests/fixtures/speech/kokoro/what_is_your_name.pcm")
+REQUEST = os.environ.get("GUI_VOICE_REQUEST", vs.REQUEST)
 
 T_PARTIAL = 40       # partials appear while the request is being spoken
 T_COUNTDOWN = 40     # the send countdown appears
