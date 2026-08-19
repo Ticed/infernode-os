@@ -1263,6 +1263,48 @@ testVoiceQueuePendingReader(t: ref T)
 		"boundary delivery completes the authoritative 1->0 transition");
 }
 
+testVoiceQueueIdleFirstTurn(t: ref T)
+{
+	if(actid < 0) {
+		t.skip("no activity");
+		return;
+	}
+
+	voicefile := actbase() + "/conversation/voiceinput";
+	status := actbase() + "/conversation/voicequeue";
+	activitystatus := actbase() + "/status";
+	# Fresh desktop activities start "active". That is not busy, so a
+	# first spoken turn is the current turn, not a follow-up.
+	t.assert(writefile(activitystatus, "active") > 0,
+		"activity matches a fresh desktop session");
+
+	readc := chan[1] of string;
+	spawn eventreader(voicefile, readc);
+	t.assert(writefile(voicefile, "first spoken turn") > 0,
+		"idle first turn is accepted");
+	delivered := "";
+	timeoutc := chan[1] of int;
+	spawn timerwait(timeoutc, 1000);
+	alt {
+	delivered = <-readc =>
+		;
+	<-timeoutc =>
+		delivered = "error:timeout";
+	}
+	t.assertseq(strip(delivered), "first spoken turn",
+		"pending reader receives the idle first turn immediately");
+	t.assertseq(strip(readfile(status)),
+		"depth=0 capacity=1 state=delivering\nfirst spoken turn",
+		"idle first turn is not held as a follow-up");
+
+	t.assert(writefile(activitystatus, "working") > 0,
+		"consumer begins the delivered turn");
+	t.assertseq(strip(readfile(status)),
+		"depth=0 capacity=1 state=delivered\nfirst spoken turn",
+		"delivered leftover is depth 0, not a second queued turn");
+}
+
+
 testVoiceApproval(t: ref T)
 {
 	if(actid < 0) {
@@ -2310,6 +2352,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("VoiceQueue", testVoiceQueue);
 	run("VoiceInput", testVoiceInput);
 	run("VoiceQueuePendingReader", testVoiceQueuePendingReader);
+	run("VoiceQueueIdleFirstTurn", testVoiceQueueIdleFirstTurn);
 	run("VoiceApproval", testVoiceApproval);
 	run("ConversationControl", testConversationControl);
 	run("ConversationDraft", testConversationDraft);

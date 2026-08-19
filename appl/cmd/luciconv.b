@@ -888,7 +888,10 @@ drawconversation(zone: Rect)
 	}
 	hasdraft := (livedraft != nil && livedraft != "") ||
 		(livestatus != nil && livestatus != "");
-	hasqueue := queuebuf != nil && queuebuf != "" && queuestate != "empty";
+	# A live follow-up is depth>0. delivered/cancelled leftovers stay in
+	# voicequeue as status history (INF-28) and must not be drawn again.
+	hasqueue := queuedepth > 0 ||
+		(queuestate == "disconnected" && queuebuf != nil && queuebuf != "");
 	lastasst := -1;
 	for(ai := 0; ai < nmsg; ai++)
 		if(isassistant(msgstore[ai]))

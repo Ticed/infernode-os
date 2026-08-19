@@ -69,6 +69,9 @@ for state in queued delivering delivered rejected cancelled replaced; do
 done
 require_literal appl/cmd/luciconv.b 'queuestate, queuedepth, queuecapacity' \
   'Lucia does not render authoritative queue state and capacity together'
+require_literal appl/cmd/luciconv.b 'queuedepth > 0' \
+  'delivered leftover queue status is still drawn as a follow-up tile'
+
 
 echo 'PASS: every voice entry and exit surface uses one semantic control path'
 echo 'PASS: production compose guard prevents key-driven draft mutation in voice mode'
