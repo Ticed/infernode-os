@@ -46,6 +46,9 @@ case "$*" in
 *' shell getprop ro.product.cpu.abi') echo arm64-v8a ;;
 *' shell pm path io.infernode') echo package:/data/app/io.infernode/base.apk ;;
 *' shell ip -4 -o addr show tailscale0')
+	if [ "${FAKE_ADB_MODE:-one}" = no-ip ]; then
+		exit 1
+	fi
 	echo '42: tailscale0    inet 100.84.91.15/32 scope global tailscale0' ;;
 *' shell ip -4 -o addr show wlan0') exit 1 ;;
 *' shell dumpsys activity services io.infernode')
@@ -197,6 +200,55 @@ else
 fi
 check "requires selection when multiple devices are attached" \
 	test "$multiple_devices" -eq 0
+
+# USB needs no IP route to the phone: adb forward makes the export appear
+# at 127.0.0.1. The fake device has neither tailscale0 nor wlan0.
+: > "$ADB_LOG"
+: > "$NC_LOG"
+if FAKE_ADB_MODE=no-ip ADB="$TMP/bin/adb" NC="$TMP/bin/nc" \
+	"$ROOT/tools/android-speech-frontend.sh" --transport usb --wait 0 \
+	> "$TMP/usb.out" 2> "$TMP/usb.err"; then
+	usb_rc=0
+else
+	usb_rc=1
+fi
+check "usb transport launches without a phone IP" test "$usb_rc" -eq 0
+check "usb prints the localhost mount address" \
+	grep -q 'address: tcp!127.0.0.1!17010' "$TMP/usb.out"
+check "usb sets up adb forward" \
+	grep -q 'forward tcp:17010 tcp:17010' "$ADB_LOG"
+check "usb probes localhost" \
+	grep -q -- '-z -w 1 127.0.0.1 17010' "$NC_LOG"
+check "usb does not query phone interfaces" \
+	test "$(grep -c 'addr show' "$ADB_LOG" || true)" -eq 0
+check "usb still grants microphone permission" \
+	grep -q 'shell pm grant io.infernode android.permission.RECORD_AUDIO' "$ADB_LOG"
+check "usb still verifies the microphone foreground service" \
+	grep -q 'shell dumpsys activity services io.infernode' "$ADB_LOG"
+check "usb still verifies Android has not silenced capture" \
+	grep -q 'shell dumpsys audio' "$ADB_LOG"
+check "usb reports the microphone as authorized" \
+	grep -q 'microphone: authorized' "$TMP/usb.out"
+
+# --stop tears down the host-side forward even without --transport usb:
+# the forward is keyed by this port, not by how the next invocation
+# would reach the phone.
+: > "$ADB_LOG"
+FAKE_ADB_MODE=no-ip ADB="$TMP/bin/adb" NC="$TMP/bin/nc" \
+	"$ROOT/tools/android-speech-frontend.sh" --stop > "$TMP/usb-stop.out"
+check "stop removes the adb forward" \
+	grep -q 'forward --remove tcp:17010' "$ADB_LOG"
+check "stop force-stops the package" \
+	grep -q 'shell am force-stop io.infernode' "$ADB_LOG"
+
+if ADB="$TMP/bin/adb" NC="$TMP/bin/nc" \
+	"$ROOT/tools/android-speech-frontend.sh" --transport pigeon \
+	> /dev/null 2>&1; then
+	invalid_transport=1
+else
+	invalid_transport=0
+fi
+check "rejects an invalid transport" test "$invalid_transport" -eq 0
 
 echo "android_speech_frontend_test: $pass passed, $fail failed"
 test "$fail" -eq 0

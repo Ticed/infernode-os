@@ -212,8 +212,14 @@ argument for supervised callers; ordinary one-argument use is unchanged.
 ### 3. Remote capture device (e.g. Infernode on an Android phone)
 
 The phone contributes only its microphone; processing and playback stay
-wherever topology 1 or 2 put them. A Tailscale address is preferred because it
-is stable across Wi-Fi changes; a same-LAN Wi-Fi address is the fallback.
+wherever topology 1 or 2 put them. Two transports reach the export:
+
+- `--transport usb` (recommended for latency measurement) runs
+  `adb forward tcp:<port> tcp:<port>` and prints `tcp!127.0.0.1!<port>`.
+  The phone is already on USB for adb, so this works with no IP route
+  between Mac and phone and removes Wi-Fi jitter from the capture path.
+- `--transport ip` (default) prefers a Tailscale address because it is
+  stable across Wi-Fi changes; a same-LAN Wi-Fi address is the fallback.
 
 Build and start the Android frontend from the Mac. No `ANDROID_*`
 exports are required when Android Studio is installed in its default
@@ -235,7 +241,7 @@ Resolved locations the scripts actually search (first usable wins):
 | JDK 17+ | `$JAVA_HOME`, `java` on `PATH`, Android Studio JBR | `export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"` |
 | Speech helpers + models | `$INFERNODE_SPEECH_HOME` or `~/.local/share/infernode-speech` | `tools/install-speech-helpers.sh` |
 | Playback device | `$INFERNODE_AUDIO_OUT`, then the system default output | Connect speakers, or `brew install --cask blackhole-2ch` |
-| Phone network | `adb` device `tailscale0` / `wlan0` IPv4 | Tailscale or same Wi-Fi, or `--ip ADDRESS` |
+| Phone network | `adb` device `tailscale0` / `wlan0` IPv4, or USB | Tailscale, same Wi-Fi, `--ip ADDRESS`, or `--transport usb` |
 
 `tools/android-speech-preflight.sh` prints which of those it used. A
 missing prerequisite is named, the searched paths are listed, and the
@@ -246,10 +252,12 @@ same SDK. `tools/android-speech-frontend.sh` runs the helper, playback,
 and network half before it launches the phone.
 
 
-Pass `--device <adb-serial>` when more than one Android device is attached, or
-`--ip <phone-address>` to override the automatic `tailscale0`/`wlan0`
+Pass `--device <adb-serial>` when more than one Android device is attached.
+`--transport usb` forwards the 9P port over adb and prints
+`tcp!127.0.0.1!<port>`; `--stop` removes that forward. `--transport ip`
+(default) uses `--ip <phone-address>` or automatic `tailscale0`/`wlan0`
 detection. The tool grants `RECORD_AUDIO`, launches the real SDL activity in
-`speech-export` mode, and waits until TCP port 17010 is reachable. The SDL
+`speech-export` mode, and waits until the printed address is reachable. The SDL
 activity is required: `/dev/audio` uses SDL3's Android AAudio backend, so the
 legacy interactive-shell activity is not a valid audio-service host.
 
@@ -414,12 +422,14 @@ Android rig was ~235 ms; the shim additionally holds the window for whatever
 audio it handed the device but the device cannot have played yet.
 
 `capturedelay` covers transport only, and the Android 9P path needs far less
-of it than it first appears. Reading the phone's exported `/dev/audio` over an
-`adb forward` link sustains 31.6 KB/s against the 32 KB/s the format demands,
-and delivers 18.29 s of audio in 18.54 s of wall time — a startup offset of
-**~250 ms**, with the queue bounded at about the same: pausing the reader for
-five seconds leaves only ~220 ms retrievable rather than the five seconds an
-unbounded backlog would hold.
+of it than it first appears. Reading the phone's exported `/dev/audio` over
+`--transport usb` (`adb forward`) sustains 31.6 KB/s against the 32 KB/s the
+format demands, and delivers 18.29 s of audio in 18.54 s of wall time — a
+startup offset of **~250 ms**, with the queue bounded at about the same:
+pausing the reader for five seconds leaves only ~220 ms retrievable rather
+than the five seconds an unbounded backlog would hold. Use USB when
+characterising capture; IP adds Wi-Fi jitter that the measurement is trying
+to exclude.
 
 Earlier guidance here called for `capturedelay 2500` on the phone. That was
 compensating for something else entirely. A TTS helper does not begin speaking
@@ -446,6 +456,10 @@ The current suppression state is observable in the provider's `level` file as
 On the processing host, the import and ctl writes are automated as:
 
 ```sh
+# USB (recommended for latency measurement):
+sh /lib/voice/speech-capture tcp!127.0.0.1!17010
+
+# IP:
 sh /lib/voice/speech-capture tcp!<phone-ip>!17010
 ```
 
@@ -454,7 +468,7 @@ desktop:
 
 ```sh
 tools/speech-test.sh \
-  -M 'tcp!<phone-ip>!17010 /n/phone' \
+  -M 'tcp!127.0.0.1!17010 /n/phone' \
   -c 'capturedev /n/phone/audio' -c 'micmode device' -e -n 1
 ```
 
@@ -469,7 +483,7 @@ changes. Use it with the both-directions ctl lines for a full proof:
 
 ```sh
 tools/speech-test.sh \
-  -M 'tcp!<phone-ip>!17010 /n/phone' \
+  -M 'tcp!127.0.0.1!17010 /n/phone' \
   -c 'capturedev /n/phone/audio' -c 'audiodev /n/phone/audio' \
   -c 'micmode device' -c 'duplex half' -c 'capturedelay 250' -w -n 2
 ```
