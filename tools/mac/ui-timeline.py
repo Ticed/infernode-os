@@ -3,6 +3,7 @@
 
     python3 tools/mac/ui-timeline.py --drive tests/fixtures/speech/kokoro/what_is_your_name.pcm
     python3 tools/mac/ui-timeline.py --window 1193 --seconds 30
+    tools/ui-timeline --drive tests/fixtures/speech/kokoro/what_is_your_name.pcm --trace out.tsv
 
 Screenshot polling through OCR takes ~0.6s a frame, so it cannot see a
 tile that appears and disappears inside half a second — and several of
@@ -16,13 +17,23 @@ What it measures per frame, in the conversation pane:
     blue     pixels of the blue speaking indicator
     tile     pixels lighter than the pane background — how much is drawn
 
-It prints every change, then the runs each signal was visible for. A tile
-that flashes shows up as a run of 0.05–0.20s; one a person can read does
-not.
+It writes one TSV row per frame (t, accent, blue, tile) so a before/after
+diff is mechanical. It also prints every change and the runs each signal
+was visible for. A tile that flashes shows up as a run of 0.05–0.20s;
+one a person can read does not.
 
 --drive boots the desktop, enters voice mode, says the wake word and
 speaks the given request, so one command reproduces a whole turn. Without
 it, pass --window and drive the desktop yourself while it records.
+
+--trace FILE   write every frame as TSV (t\\taccent\\tblue\\ttile)
+--check        exit 1 if a signal is visible for less than --dwell
+--dwell SEC    minimum on-screen time that is not a flash (default 0.30)
+--keep         keep the recording and extracted frames
+
+The 0.30s dwell is just over the ~0.25s it takes to notice a tile
+without being able to read it. Flashes in the INF-32 recording were
+0.05–0.15s.
 
 The recording covers the whole display, including whatever else is on it,
 and is deleted when the analysis finishes unless --keep is given.
@@ -42,6 +53,7 @@ import voice_session as vs           # noqa: E402
 
 WORK = os.path.join(vs.TMP, "ui-timeline")
 FPS = 20
+DEFAULT_DWELL = 0.30
 
 
 def analyse(frames, fps):
@@ -81,9 +93,30 @@ def runs(rows, column, threshold):
     return out
 
 
+def blank_frames(rows):
+    """One-frame pane collapses: tile area drops hard then recovers."""
+    out = []
+    for i in range(1, len(rows) - 1):
+        prev, cur, nxt = rows[i - 1][3], rows[i][3], rows[i + 1][3]
+        if prev <= 0:
+            continue
+        if cur < prev * 0.85 and nxt > cur * 1.05 and (nxt - cur) > (prev - cur) * 0.4:
+            out.append(rows[i][0])
+    return out
+
+
+def write_trace(path, rows):
+    with open(path, "w") as f:
+        f.write("t\taccent\tblue\ttile\n")
+        for t, accent, blue, tile in rows:
+            f.write("%0.2f\t%d\t%d\t%d\n" % (t, accent, blue, tile))
+
+
 def main(argv):
-    window = seconds = drive = None
+    window = seconds = drive = trace = None
     keep = False
+    check = False
+    dwell = DEFAULT_DWELL
     args = list(argv)
     while args:
         a = args.pop(0)
@@ -93,6 +126,12 @@ def main(argv):
             seconds = float(args.pop(0))
         elif a == "--drive":
             drive = args.pop(0)
+        elif a == "--trace":
+            trace = args.pop(0)
+        elif a == "--dwell":
+            dwell = float(args.pop(0))
+        elif a == "--check":
+            check = True
         elif a == "--keep":
             keep = True
         elif a in ("-h", "--help"):
@@ -126,6 +165,7 @@ def main(argv):
             bounds = [int(v) for v in info[0][2:6]]
 
         recorder = subprocess.Popen(["screencapture", "-v", "-V", str(int(seconds)), "-x", mov])
+        print("recording window=%s seconds=%s" % (window, int(seconds)), flush=True)
         marks = []
         start = time.monotonic()
         if drive:
@@ -150,6 +190,17 @@ def main(argv):
         if not rows:
             sys.exit("ui-timeline: the recording produced no frames")
 
+        if trace:
+            parent = os.path.dirname(os.path.abspath(trace))
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            write_trace(trace, rows)
+            print("trace: %s (%d frames)" % (trace, len(rows)))
+
+        print("frame\tt\taccent\tblue\ttile")
+        for t, accent, blue, tile in rows:
+            print("frame\t%0.2f\t%d\t%d\t%d" % (t, accent, blue, tile))
+
         for label, t in marks:
             print("  %6.2fs  %s (driven)" % (t + 3, label))
         print("\nchanges (accent / blue / drawn area):")
@@ -160,10 +211,26 @@ def main(argv):
                 print("  %6.2fs  accent=%-6d blue=%-6d tile=%d" % (t, accent, blue, tile))
                 previous = now
         print("\nvisible for:")
-        for name, column, threshold in (("accent text", 1, 600), ("blue speaking box", 2, 600)):
+        flashes = []
+        for name, column, threshold in (("accent text", 1, 1500), ("blue speaking box", 2, 600)):
             for a, b in runs(rows, column, threshold):
-                flag = "   <- flash" if b - a <= 0.3 else ""
-                print("  %-18s %6.2fs .. %6.2fs  (%.2fs)%s" % (name, a, b, b - a, flag))
+                dur = b - a
+                flag = ""
+                if dur < dwell:
+                    flag = "   <- flash"
+                    flashes.append((name, a, b, dur))
+                print("  %-18s %6.2fs .. %6.2fs  (%.2fs)%s" % (name, a, b, dur, flag))
+        blanks = blank_frames(rows)
+        if blanks:
+            print("\nblank frames:")
+            for t in blanks:
+                print("  %6.2fs   <- full-pane collapse" % t)
+        if check and (flashes or blanks):
+            print("FAIL: %d flash run(s), %d blank frame(s) (dwell=%.2fs)"
+                  % (len(flashes), len(blanks), dwell), file=sys.stderr)
+            return 1
+        if check:
+            print("PASS: no tile visible for less than %.2fs, no blank frame" % dwell)
     finally:
         if session:
             session.stop()
