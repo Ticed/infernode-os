@@ -78,6 +78,13 @@ Qroot, Qctl, Qlisten, Qwake, Qsay, Qcancel, Qvoices, Qchime, Qlevel: con iota;
 
 # Bytes of helper stderr retained for diagnostics (see Hostproc.errtail).
 ERRTAIL: con 512;
+# Playback format openaudioout writes. drainremaining uses the same
+# numbers: /dev/audioctl has no queued-byte depth to poll (ctlsummary
+# reports configured rate/chans/buf percent only; SDL_GetAudioStreamQueued
+# is used only inside audio_file_close). INF-45.
+OUTCHANS: con 1;
+OUTBITS: con 16;
+
 
 # Configuration
 kokorobin := "kokoro-cli";
@@ -294,8 +301,8 @@ openaudioout(rate: int): (ref Sys->FD, string)
 	if(ctl != nil) {
 		cmds := array[] of {
 			sys->sprint("out rate %d", rate),
-			"out chans 1",
-			"out bits 16",
+			sys->sprint("out chans %d", OUTCHANS),
+			sys->sprint("out bits %d", OUTBITS),
 			"out enc pcm"
 		};
 		for(i := 0; i < len cmds; i++) {
@@ -542,19 +549,15 @@ clearoutputlevel()
 	outputpeak = 0;
 }
 
-# Keep the microphone shut until our own output can no longer reach it.
-# `playms` is how much audio the device still has to play out; on top of that
-# the room needs duplextail to go quiet, and a remote capture device needs a
-# further capturedelay before samples from this window stop arriving. The
-# window only ever extends, so overlapping says and chimes cannot shorten it.
-# Milliseconds of audio handed to the device that it cannot have played yet:
-# the duration of `nbytes` at the playback rate, less the wall time already
-# spent writing it. s16 mono, so two bytes per frame.
+# Milliseconds of audio handed to the device that it cannot have played
+# yet: duration of `nbytes` at the configured playback format, less the
+# wall time already spent writing it. Frame size matches openaudioout.
 drainremaining(nbytes: int, since: int): int
 {
-	if(nbytes <= 0 || audrate <= 0)
+	bpf := (OUTBITS / 8) * OUTCHANS;
+	if(nbytes <= 0 || audrate <= 0 || bpf <= 0)
 		return 0;
-	playms := nbytes * 1000 / (audrate * 2);
+	playms := nbytes * 1000 / (audrate * bpf);
 	elapsed := sys->millisec() - since;
 	if(elapsed < 0)
 		elapsed = 0;
@@ -564,6 +567,26 @@ drainremaining(nbytes: int, since: int): int
 	return remain;
 }
 
+# Hold /dev/audio until the queued tail should have left the device.
+# Closing earlier discards unplayed samples. The wait is a computed
+# duration (see drainremaining); integer division truncates by <1ms,
+# and the 50ms poll step may overshoot by one slice. INF-45.
+drainwait()
+{
+	while(cancelreq == 0) {
+		left := playuntil - sys->millisec();
+		if(left <= 0)
+			return;
+		if(left > 50)
+			left = 50;
+		sys->sleep(left);
+	}
+}
+
+# Keep the microphone shut until our own output can no longer reach it.
+# `playms` is how much audio the device still has to play out; on top of
+# that the room needs duplextail, and a remote capture device needs
+# capturedelay. The window only ever extends.
 holdsuppression(playms: int)
 {
 	deadline := sys->millisec() + playms + duplextail + capturedelay;
@@ -881,16 +904,19 @@ dosay(text: string): string
 		}
 		total += n;
 	}
-	clearoutputlevel();
-	# Keep mode=output until the device has had time to emit what we
-	# handed it. Writes returning is not the same as the speaker going
-	# quiet; the unplayed remainder is still audible.
+	# Writes returning is not the speaker going quiet. Hold the fd
+	# and keep playing set so half-duplex stays shut for the audible
+	# tail; apply duplextail only after that wait ends. Keep the
+	# output level live for the whole drain so the meter is not flat
+	# while the audio is still audible. INF-45, INF-44.
 	remain := drainremaining(total, playstart);
 	until := sys->millisec() + remain;
 	if(until - playuntil > 0)
 		playuntil = until;
+	drainwait();
+	clearoutputlevel();
 	playing = 0;
-	holdsuppression(remain);
+	holdsuppression(0);
 	closeproc(p);
 	sayproc = nil;
 	if(status != "")
@@ -946,13 +972,14 @@ playchime(kind: string)
 		}
 	} else
 		sys->fprint(stderr, "speechshim9p: chime: %s\n", err);
-	clearoutputlevel();
 	remain := drainremaining(total, start);
 	until := sys->millisec() + remain;
 	if(until - playuntil > 0)
 		playuntil = until;
+	drainwait();
+	clearoutputlevel();
 	playing = 0;
-	holdsuppression(remain);
+	holdsuppression(0);
 }
 
 startchime(kind: string)

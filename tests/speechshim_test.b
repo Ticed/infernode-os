@@ -767,6 +767,54 @@ testHalfDuplexSwallowsWakeDuringSay(t: ref T)
 	writefile(MNT + "/ctl", "audiodev /dev/audio");
 }
 
+# Closing /dev/audio as soon as the helper exits drops the unplayed tail
+# (SDL drains at most 8s; CoreAudio stops immediately). say completion
+# must wait for the queued duration. INF-45.
+testSayWaitsForDrain(t: ref T)
+{
+	fd := sys->create(OUTPCM, Sys->OWRITE, 8r644);
+	t.assert(fd != nil, "create playback sink");
+	if(fd == nil)
+		return;
+	fd = nil;
+
+	# 2s of s16 mono at 8kHz, emitted at once. A say that returns on
+	# helper EOF finishes in milliseconds; one that waits for drain
+	# takes the queued duration.
+	t.assert(writefile(MNT + "/ctl", "audiodev " + OUTPCM) > 0,
+		"configure fixture playback sink");
+	t.assert(writefile(MNT + "/ctl", "rate 8000") > 0, "8kHz for a short clip");
+	t.assert(writefile(MNT + "/ctl",
+		"kokorobin /bin/sh -c \"dd if=/dev/zero bs=32000 count=1 2>/dev/null\"") > 0,
+		"configure instant 2s PCM helper");
+
+	sayfd := sys->open(MNT + "/say", Sys->ORDWR);
+	t.assert(sayfd != nil, "open say for drain wait");
+	if(sayfd == nil)
+		return;
+	b := array of byte "drain fixture";
+	t0 := sys->millisec();
+	t.assert(sys->write(sayfd, b, len b) > 0, "say write accepted");
+	sys->seek(sayfd, big 0, Sys->SEEKSTART);
+	buf := array[512] of byte;
+	n := sys->read(sayfd, buf, len buf);
+	elapsed := sys->millisec() - t0;
+	result := "";
+	if(n > 0)
+		result = string buf[0:n];
+	t.assert(hassubstr(result, "ok: played"),
+		"say reports playback of the fixture");
+	t.log(sys->sprint("say drained in %d ms: %s", elapsed, result));
+	t.assert(elapsed >= 1700,
+		"say completion waits for the queued 2s duration");
+	t.assert(elapsed < 6000, "drain wait does not hang past the clip");
+
+	writefile(MNT + "/ctl", "kokorobin /bin/echo");
+	writefile(MNT + "/ctl", "rate 22050");
+	writefile(MNT + "/ctl", "audiodev /dev/audio");
+}
+
+
 teardown()
 {
 	sys->unmount(nil, MNT);
@@ -802,6 +850,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("LevelTelemetry", testLevelTelemetry);
 	run("CancelKillsSay", testCancelKillsSay);
 	run("HalfDuplexSwallowsWakeDuringSay", testHalfDuplexSwallowsWakeDuringSay);
+	run("SayWaitsForDrain", testSayWaitsForDrain);
 	run("HelperErrorNamesCause", testHelperErrorNamesCause);
 
 	teardown();
