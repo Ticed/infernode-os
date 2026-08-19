@@ -106,6 +106,27 @@ strip(s: string): string
 	return s[i:];
 }
 
+TTS_JSON_FALLBACK: con "I received a structured reply.";
+
+# Local copy of lucibridge.speakabletext. Must stay in sync.
+speakabletext(s: string): string
+{
+	t := s;
+	i := 0;
+	while(i < len t && (t[i] == ' ' || t[i] == '\t' || t[i] == '\n'))
+		i++;
+	j := len t;
+	while(j > i && (t[j-1] == ' ' || t[j-1] == '\t' || t[j-1] == '\n'))
+		j--;
+	if(i < j)
+		t = t[i:j];
+	else
+		t = "";
+	if(len t >= 2 && t[0] == '{' && t[len t - 1] == '}')
+		return TTS_JSON_FALLBACK;
+	return s;
+}
+
 tolower(s: string): string
 {
 	r := s;
@@ -709,6 +730,36 @@ testStrcontainsEmpty(t: ref T)
 	t.asserteq(strcontains(nil, "anything"), 0, "strcontains empty list");
 }
 
+# --- speakabletext tests ---
+
+testSpeakabletextLoneJson(t: ref T)
+{
+	raw := "{\"name\": \"say\", \"parameters\": {\"text\": \"local llm working\"}}";
+	got := speakabletext(raw);
+	t.assert(got != raw, "lone JSON must not reach the say path verbatim");
+	t.assertseq(got, TTS_JSON_FALLBACK, "lone JSON speaks the short fallback");
+}
+
+testSpeakabletextUnrecognizedJson(t: ref T)
+{
+	raw := "{\"not\": \"a-tool-call\", \"shape\": [1, 2]}";
+	got := speakabletext(raw);
+	t.assert(got != raw, "unrecognized lone JSON must not be spoken verbatim");
+	t.assertseq(got, TTS_JSON_FALLBACK, "unrecognized JSON uses the same fallback");
+}
+
+testSpeakabletextProseUnchanged(t: ref T)
+{
+	raw := "local LLM working.";
+	t.assertseq(speakabletext(raw), raw, "ordinary prose is spoken as-is");
+}
+
+testSpeakabletextJsonInProseUnchanged(t: ref T)
+{
+	raw := "Here you go: {\"name\": \"say\"}";
+	t.assertseq(speakabletext(raw), raw, "JSON inside prose is not gated");
+}
+
 # ============================================================================
 # Main
 # ============================================================================
@@ -802,6 +853,12 @@ init(nil: ref Draw->Context, args: list of string)
 	run("StrcontainsFound", testStrcontainsFound);
 	run("StrcontainsNotFound", testStrcontainsNotFound);
 	run("StrcontainsEmpty", testStrcontainsEmpty);
+
+	# speakabletext
+	run("SpeakabletextLoneJson", testSpeakabletextLoneJson);
+	run("SpeakabletextUnrecognizedJson", testSpeakabletextUnrecognizedJson);
+	run("SpeakabletextProseUnchanged", testSpeakabletextProseUnchanged);
+	run("SpeakabletextJsonInProseUnchanged", testSpeakabletextJsonInProseUnchanged);
 
 	if(testing->summary(passed, failed, skipped) > 0)
 		raise "fail:tests failed";
