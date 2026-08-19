@@ -50,6 +50,22 @@ Milestone screenshots from the GUI test land in `.omx/tmp/gui-voice/`.
 When it fails, look there first: it captured what the screen actually
 showed at the step that did not happen.
 
+The INF-32 traces in `tools/mac/traces/` are a pair: `inf32-before.tsv`
+was recaptured from `feat/voice-mode-v2` luciconv, `inf32-after.tsv`
+from the fix. `--check` (accent > 1500, blue > 600, dwell 0.30s) over
+that pair:
+
+| Signature | before | after | Basis |
+| --- | --- | --- | --- |
+| blue speaking box shorter than dwell | two runs (0.15s, 0.10s) | none | measured |
+| accent flash before the unsent turn (~0.15s spike, gone, then the real tile) | not reproduced | — | code: the live tile opens on listening and updates in place |
+| one-frame full-pane blank at send | not reproduced (`blank_frames` empty) | — | code: the draft is held until the committed human message replaces it |
+
+The two headline flashes from the original 240fps recording did not
+appear on this machine even with unfixed luciconv. The blue indicator
+is the signature the committed traces actually flip from red to green.
+
+
 ## Traps
 
 Each of these cost real time at least once.
