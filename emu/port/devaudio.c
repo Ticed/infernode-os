@@ -19,6 +19,15 @@ audio_devops_register(Audiodevops *ops)
 	devops = ops;
 }
 
+static void (*bufcaps)(int*, int*);
+
+void
+audio_bufcaps_register(void (*get)(int *play_ms, int *rec_ms))
+{
+	bufcaps = get;
+}
+
+
 static void
 audioinit(void)
 {
@@ -407,6 +416,21 @@ ctlsummary(char *buf, int bsize, Audio_t *adev)
 		p = seprint(p, e, "out %d 0 100\n", out->right);
 	p = seprint(p, e, "in buf %d %d %d\n", in->buf, Audio_Min_Val, Audio_Max_Val);
 	p = seprint(p, e, "out buf %d %d %d\n", out->buf, Audio_Min_Val, Audio_Max_Val);
+	p = seprint(p, e, "in rate %lud chans %lud bits %lud\n",
+		in->rate, in->chan, in->bits);
+	p = seprint(p, e, "out rate %lud chans %lud bits %lud\n",
+		out->rate, out->chan, out->bits);
+	{
+		int play_ms, rec_ms;
+
+		play_ms = 0;
+		rec_ms = 0;
+		if(bufcaps)
+			bufcaps(&play_ms, &rec_ms);
+		p = seprint(p, e, "play_buffer_ms %d\n", play_ms);
+		p = seprint(p, e, "rec_buffer_ms %d\n", rec_ms);
+	}
+
 
 	return p-buf;
 }
