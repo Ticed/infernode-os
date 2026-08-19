@@ -323,6 +323,77 @@ mockserverws(port: string, ready, done: chan of int)
 	done <-= 1;
 }
 
+# Mock server that streams incremental SSE chunks (`data: {...}\n\n`).
+mockserver_sse(port: string, ready, done: chan of int)
+{
+	addr := "tcp!127.0.0.1!" + port;
+	(ok, c) := sys->announce(addr);
+	if(ok < 0) {
+		ready <-= -1;
+		done <-= -1;
+		return;
+	}
+	ready <-= 1;
+
+	(lok, lc) := sys->listen(c);
+	if(lok < 0) {
+		done <-= -1;
+		return;
+	}
+
+	dfd := sys->open(lc.dir + "/data", Sys->ORDWR);
+	if(dfd == nil) {
+		done <-= -1;
+		return;
+	}
+
+	buf := array[8192] of byte;
+	sys->read(dfd, buf, len buf);
+
+	hdrs := "HTTP/1.0 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
+	hdata := array of byte hdrs;
+	sys->write(dfd, hdata, len hdata);
+
+	# Send 2 SSE content deltas followed by [DONE]
+	c1 := "data: {\"id\":\"1\",\"choices\":[{\"delta\":{\"content\":\"I am \"}}]}\n\n";
+	d1 := array of byte c1;
+	sys->write(dfd, d1, len d1);
+
+	c2 := "data: {\"id\":\"2\",\"choices\":[{\"delta\":{\"content\":\"Veltro.\"}}]}\n\n";
+	d2 := array of byte c2;
+	sys->write(dfd, d2, len d2);
+
+	c3 := "data: [DONE]\n\n";
+	d3 := array of byte c3;
+	sys->write(dfd, d3, len d3);
+
+	dfd = nil;
+	done <-= 1;
+}
+
+testIncrementalSseNoDuplication(t: ref T)
+{
+	ready := chan[1] of int;
+	done := chan[1] of int;
+	spawn mockserver_sse("29995", ready, done);
+	rok := <-ready;
+	if(rok < 0) {
+		t.skip("port in use");
+		return;
+	}
+	baseurl := "http://127.0.0.1:29995/v1";
+	req := mkreq(1);
+	(resp, err) := llmclient->askopenai(baseurl, "", req);
+	<-done;
+	if(err != nil || resp == nil) {
+		t.error(sys->sprint("askopenai SSE: err=%s resp=%d", err, resp != nil));
+		return;
+	}
+	t.log("response: " + resp.response);
+	t.assertseq(resp.response, "I am Veltro.",
+		"incremental SSE response must be assembled cleanly without repetition");
+}
+
 # Tiny strstr — returns the index of needle in haystack, or -1.
 # Avoids pulling in the String module just for one substring search.
 strstr(haystack, needle: string): int
@@ -372,6 +443,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("NonStreamingBaseline", testNonStreamingBaseline);
 	run("StreamFallbackTolerantOfLeadingWhitespace", testStreamFallbackTolerantOfLeadingWhitespace);
 	run("ToolCallsArrayFromSpecial66", testToolCallsArrayFromSpecial66);
+	run("IncrementalSseNoDuplication", testIncrementalSseNoDuplication);
 
 	if(testing->summary(passed, failed, skipped) > 0)
 		raise "fail:tests failed";
