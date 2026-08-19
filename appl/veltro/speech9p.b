@@ -722,17 +722,31 @@ dosay(text: string): string
 
 # Delegate TTS to the provider's say file (speechshim9p runs Kokoro; a
 # parakeet export runs Piper; a remote provider does whatever it likes).
+# One ORDWR fid, not two: the provider stores the in-flight completion per
+# fid, so a write fid that is clunked and a fresh read fid would make the
+# status read return the instant helper stdout closes — before the device
+# has drained. Write, seek, read on the same fid so the provider parks the
+# read until playback actually finishes. INF-45.
 sayprovider(text: string): string
 {
 	if(providersay == "")
 		return "error: speech provider say mount not configured";
-	if(writemounted(providersay, text + "\n") < 0)
+	fd := sys->open(providersay, Sys->ORDWR);
+	if(fd == nil)
 		return "error: speech provider say unavailable: " + providersay;
-	result := readmounted(providersay);
-	if(result == nil)
-		return "ok";
-	result = strip(result);
-	if(result == "")
+	b := array of byte (text + "\n");
+	if(sys->write(fd, b, len b) < 0) {
+		fd = nil;
+		return "error: speech provider say unavailable: " + providersay;
+	}
+	sys->seek(fd, big 0, Sys->SEEKSTART);
+	buf := array[8192] of byte;
+	n := sys->read(fd, buf, len buf);
+	fd = nil;
+	if(n < 0)
+		return "error: speech provider say status read failed";
+	result := strip(string buf[0:n]);
+	if(result == "" || result == nil)
 		return "ok";
 	return result;
 }

@@ -91,6 +91,7 @@ TARG=\
 	spawn_test.dis\
 	spawn_exec_test.dis\
 	spawn_schedule_test.dis\
+	sayq_drain_test.dis\
 	speech9p_voice_test.dis\
 	speech_kokoro_test.dis\
 	speech_listen_test.dis\

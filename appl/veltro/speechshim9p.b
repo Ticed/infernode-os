@@ -904,15 +904,17 @@ dosay(text: string): string
 		}
 		total += n;
 	}
-	clearoutputlevel();
 	# Writes returning is not the speaker going quiet. Hold the fd
 	# and keep playing set so half-duplex stays shut for the audible
-	# tail; apply duplextail only after that wait ends. INF-45.
+	# tail; apply duplextail only after that wait ends. Keep the
+	# output level live for the whole drain so the meter is not flat
+	# while the audio is still audible. INF-45, INF-44.
 	remain := drainremaining(total, playstart);
 	until := sys->millisec() + remain;
 	if(until - playuntil > 0)
 		playuntil = until;
 	drainwait();
+	clearoutputlevel();
 	playing = 0;
 	holdsuppression(0);
 	closeproc(p);
@@ -970,13 +972,14 @@ playchime(kind: string)
 		}
 	} else
 		sys->fprint(stderr, "speechshim9p: chime: %s\n", err);
-	clearoutputlevel();
 	remain := drainremaining(total, start);
 	until := sys->millisec() + remain;
 	if(until - playuntil > 0)
 		playuntil = until;
+	drainwait();
+	clearoutputlevel();
 	playing = 0;
-	holdsuppression(remain);
+	holdsuppression(0);
 }
 
 startchime(kind: string)
