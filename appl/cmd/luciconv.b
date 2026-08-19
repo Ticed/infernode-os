@@ -25,6 +25,9 @@ include "menu.m";
 include "softkbd.m";
 	softkbd: Softkbd;
 
+include "math.m";
+	math: Math;
+
 LuciConv: module
 {
 	PATH: con "/dis/luciconv.dis";
@@ -134,6 +137,8 @@ speakon := 0;			# speaking indicator is visible, including dwell
 speakat := 0;
 speakholding := 0;
 dwellc: chan of int;
+heldoutrms := 0;		# last measured playback energy while Speaking
+heldoutpeak := 0;
 levelbuf: string;		# live /n/speech/level PCM telemetry
 queuebuf: string;		# server-owned queued follow-up; display-only
 queuestate: string;		# queue lifecycle state from conversation/voicequeue
@@ -174,6 +179,7 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 {
 	sys = load Sys Sys->PATH;
 	draw = load Draw Draw->PATH;
+	math = load Math Math->PATH;
 	stderr = sys->fildes(2);
 
 	# KLUDGE-MOBILE-ACCORDION-INFR-119 — same env var lucifer.b reads.
@@ -1398,6 +1404,31 @@ drawconversation(zone: Rect)
 	}
 }
 
+# Provider RMS/peak is linear 0..1000 in shifted-sample energy.
+# Spoken turns sit well below full scale, so a linear height map
+# draws every bar at 1px. A dB map from 8..400 (INF-44) puts
+# typical speech mid-meter and leaves headroom so a loud reply
+# does not clip flat. Sub-floor energy stays 1px.
+MeterFloor: con 8;
+MeterFull: con 400;
+
+voicemeterlevel(raw: int): int
+{
+	if(raw <= 0)
+		return 0;
+	if(raw < MeterFloor)
+		return 1;
+	if(raw >= MeterFull)
+		return 1000;
+	mapped := int (1000.0 * math->log10(real raw / real MeterFloor) /
+		math->log10(real MeterFull / real MeterFloor));
+	if(mapped < 1)
+		mapped = 1;
+	if(mapped > 1000)
+		mapped = 1000;
+	return mapped;
+}
+
 # Draw two deliberately different activity grammars from the same stable
 # text record: microphone bars rise from the baseline; playback bars expand
 # symmetrically around the centre line. No transcript or activity state is
@@ -1418,21 +1449,39 @@ drawvoicemeter(r: Rect)
 			rms = strtoint(getattr(attrs, "output-rms"));
 			peak = strtoint(getattr(attrs, "output-peak"));
 		}
+		# Writes can return before the device has finished playing,
+		# at which point the provider clears RMS but mode stays
+		# output. Keep the last measured playback energy so the
+		# bars do not collapse while the UI still says Speaking.
+		if(rms > 0) {
+			heldoutrms = rms;
+			heldoutpeak = peak;
+		} else if(heldoutrms > 0) {
+			rms = heldoutrms;
+			if(peak < heldoutpeak)
+				peak = heldoutpeak;
+		}
 		label = "Speaking";
 		barcol = progfgcol;
-	} else if(mode == "input") {
-		rms = strtoint(getattr(attrs, "input-rms"));
-		peak = strtoint(getattr(attrs, "input-peak"));
-		label = "Listening";
-		barcol = accentcol;
-	} else if(mode == "suppressed") {
-		label = "Suppressed";
-		barcol = dimcol;
+	} else {
+		heldoutrms = 0;
+		heldoutpeak = 0;
+		if(mode == "input") {
+			rms = strtoint(getattr(attrs, "input-rms"));
+			peak = strtoint(getattr(attrs, "input-peak"));
+			label = "Listening";
+			barcol = accentcol;
+		} else if(mode == "suppressed") {
+			label = "Suppressed";
+			barcol = dimcol;
+		}
 	}
 	if(rms < 0) rms = 0;
 	if(rms > 1000) rms = 1000;
 	if(peak < rms) peak = rms;
 	if(peak > 1000) peak = 1000;
+	rms = voicemeterlevel(rms);
+	peak = voicemeterlevel(peak);
 
 	pad := 6;
 	labelw := mainfont.width(label) + pad;
@@ -1457,16 +1506,19 @@ drawvoicemeter(r: Rect)
 		if(i == nbar / 2 || i == nbar / 2 - 1)
 			level = peak;
 		h := maxh * level / 1000;
-		if(level > 0 && h < 1)
-			h = 1;
 		x := barminx + i * (barw + gap);
 		if(mode == "output" || speakon) {
 			h /= 2;
+			if(level > 0 && h < 1)
+				h = 1;
 			mainwin.draw(Rect((x, centery - h), (x + barw, centery + h + 1)),
 				barcol, nil, (0, 0));
-		} else
+		} else {
+			if(level > 0 && h < 1)
+				h = 1;
 			mainwin.draw(Rect((x, basey - h), (x + barw, basey)),
 				barcol, nil, (0, 0));
+		}
 	}
 }
 

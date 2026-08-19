@@ -51,6 +51,14 @@ require_literal appl/cmd/luciconv.b 'Rect((x, basey - h), (x + barw, basey))' \
   'microphone meter no longer uses bottom-up bars'
 require_literal appl/cmd/luciconv.b 'Rect((x, centery - h), (x + barw, centery + h + 1))' \
   'playback meter no longer uses its distinct symmetric shape'
+require_literal appl/cmd/luciconv.b 'MeterFloor: con 8;' \
+  'voice meter lost the speech-fitted dB floor (INF-44)'
+require_literal appl/cmd/luciconv.b 'MeterFull: con 400;' \
+  'voice meter lost the speech-fitted dB full-scale (INF-44)'
+require_literal appl/cmd/luciconv.b 'rms = voicemeterlevel(rms);' \
+  'voice meter no longer maps provider RMS through the dB curve'
+require_literal appl/cmd/luciconv.b 'h /= 2;' \
+  'playback meter no longer halves height for the centre-out shape'
 require_literal appl/cmd/luciconv.b 'conversation/voicequeue' \
   'Lucia does not consume the authoritative queued-follow-up state'
 require_literal appl/cmd/luciconv.b 'Queued follow-up - not sent' \
