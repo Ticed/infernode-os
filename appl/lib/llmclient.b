@@ -1042,9 +1042,14 @@ parseopenairesponse(body: string, req: ref AskRequest): (ref AskResponse, string
 						if(idv != nil) pick iv := idv { String => id = iv.s; }
 						if(fnv != nil) {
 							nv := fnv.get("name");
-							av := fnv.get("arguments");
+							av := jsontoolargs(fnv);
 							if(nv != nil) pick n := nv { String => name = n.s; }
-							if(av != nil) pick a := av { String => args = a.s; }
+							if(av != nil) {
+								pick a := av {
+								String => args = a.s;
+								* => args = av.text();
+								}
+							}
 						}
 						toolcalls = (id, name, args) :: toolcalls;
 					}
@@ -1203,8 +1208,13 @@ _ssehandle_event(jv: ref JValue, st: ref _SseState, req: ref AskRequest)
 					if(fnv != nil) {
 						nv := fnv.get("name");
 						if(nv != nil) pick n := nv { String => if(n.s != "") st.tcnames = listset(st.tcnames, idx, listget(st.tcnames, idx) + n.s); }
-						av := fnv.get("arguments");
-						if(av != nil) pick a := av { String => st.tcargs = listset(st.tcargs, idx, listget(st.tcargs, idx) + a.s); }
+						av := jsontoolargs(fnv);
+						if(av != nil) {
+							pick a := av {
+							String => st.tcargs = listset(st.tcargs, idx, listget(st.tcargs, idx) + a.s);
+							* => st.tcargs = listset(st.tcargs, idx, av.text());
+							}
+						}
 					}
 				}
 			}
@@ -1373,9 +1383,18 @@ parseopenaisseresponse(body: string, req: ref AskRequest): (ref AskResponse, str
 #   1. <function=name>\n<parameter=args>\nvalue\n</parameter>\n</function>
 #   2. <tool_call>\n{"name": "...", "arguments": {...}}\n</tool_call>
 #   3. <|tool_call|>\n{"name": "...", "arguments": {...}}\n<|/tool_call|>
+#   4. a lone JSON object {"name":"...","arguments"|"parameters":{...}}
 # Returns (remaining_text, list of (id, name, args) tuples).
 extracttexttoolcalls(content: string, tooldefs: list of ref ToolDef): (string, list of (string, string, string))
 {
+	# Whole-content bare object first. Surrounding prose is not a call.
+	(bmatched, bname, bargs) := trybarejsontoolcall(content);
+	if(bmatched && validtoolname(bname, tooldefs)) {
+		id := sys->sprint("fallback_%d", 0);
+		sys->fprint(stderr, "llmclient: fallback tool parser: extracted 1 tool calls from text\n");
+		return ("", (id, bname, bargs) :: nil);
+	}
+
 	calls: list of (string, string, string);
 	remaining := "";
 	nextid := 0;
@@ -1559,7 +1578,7 @@ trytoolcalltag(s: string, pos: int, opentag, closetag: string): (int, int, strin
 	if(name == "")
 		return (0, 0, "", "");
 
-	argsv := jv.get("arguments");
+	argsv := jsontoolargs(jv);
 	args := "{}";
 	if(argsv != nil)
 		args = argsv.text();
@@ -1643,7 +1662,7 @@ trytoolcallsarray(s: string, pos: int): (int, int, list of (string, string))
 			if(namev != nil) pick nv := namev { String => name = nv.s; }
 			if(name == "")
 				continue;
-			argsv := entry.get("arguments");
+			argsv := jsontoolargs(entry);
 			args := "{}";
 			if(argsv != nil)
 				args = argsv.text();
@@ -1659,6 +1678,77 @@ trytoolcallsarray(s: string, pos: int): (int, int, list of (string, string))
 		rev = hd calls :: rev;
 
 	return (1, j, rev);
+}
+
+# jsontoolargs prefers "arguments" and accepts "parameters" as a synonym.
+jsontoolargs(jv: ref JValue): ref JValue
+{
+	if(jv == nil)
+		return nil;
+	av := jv.get("arguments");
+	if(av == nil)
+		av = jv.get("parameters");
+	return av;
+}
+
+# trybarejsontoolcall accepts content only when the whole string
+# (whitespace-stripped) is one JSON object with a string "name" and
+# either "arguments" or "parameters". Surrounding prose is rejected
+# so a quoted example cannot become a silent tool invocation.
+trybarejsontoolcall(content: string): (int, string, string)
+{
+	s := strip(content);
+	if(len s < 2 || s[0] != '{')
+		return (0, "", "");
+	if(jsonobjectend(s) != len s)
+		return (0, "", "");
+	(jv, jerr) := readjsonstring(s);
+	if(jerr != nil || jv == nil || !jv.isobject())
+		return (0, "", "");
+	namev := jv.get("name");
+	name := "";
+	if(namev != nil) pick nv := namev { String => name = nv.s; }
+	if(name == "")
+		return (0, "", "");
+	argsv := jsontoolargs(jv);
+	if(argsv == nil)
+		return (0, "", "");
+	return (1, name, argsv.text());
+}
+
+# jsonobjectend returns the index after the matching '}' for an object
+# starting at s[0], or -1. String-aware so braces in values are ignored.
+jsonobjectend(s: string): int
+{
+	if(len s == 0 || s[0] != '{')
+		return -1;
+	depth := 0;
+	inq := 0;
+	esc := 0;
+	for(j := 0; j < len s; j++) {
+		c := s[j];
+		if(esc) {
+			esc = 0;
+			continue;
+		}
+		if(inq) {
+			if(c == '\\')
+				esc = 1;
+			else if(c == '"')
+				inq = 0;
+			continue;
+		}
+		if(c == '"')
+			inq = 1;
+		else if(c == '{')
+			depth++;
+		else if(c == '}') {
+			depth--;
+			if(depth == 0)
+				return j + 1;
+		}
+	}
+	return -1;
 }
 
 # validtoolname checks whether name matches one of the provided tool definitions.

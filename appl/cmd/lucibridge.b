@@ -311,6 +311,18 @@ appendspeak(l: list of ref Speakreq, r: ref Speakreq): list of ref Speakreq
 	return result;
 }
 
+TTS_JSON_FALLBACK: con "I received a structured reply.";
+
+# Lone JSON objects are not spoken. The conversation pane still shows the
+# raw text; this only changes what is written to /n/speech.
+speakabletext(s: string): string
+{
+	t := agentlib->strip(s);
+	if(len t >= 2 && t[0] == '{' && t[len t - 1] == '}')
+		return TTS_JSON_FALLBACK;
+	return s;
+}
+
 # Speak one queue entry via speech9p. sayq is a per-fid transaction: the
 # read after the write blocks until playback finishes, keeping the resource
 # truthfully active for the whole utterance. Older providers with only /say
@@ -343,7 +355,7 @@ speaktext(r: ref Speakreq)
 		speakdone <-= r.gen;
 		return;
 	}
-	b := array of byte r.text;
+	b := array of byte speakabletext(r.text);
 	if(sys->write(fd, b, len b) < 0) {
 		log("speaktext: write failed");
 		if(r.gen == speakgen)
