@@ -309,8 +309,9 @@ existing mechanism suffices.
 
 **Observability.**
 Wrong: a metrics endpoint with an exporter and a scrape format.
-Right: a readable file; one line per counter.
-`cat /chan/ventisrvstats` is the monitoring interface.
+Right: a readable file; one line per counter. `ventisrv` started
+with `-s /chan/ventisrvstats` serves its counters exactly that
+way, and `cat` is the monitoring interface.
 Why: `grep` and `awk` are your dashboard. Every consumer speaks
 file already.
 
@@ -562,6 +563,9 @@ work, so it has a feedback loop:
 
 In reading order for a new contributor:
 
+- [TUTORIAL-9P-SERVICE.md](TUTORIAL-9P-SERVICE.md) — this
+  document put into practice: design, build, test, and document a
+  complete service (`countfs`), every artifact shipping in-tree.
 - [9p-data-conventions.md](9p-data-conventions.md) — data
   formats across 9P; the no-JSON argument in full.
 - [NAMESPACE-LAYOUT.md](NAMESPACE-LAYOUT.md) — `/mnt` vs `/n`;
