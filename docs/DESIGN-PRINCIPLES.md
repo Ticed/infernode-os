@@ -56,7 +56,7 @@ and every existing tool already speaks it.)
 
 **The namespace is the schema.** The directory hierarchy carries
 the structure that other systems put into JSON objects, schemas,
-and API documentation. `/n/sensors/station-1/temperature`
+and API documentation. `/mnt/sensors/station-1/temperature`
 containing `22.5` needs no parser and no spec. Design the tree
 and you have designed the interface.
 
@@ -191,8 +191,9 @@ foreign trees imported intact, named by their source
 (`/n/local`, a remote peer's root). The full argument, and why
 the convention is itself security work, is in
 [NAMESPACE-LAYOUT.md](NAMESPACE-LAYOUT.md). A few older trees
-predate the convention (`/n/wallet`, `/n/git`); do not copy
-them for new work.
+predate the convention (`/n/wallet`, `/n/git`, `/n/wikia`,
+`/n/speech`); do not copy them for new work — their migrations
+are tracked as INFR-400 through INFR-403.
 
 **Control files, not config files.** A service is configured and
 commanded by writing text to its `ctl` file, and reports through

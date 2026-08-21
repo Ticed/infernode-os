@@ -32,7 +32,7 @@
 | [evaluations/fractal-app-evaluation.md](evaluations/fractal-app-evaluation.md) | Fractal app production readiness evaluation |
 | [architecture-review-veltro-unification.md](architecture-review-veltro-unification.md) | Veltro architecture review |
 | [matrix-architecture.md](matrix-architecture.md) | Matrix compositional module runtime — modules, compositions, the library, 9P control namespace, and the Lucifer GUI control surface |
-| [9p-data-conventions.md](9p-data-conventions.md) | 9P data conventions Matrix modules read from and write to |
+| [9p-data-conventions.md](9p-data-conventions.md) | Data conventions for 9P file servers — text records, hierarchy as schema, ctl files, `/mnt` placement, the no-JSON argument |
 | [RECOMMENDED-ADDITIONS.md](RECOMMENDED-ADDITIONS.md) | Recommended feature additions |
 
 ## For Developers
@@ -119,10 +119,6 @@ Detailed JIT documentation is in `docs/arm64-jit/` (27 files covering implementa
 ## Formal Verification
 
 See [formal-verification/README.md](../formal-verification/README.md) for TLA+, SPIN, and CBMC verification of namespace isolation (3 tools, 11 properties, 3.17B+ states explored).
-
-## GoDis Compiler
-
-See [tools/godis/README.md](../tools/godis/README.md) for the Go-to-Dis compiler architecture, translation strategy, and 190+ passing tests.
 
 ## The Key 64-bit Fix
 
