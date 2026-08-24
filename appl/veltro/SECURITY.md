@@ -304,7 +304,7 @@ The subagent's system prompt comes from `/lib/veltro/agents/{type}.txt`, loaded 
 | Shell access controlled | `sh.dis` + named command `.dis` files only bound if `shellcmds` is non-nil |
 | /tmp writable | `restrictdir("/tmp", ..., 1)` — MCREATE applied only to /tmp, not /dis/lib/dev |
 | Host path control | `/n/local` hidden unless `caps.paths` grants specific subpaths (`-p` flag) |
-| Speech preserved | `/n/speech` auto-detected and included in `/n` allowlist |
+| Speech preserved | `/mnt/speech` auto-detected and included in `/mnt` allowlist for `say`/`hear` tools |
 | 9P self-mount safe | Root restriction skips `stat()` to avoid deadlock on `/tool` |
 
 ## Shell and Exec Access
@@ -375,7 +375,7 @@ Options:
 
 ### Speech
 
-If speech9p is mounted at `/n/speech`:
+If speech9p is mounted at `/mnt/speech`:
 - `say <text>` -- text-to-speech output
 - `hear` -- speech-to-text input (5-second recording)
 - `Voice` button in Xenith REPL for voice input

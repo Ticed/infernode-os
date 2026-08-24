@@ -281,13 +281,13 @@ registernamespace()
 	if(mdata != "") {
 		(nil, sl) := sys->tokenize(mdata, "\n");
 		for(; sl != nil; sl = tl sl)
-			if(agentlib->hasprefix(hd sl, "path=/n/speech"))
+			if(agentlib->hasprefix(hd sl, "path=/mnt/speech"))
 				hasspeech = 1;
 	}
 	if(!hasspeech) {
-		(speechok, nil) := sys->stat("/n/speech");
+		(speechok, nil) := sys->stat("/mnt/speech");
 		if(speechok >= 0) {
-			cmd := "resource add path=/n/speech label=Speech type=service status=idle";
+			cmd := "resource add path=/mnt/speech label=Speech type=service status=idle";
 			if(writefile(ctxpath, cmd) >= 0)
 				nreg++;
 		}
@@ -314,7 +314,7 @@ appendspeak(l: list of ref Speakreq, r: ref Speakreq): list of ref Speakreq
 TTS_JSON_FALLBACK: con "I received a structured reply.";
 
 # Lone JSON objects are not spoken. The conversation pane still shows the
-# raw text; this only changes what is written to /n/speech.
+# raw text; this only changes what is written to /mnt/speech.
 speakabletext(s: string): string
 {
 	t := agentlib->strip(s);
@@ -336,18 +336,18 @@ speaktext(r: ref Speakreq)
 
 	# Update context zone status
 	ctxpath := sys->sprint("/mnt/ui/activity/%d/context/ctl", actid);
-	writefile(ctxpath, "resource update path=/n/speech status=active");
+	writefile(ctxpath, "resource update path=/mnt/speech status=active");
 
 	queued := 1;
-	fd := sys->open("/n/speech/sayq", Sys->ORDWR);
+	fd := sys->open("/mnt/speech/sayq", Sys->ORDWR);
 	if(fd == nil) {
 		queued = 0;
-		fd = sys->open("/n/speech/say", Sys->OWRITE);
+		fd = sys->open("/mnt/speech/say", Sys->OWRITE);
 	}
 	if(fd == nil) {
-		log("speaktext: cannot open /n/speech/sayq or /n/speech/say");
+		log("speaktext: cannot open /mnt/speech/sayq or /mnt/speech/say");
 		if(r.gen == speakgen)
-			writefile(ctxpath, "resource update path=/n/speech status=error");
+			writefile(ctxpath, "resource update path=/mnt/speech status=error");
 		speakdone <-= r.gen;
 		return;
 	}
@@ -359,7 +359,7 @@ speaktext(r: ref Speakreq)
 	if(sys->write(fd, b, len b) < 0) {
 		log("speaktext: write failed");
 		if(r.gen == speakgen)
-			writefile(ctxpath, "resource update path=/n/speech status=error");
+			writefile(ctxpath, "resource update path=/mnt/speech status=error");
 		speakdone <-= r.gen;
 		return;
 	}
@@ -374,9 +374,9 @@ speaktext(r: ref Speakreq)
 			log("speaktext: " + string status[0:n]);
 	}
 	if(r.gen != speakgen)
-		writefile("/n/speech/cancel", "cancel");
+		writefile("/mnt/speech/cancel", "cancel");
 	else
-		writefile(ctxpath, "resource update path=/n/speech status=idle");
+		writefile(ctxpath, "resource update path=/mnt/speech status=idle");
 	speakdone <-= r.gen;
 }
 
@@ -437,7 +437,7 @@ queuespeechavailable(text: string, start, final: int): int
 cancelspeechqueue()
 {
 	speakgen++;
-	writefile("/n/speech/cancel", "cancel");
+	writefile("/mnt/speech/cancel", "cancel");
 }
 
 # Persistent conversation-input reader. Re-opens the file for every read
@@ -1032,7 +1032,7 @@ initsession(): string
 	# Register speech resource if speech9p is available
 	if(autospeak) {
 		ctxpath := sys->sprint("/mnt/ui/activity/%d/context/ctl", actid);
-		writefile(ctxpath, "resource upsert path=/n/speech label=Voice type=audio status=idle");
+		writefile(ctxpath, "resource upsert path=/mnt/speech label=Voice type=audio status=idle");
 		log("context: registered speech resource");
 	}
 
@@ -1613,13 +1613,13 @@ handleslash(cmd: string): int
 				autospeak = 1;
 				writefile("/mnt/ui/voice-control", "on source=slash-command");
 				writefile(sys->sprint("/mnt/ui/activity/%d/context/ctl", actid),
-					"resource upsert path=/n/speech label=Voice type=audio status=waiting via=voice-mode");
+					"resource upsert path=/mnt/speech label=Voice type=audio status=waiting via=voice-mode");
 				ack = "voice mode: on";
 			} else if(varg == "off") {
 				cancelspeechqueue();
 				writefile("/mnt/ui/voice-control", "off source=slash-command");
 				writefile(sys->sprint("/mnt/ui/activity/%d/context/ctl", actid),
-					"resource upsert path=/n/speech label=Voice type=audio status=idle via=voice-mode");
+					"resource upsert path=/mnt/speech label=Voice type=audio status=idle via=voice-mode");
 				ack = "voice mode: off";
 			} else {
 				ack = "usage: /voice mode on|off";
@@ -1632,7 +1632,7 @@ handleslash(cmd: string): int
 			ack = "voice: auto-speak disabled";
 		} else {
 			# Set voice name
-			writefile("/n/speech/ctl", "voice " + cmdarg);
+			writefile("/mnt/speech/ctl", "voice " + cmdarg);
 			ack = "voice: set to " + cmdarg;
 		}
 	"diff" =>

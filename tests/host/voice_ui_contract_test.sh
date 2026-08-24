@@ -37,7 +37,7 @@ require_literal appl/cmd/luciconv.b \
 require_literal appl/cmd/luciconv.b \
   '# verbatim until the user exits voice mode.' \
   'typed compose preservation contract is missing'
-require_literal appl/cmd/luciconv.b 'readfile("/n/speech/level")' \
+require_literal appl/cmd/luciconv.b 'readfile("/mnt/speech/level")' \
   'voice UI does not consume provider PCM telemetry'
 require_literal appl/cmd/luciconv.b 'sys->sleep(100);' \
   'voice meter is not updated at the documented 10Hz cadence'

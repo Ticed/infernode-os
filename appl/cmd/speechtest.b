@@ -1,7 +1,7 @@
 implement Speechtest;
 
 #
-# speechtest - exercise the /n/speech STT/TTS surface without an LLM.
+# speechtest - exercise the /mnt/speech STT/TTS surface without an LLM.
 #
 # Reads streaming transcripts from <speech>/listen, prints partials to
 # stdout as they arrive, and answers every non-junk final transcript by
@@ -12,7 +12,7 @@ implement Speechtest;
 #
 # If <speech>/ctl does not exist and -b is given, speechtest bootstraps
 # the standard provider stack in its own namespace: it spawns
-# speechshim9p at /n/speechshim and speech9p at <speech>, then points
+# speechshim9p at /mnt/speechshim and speech9p at <speech>, then points
 # the provider at the shim and sets duplex half (the same sequence as
 # lib/lucifer/boot.sh). -C <ctlfile> replays the exact configuration
 # produced by tools/install-speech-helpers.sh; -H <bindir> retains the
@@ -59,11 +59,11 @@ Srv: module
 
 SHIMPATH: con "/dis/veltro/speechshim9p.dis";
 SPEECH9PPATH: con "/dis/veltro/speech9p.dis";
-SHIMMNT: con "/n/speechshim";
+SHIMMNT: con "/mnt/speechshim";
 
 stderr: ref Sys->FD;
 debug := 0;
-speech := "/n/speech";
+speech := "/mnt/speech";
 phrase := "Speech test complete. I heard you.";
 echoback := 0;
 turns := 0;
@@ -322,7 +322,7 @@ helperctl(bindir: string)
 	modeldir := bindir + "/../models";
 	if(len bindir > 4 && bindir[len bindir - 4:] == "/bin")
 		modeldir = bindir[:len bindir - 4] + "/models";
-	# Same as boot.sh: without this, /n/speech/say uses the host `say`
+	# Same as boot.sh: without this, /mnt/speech/say uses the host `say`
 	# command and the shim never sees the playback (INF-29).
 	ctlwrite("engine kokoro");
 	ctlwrite("kokorobin " + bindir + "/kokoro-cli");
@@ -397,7 +397,7 @@ init(nil: ref Draw->Context, args: list of string)
 	}
 
 	arg->init(args);
-	arg->setusage("speechtest [-bdew] [-n turns] [-p phrase] [-s /n/speech] " +
+	arg->setusage("speechtest [-bdew] [-n turns] [-p phrase] [-s /mnt/speech] " +
 		"[-C ctlfile] [-H helperbindir] [-c 'key value'] [-M 'dialaddr mountpt']");
 	ctllines: list of string;
 	mounts: list of string;
@@ -444,7 +444,7 @@ init(nil: ref Draw->Context, args: list of string)
 
 	# -H and -C compose: helpers first (engine kokoro + bins), then the
 	# ctl script (leveltrace, extra topology). -C used to replace -H,
-	# which left /n/speech/say on the host `say` command (INF-29).
+	# which left /mnt/speech/say on the host `say` command (INF-29).
 	if(helperbin != "")
 		helperctl(helperbin);
 	if(ctlfile != "") {

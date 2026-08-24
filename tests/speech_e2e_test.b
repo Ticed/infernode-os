@@ -280,8 +280,8 @@ preparemounts()
 	sys->create("/n", Sys->OREAD, Sys->DMDIR | 8r755);
 	sys->create("/mnt/ui", Sys->OREAD, Sys->DMDIR | 8r755);
 	sys->create("/mnt/llm", Sys->OREAD, Sys->DMDIR | 8r755);
-	sys->create("/n/speechshim", Sys->OREAD, Sys->DMDIR | 8r755);
-	sys->create("/n/speech", Sys->OREAD, Sys->DMDIR | 8r755);
+	sys->create("/mnt/speechshim", Sys->OREAD, Sys->DMDIR | 8r755);
+	sys->create("/mnt/speech", Sys->OREAD, Sys->DMDIR | 8r755);
 }
 
 startstack(t: ref T)
@@ -292,27 +292,27 @@ startstack(t: ref T)
 	t.assert(waitpath("/mnt/ui/ctl", 3000), "luciuisrv mounted");
 
 	startmodule(t, "/dis/veltro/speechshim9p.dis", "speechshim9p",
-		"-m" :: "/n/speechshim" :: nil);
-	t.assert(waitpath("/n/speechshim/ctl", 3000), "speechshim9p mounted");
+		"-m" :: "/mnt/speechshim" :: nil);
+	t.assert(waitpath("/mnt/speechshim/ctl", 3000), "speechshim9p mounted");
 
 	cmd := "/bin/sh " + helper;
-	t.assert(writefile("/n/speechshim/ctl",
+	t.assert(writefile("/mnt/speechshim/ctl",
 		"wakebin " + cmd + " wake " + hoststate) > 0, "fake wake helper configured");
-	t.assert(writefile("/n/speechshim/ctl",
+	t.assert(writefile("/mnt/speechshim/ctl",
 		"whisperstreambin " + cmd + " listen " + hoststate) > 0,
 		"fake listen helper configured");
-	t.assert(writefile("/n/speechshim/ctl",
+	t.assert(writefile("/mnt/speechshim/ctl",
 		"kokorobin " + cmd + " say " + hoststate) > 0, "fake TTS helper configured");
 	t.assert(createfile(infernostate + "/audio.pcm") >= 0, "fake audio sink created");
-	t.assert(writefile("/n/speechshim/ctl", "audiodev " + infernostate + "/audio.pcm") > 0,
+	t.assert(writefile("/mnt/speechshim/ctl", "audiodev " + infernostate + "/audio.pcm") > 0,
 		"fake audio sink configured");
-	t.assert(writefile("/n/speechshim/ctl", "duplex half") > 0,
+	t.assert(writefile("/mnt/speechshim/ctl", "duplex half") > 0,
 		"half-duplex provider configured");
 
 	startmodule(t, "/dis/veltro/speech9p.dis", "speech9p",
-		"-m" :: "/n/speech" :: "-e" :: "kokoro" :: nil);
-	t.assert(waitpath("/n/speech/ctl", 3000), "speech9p mounted");
-	t.assert(writefile("/n/speech/ctl", "provider /n/speechshim") > 0,
+		"-m" :: "/mnt/speech" :: "-e" :: "kokoro" :: nil);
+	t.assert(waitpath("/mnt/speech/ctl", 3000), "speech9p mounted");
+	t.assert(writefile("/mnt/speech/ctl", "provider /mnt/speechshim") > 0,
 		"speechshim selected as provider");
 
 	startmodule(t, "/dis/llmsrv.dis", "llmsrv",
@@ -346,7 +346,7 @@ startvoicemode(t: ref T)
 {
 	startmodule(t, "/dis/voicemode.dis", "voicemode",
 		"-g" :: "300" :: "-q" :: "650" :: "-t" :: "20000" ::
-		"-w" :: "50" :: "-u" :: "/mnt/ui" :: "-s" :: "/n/speech" :: nil);
+		"-w" :: "50" :: "-u" :: "/mnt/ui" :: "-s" :: "/mnt/speech" :: nil);
 	sys->sleep(300);
 }
 
@@ -385,7 +385,7 @@ testComposedTurn(t: ref T)
 	t.assert(writefile("/mnt/ui/voice-control", "off source=escape") > 0,
 		"Escape cancellation sent promptly");
 	t.assert(waitmode("k", 1000), "Escape restored keyboard mode promptly");
-	t.assert(waitcontains("/n/speechshim/ctl", "mic off", 3000),
+	t.assert(waitcontains("/mnt/speechshim/ctl", "mic off", 3000),
 		"microphone released after Escape cancel");
 	sys->sleep(200);
 	t.asserteq(conversationrolecount("human", "Cancel this pending voice message"), 0,
@@ -413,7 +413,7 @@ testComposedTurn(t: ref T)
 
 	t.assert(writefile("/mnt/ui/voice-control", "off source=escape") > 0,
 		"keyboard mode restored");
-	t.assert(waitcontains("/n/speechshim/ctl", "mic off", 3000),
+	t.assert(waitcontains("/mnt/speechshim/ctl", "mic off", 3000),
 		"microphone released after composed turn");
 
 	# A plain keyboard turn after voice exit proves that lucibridge is no longer

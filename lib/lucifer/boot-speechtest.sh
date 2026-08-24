@@ -12,7 +12,7 @@
 #
 # $1  HOST path to the speech-helpers bin dir from
 #     tools/install-speech-helpers.sh ('-' = leave helpers unconfigured;
-#     point /n/speech/ctl at a provider manually, e.g. a remote mount)
+#     point /mnt/speech/ctl at a provider manually, e.g. a remote mount)
 # $2  '-e' to answer with the transcript itself instead of the phrase
 # $3  the canned TTS phrase spoken for every final transcript
 #

@@ -807,15 +807,15 @@ Backends that cannot select a device print a single line,
 The name-selection commands below are the macOS SDL3 emulator.
 
 **Speech routing.** Lucia hears whatever the speech provider is
-configured to read. Writes to `/n/speech/ctl` are forwarded; they are
+configured to read. Writes to `/mnt/speech/ctl` are forwarded; they are
 **not** echoed there. Read the provider:
 
 ```
-; cat /n/speech/ctl          # look at the provider line
-; cat /n/speechshim/ctl      # micmode, capturedev, audiodev
+; cat /mnt/speech/ctl          # look at the provider line
+; cat /mnt/speechshim/ctl      # micmode, capturedev, audiodev
 ```
 
-Lucia's boot sets `provider /n/speechshim`. On that `ctl`:
+Lucia's boot sets `provider /mnt/speechshim`. On that `ctl`:
 
 | Key | What it means |
 |-----|----------------|
@@ -826,7 +826,7 @@ Lucia's boot sets `provider /n/speechshim`. On that `ctl`:
 If `micmode` is `helper`, switch it before picking a device:
 
 ```
-echo 'micmode device' > /n/speech/ctl
+echo 'micmode device' > /mnt/speech/ctl
 ```
 
 ### Choosing a local input device
@@ -865,8 +865,8 @@ configured the same way as the local one:
 
 ```
 mount -A 'tcp!<phone-ip>!17010' /n/phone
-echo 'capturedev /n/phone/audio' > /n/speech/ctl
-echo 'micmode device' > /n/speech/ctl
+echo 'capturedev /n/phone/audio' > /mnt/speech/ctl
+echo 'micmode device' > /mnt/speech/ctl
 ```
 
 Confirm on the provider (`capturedev /n/phone/audio` and
@@ -1205,7 +1205,7 @@ if the device is virtual or muted.
 | `/cmd` | Host command interface |
 | `/mnt/xenith` | Xenith 9P interface |
 | `/dev/audiodev` | Audio device list, selection, and capture verdict |
-| `/n/speechshim/ctl` | Speech routing (`micmode`, `capturedev`, `audiodev`) |
+| `/mnt/speechshim/ctl` | Speech routing (`micmode`, `capturedev`, `audiodev`) |
 
 ### Essential Devices
 

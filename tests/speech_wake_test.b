@@ -2,7 +2,7 @@ implement SpeechWakeTest;
 
 #
 # Wake-word file behavior (Phase 1.3/1.6) through the unified provider
-# stack: speech9p consumes /n/speechshim (speechshim9p), which adapts fake
+# stack: speech9p consumes /mnt/speechshim (speechshim9p), which adapts fake
 # host helpers configured via the ctl-forwarded wakebin key — no real wake
 # model is needed. The central assertion is that a wake read blocked in a
 # slow helper does NOT freeze either serveloop: ctl reads and cancel writes

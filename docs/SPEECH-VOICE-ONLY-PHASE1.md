@@ -56,7 +56,7 @@ Phase 1 structure (1.0–1.6) is implemented. The branch now has:
   provider mount (contract in docs/SPEECH-ARCHITECTURE.md — listen/wake/say/
   cancel plus optional ctl/voices) and runs no helper binaries itself. The
   in-tree `speechshim9p` adapts the external helper CLIs to that contract
-  and is the boot-time default provider at `/n/speechshim`; a parakeet
+  and is the boot-time default provider at `/mnt/speechshim`; a parakeet
   export or a remote 9P mount is the same one-line ctl switch. The shim
   hard-cancels active TTS by killing the helper process (devcmd `kill`),
   so cancellation silence is bounded by one audio chunk.
@@ -90,7 +90,7 @@ Phase 1 structure (1.0–1.6) is implemented. The branch now has:
   `boot.sh` rather than `lucifer.b`, because boot.sh is where the sibling
   services (`luciuisrv`, `tools9p`, `lucibridge`) already start.
 - `module/speech.m` streaming `Partial` record type with the documented
-  `partial`/`final`/`error:` wire format for `/n/speech/listen`.
+  `partial`/`final`/`error:` wire format for `/mnt/speech/listen`.
 - A repo-owned `whisper-stream-cli --stdin` adapter with energy VAD, partial
   snapshots, final records, and aggregate confidence metadata. The installer
   deploys it over the batch-only Homebrew `whisper-cli` without reopening the
@@ -196,7 +196,7 @@ engine modules were subsequently implemented as additive follow-on work.
 The repo already has useful scaffolding:
 
 - `module/speech.m` defines batch TTS/STT data structures and engine interfaces.
-- `appl/veltro/speech9p.b` exposes `/n/speech` with `ctl`, `say`, `hear`, and
+- `appl/veltro/speech9p.b` exposes `/mnt/speech` with `ctl`, `say`, `hear`, and
   `voices`.
 - `appl/cmd/lucibridge.b` has `/voice on|off`, but today that only toggles
   auto-speak for typed assistant responses.
@@ -287,7 +287,7 @@ transport; layers 1, 3, 4, and 5 should still apply.
 | --- | --- | --- |
 | 1 | macOS audio driver | Add `emu/MacOSX/audio.c`; expose `/dev/audio` and `/dev/audioctl` |
 | 2 | Host speech engines | Use Kokoro, streaming whisper.cpp, and openWakeWord helpers |
-| 3 | `speech9p` | Extend `/n/speech` with streaming, wake, queue, and cancel files |
+| 3 | `speech9p` | Extend `/mnt/speech` with streaming, wake, queue, and cancel files |
 | 4 | `voicemode` daemon | New state machine that bridges speech events into Lucia input |
 | 5 | Lucia UI integration | Add `/voice mode on|off`, status resources, paused typing |
 
@@ -302,7 +302,7 @@ Lucia UI
 voicemode daemon
   IDLE -> WAITING_WAKE -> LISTENING -> PROCESSING -> SPEAKING
         ^
-        | /n/speech/wake, /n/speech/listen, /n/speech/sayq, /n/speech/cancel
+        | /mnt/speech/wake, /mnt/speech/listen, /mnt/speech/sayq, /mnt/speech/cancel
 speech9p
         ^
         | /dev/audio and /dev/audioctl
@@ -341,7 +341,7 @@ macOS CoreAudio driver
       WAITING_WAKE
 
 During SPEAKING, wake-word detection remains active. A wake event writes
-`cancel` to `/n/speech/cancel`, cuts off TTS, and transitions to LISTENING.
+`cancel` to `/mnt/speech/cancel`, cuts off TTS, and transitions to LISTENING.
 ```
 
 Mutual exclusion with typing uses a new single-byte UI file:
@@ -512,7 +512,7 @@ Verification:
 
 ### Phase 1.1: Kokoro TTS in `speech9p`
 
-Why now: the current `/n/speech/say` path already exists, and adding a Kokoro
+Why now: the current `/mnt/speech/say` path already exists, and adding a Kokoro
 backend is smaller than introducing a full engine plugin system.
 
 Files:
@@ -539,8 +539,8 @@ Host helper:
 Verification:
 
 - Start `speech9p`.
-- `echo 'engine kokoro' > /n/speech/ctl`.
-- `echo 'hello world' > /n/speech/say`.
+- `echo 'engine kokoro' > /mnt/speech/ctl`.
+- `echo 'hello world' > /mnt/speech/say`.
 - Confirm audible speech and first-audio latency under 500 ms on target Mac.
 
 ### Phase 1.2: Streaming STT
@@ -553,11 +553,11 @@ Files:
 Planned changes:
 
 - Add a streaming `Partial` concept with text plus final/non-final state.
-- Add `/n/speech/listen`: blocking reads return transcript partials as they
+- Add `/mnt/speech/listen`: blocking reads return transcript partials as they
   arrive.
-- Keep `/n/speech/hear` as the existing batch path.
+- Keep `/mnt/speech/hear` as the existing batch path.
 - Wrap the whisper.cpp streaming binary or an equivalent small helper.
-- Treat `/n/speech/listen` as per-fid state. Each open reader should have its
+- Treat `/mnt/speech/listen` as per-fid state. Each open reader should have its
   own stream/channel so unrelated clients do not consume each other's partials.
 - The wire format should be documented beside the code; Claude's plan used a
   simple `Partial` ADT shape with `text` and `isfinal`.
@@ -570,7 +570,7 @@ Why streaming matters:
 
 Verification:
 
-- `cat /n/speech/listen`.
+- `cat /mnt/speech/listen`.
 - Speak into the Mac microphone.
 - Confirm partials arrive and one final transcript is emitted after
   end-of-speech.
@@ -605,14 +605,14 @@ Files:
 
 Planned changes:
 
-- Add `/n/speech/wake`: reads block until wake-word detection, then return a
+- Add `/mnt/speech/wake`: reads block until wake-word detection, then return a
   line containing model, score, and timestamp.
-- Add `/n/speech/cancel` for TTS interruption.
-- Add `/n/speech/sayq` for queued or streaming response playback.
+- Add `/mnt/speech/cancel` for TTS interruption.
+- Add `/mnt/speech/sayq` for queued or streaming response playback.
 
 Verification:
 
-- `cat /n/speech/wake`.
+- `cat /mnt/speech/wake`.
 - Say `hey lucia`.
 - Confirm a wake event appears.
 - Confirm background speech/noise does not trigger at the configured threshold.
@@ -627,11 +627,11 @@ Files:
 Responsibilities:
 
 - Own the voice-mode state machine.
-- Watch `/n/speech/wake`.
-- Read `/n/speech/listen`.
+- Watch `/mnt/speech/wake`.
+- Read `/mnt/speech/listen`.
 - Inject final transcripts into `/n/ui/activity/{id}/conversation/input`.
-- Queue assistant response chunks to `/n/speech/sayq`.
-- Write `/n/speech/cancel` for barge-in.
+- Queue assistant response chunks to `/mnt/speech/sayq`.
+- Write `/mnt/speech/cancel` for barge-in.
 - Write `/n/ui/input-mode` to pause and resume typed input.
 - Update UI context resources for waiting, listening, processing, and speaking.
 - Treat `Esc` or `/voice mode off` as unconditional exit.
@@ -719,18 +719,18 @@ The installer is macOS-first and safe to re-run. It installs Homebrew
 ~/.local/share/infernode-speech/bin/openwakeword-cli
 ```
 
-After `/n/speech` is mounted, paste the ctl block printed by the installer.
+After `/mnt/speech` is mounted, paste the ctl block printed by the installer.
 The helper-mode block has this shape:
 
 ```sh
-echo 'kokorobin /Users/me/.local/share/infernode-speech/bin/kokoro-cli' > /n/speech/ctl
-echo 'whisperstreambin /Users/me/.local/share/infernode-speech/bin/whisper-stream-cli' > /n/speech/ctl
-echo 'wakebin /Users/me/.local/share/infernode-speech/bin/openwakeword-cli' > /n/speech/ctl
-echo 'whispermodel /Users/me/.local/share/infernode-speech/models/ggml-base.en.bin' > /n/speech/ctl
-echo 'voice af_bella' > /n/speech/ctl
-echo 'wakeword hey jarvis' > /n/speech/ctl
-echo 'wakethreshold 0.5' > /n/speech/ctl
-echo 'duplex half' > /n/speech/ctl
+echo 'kokorobin /Users/me/.local/share/infernode-speech/bin/kokoro-cli' > /mnt/speech/ctl
+echo 'whisperstreambin /Users/me/.local/share/infernode-speech/bin/whisper-stream-cli' > /mnt/speech/ctl
+echo 'wakebin /Users/me/.local/share/infernode-speech/bin/openwakeword-cli' > /mnt/speech/ctl
+echo 'whispermodel /Users/me/.local/share/infernode-speech/models/ggml-base.en.bin' > /mnt/speech/ctl
+echo 'voice af_bella' > /mnt/speech/ctl
+echo 'wakeword hey jarvis' > /mnt/speech/ctl
+echo 'wakethreshold 0.5' > /mnt/speech/ctl
+echo 'duplex half' > /mnt/speech/ctl
 ```
 
 Then start InferNode, press `Alt+V` (or Esc then `v`) to enter voice mode, and
@@ -751,7 +751,7 @@ Topology 2/3 users can keep the microphone as a namespace device instead of
 letting helper CLIs grab the host mic directly:
 
 ```sh
-echo 'micmode device' > /n/speech/ctl
+echo 'micmode device' > /mnt/speech/ctl
 ```
 
 `micmode device` means `speechshim9p` pumps 16 kHz s16le mono PCM into the
@@ -851,7 +851,7 @@ tools/speech-test.sh \
 
 The wrapper drives `/dis/speechtest.dis` (`appl/cmd/speechtest.b`),
 which bootstraps `speechshim9p` + `speech9p` in its own namespace when
-`/n/speech` is not already served — so the same command also works from
+`/mnt/speech` is not already served — so the same command also works from
 a shell inside a booted GUI session, where it reuses the live stack.
 The terminal app needs macOS microphone permission (TCC) for local
 capture. Unit tests: `tests/speechtest_test.b`.

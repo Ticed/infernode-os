@@ -1,8 +1,8 @@
 implement SayqDrainTest;
 
 #
-# INF-45: the desktop speaks through /n/speech/sayq (lucibridge speaktext),
-# not /n/speech/say. Both funnel into speech9p's dosay -> sayprovider ->
+# INF-45: the desktop speaks through /mnt/speech/sayq (lucibridge speaktext),
+# not /mnt/speech/say. Both funnel into speech9p's dosay -> sayprovider ->
 # the shim's say, but speech9p.sayprovider opens the shim say TWICE — one
 # fid for the write (clunked immediately) and a fresh fid for the read.
 # The shim tracks the in-flight say's completion per-fid, so that read

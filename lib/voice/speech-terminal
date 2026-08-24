@@ -1,5 +1,5 @@
 # speech-terminal — topology 2 terminal role: export this machine's audio,
-# mount a remote speech provider, and select it for /n/speech.
+# mount a remote speech provider, and select it for /mnt/speech.
 #
 # Usage:
 #   run /lib/voice/speech-terminal tcp!engine!17019 [audio-port] [provider-mount] [mount-attempts] [state-file] [speech-ctl]
@@ -33,7 +33,7 @@ if {~ $#statefile 0} {
 	statefile=/tmp/speech-terminal.state
 }
 if {~ $#ctlfile 0} {
-	ctlfile=/n/speech/ctl
+	ctlfile=/mnt/speech/ctl
 }
 listenerstate=$statefile^.listener
 

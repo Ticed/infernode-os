@@ -139,7 +139,7 @@ speakholding := 0;
 dwellc: chan of int;
 heldoutrms := 0;		# last measured playback energy while Speaking
 heldoutpeak := 0;
-levelbuf: string;		# live /n/speech/level PCM telemetry
+levelbuf: string;		# live /mnt/speech/level PCM telemetry
 queuebuf: string;		# server-owned queued follow-up; display-only
 queuestate: string;		# queue lifecycle state from conversation/voicequeue
 queuedepth := 0;
@@ -560,7 +560,7 @@ metermonitor(c: chan of string)
 	for(;;) {
 		next := "";
 		if(voiceactive()) {
-			next = strip(readfile("/n/speech/level"));
+			next = strip(readfile("/mnt/speech/level"));
 			if(next == nil)
 				next = "mode=idle input-rms=0 input-peak=0 output-rms=0 output-peak=0";
 		}
@@ -1881,7 +1881,7 @@ writedraftstatus(text: string)
 # lucictx's Voice chip: /mnt/ui/input-mode flips between "v" and "k", and
 # the resident voicemode daemon owns the microphone, wake gating, drafts,
 # and transcript submission. luciconv keeps no speech state of its own —
-# the old press-to-dictate flow (a one-shot /n/speech/hear read pasted
+# the old press-to-dictate flow (a one-shot /mnt/speech/hear read pasted
 # into the compose box) duplicated voice mode through a second, subtly
 # different microphone pathway and is gone.
 
@@ -1896,11 +1896,11 @@ togglevoice(source: string)
 	ctl := sys->sprint("%s/activity/%d/context/ctl", mountpt_g, actid_g);
 	if(voiceactive()) {
 		writestring(path, "off source=" + source);
-		writestring(ctl, "resource upsert path=/n/speech label=Voice "
+		writestring(ctl, "resource upsert path=/mnt/speech label=Voice "
 			+ "type=audio status=idle via=voice-mode");
 	} else {
 		writestring(path, "on source=" + source);
-		writestring(ctl, "resource upsert path=/n/speech label=Voice "
+		writestring(ctl, "resource upsert path=/mnt/speech label=Voice "
 			+ "type=audio status=starting via=voice-mode");
 	}
 }

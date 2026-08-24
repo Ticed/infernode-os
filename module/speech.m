@@ -9,8 +9,8 @@
 # between 9P file operations and actual speech engines.
 #
 # Engine selection is done at runtime via the ctl file:
-#   echo 'engine cmd' > /n/speech/ctl     # Host command backend
-#   echo 'engine api' > /n/speech/ctl     # HTTP API backend
+#   echo 'engine cmd' > /mnt/speech/ctl     # Host command backend
+#   echo 'engine api' > /mnt/speech/ctl     # HTTP API backend
 #
 
 Speech: module {
@@ -57,7 +57,7 @@ Speech: module {
 
 	# One record from a streaming STT session (Phase 1.2 addition).
 	#
-	# /n/speech/listen serves these as newline-delimited text records:
+	# /mnt/speech/listen serves these as newline-delimited text records:
 	#
 	#   partial <text>    hypothesis; may be revised by later records
 	#   final <text>      end-of-speech transcript; closes the utterance

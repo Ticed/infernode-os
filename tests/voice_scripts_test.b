@@ -145,7 +145,7 @@ testSpeechTerminalShape(t: ref T)
 		"speech-terminal exports local audio through voice/listen");
 	t.assert(contains(s, "mount -A $engine $provider"),
 		"speech-terminal mounts the remote provider");
-	t.assert(contains(s, "ctlfile=/n/speech/ctl") &&
+	t.assert(contains(s, "ctlfile=/mnt/speech/ctl") &&
 		contains(s, "writectl 'provider '^$provider $ctlfile"),
 		"speech-terminal selects the mounted provider");
 	t.assert(contains(s, "writectl 'duplex half' $ctlfile"),
@@ -199,7 +199,7 @@ testSpeechCaptureShape(t: ref T)
 	s := script_contents(t, "/lib/voice/speech-capture");
 	t.assert(contains(s, "mount -A $capture $capturemnt"),
 		"speech-capture imports a remote device tree");
-	t.assert(contains(s, "ctlfile=/n/speech/ctl"),
+	t.assert(contains(s, "ctlfile=/mnt/speech/ctl"),
 		"speech-capture defaults to the installed speech control file");
 	t.assert(contains(s, "echo capturedev $capturemnt/audio > $ctlfile"),
 		"speech-capture changes capture without changing playback");

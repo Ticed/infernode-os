@@ -916,6 +916,97 @@ gitGenericHiddenWorker(result: chan of string)
 	result <-= "";
 }
 
+# The speech service is a fixed tool-derived /mnt application mount (migrated
+# from /n/speech per docs/NAMESPACE-LAYOUT.md, INF-53). A say/hear-capable
+# tool must see /mnt/speech without a raw path grant, while generic tools
+# must not — and a raw caps.paths grant must be rejected outright.
+testRestrictNsSpeechToolDerived(t: ref T)
+{
+	createdmnt := 0;
+	(ok, nil) := sys->stat("/mnt");
+	if(ok < 0) {
+		fd := sys->create("/mnt", Sys->OREAD, Sys->DMDIR | 8r755);
+		if(fd == nil) {
+			t.skip("cannot create /mnt test fixture");
+			return;
+		}
+		fd = nil;
+		createdmnt = 1;
+	}
+	createdspeech := 0;
+	(ok, nil) = sys->stat("/mnt/speech");
+	if(ok < 0) {
+		fd := sys->create("/mnt/speech", Sys->OREAD, Sys->DMDIR | 8r755);
+		if(fd == nil) {
+			if(createdmnt)
+				sys->remove("/mnt");
+			t.skip("cannot create /mnt/speech test fixture");
+			return;
+		}
+		fd = nil;
+		createdspeech = 1;
+	}
+
+	result := chan of string;
+	spawn speechToolDerivedWorker(result);
+	r := <-result;
+	if(r == "") {
+		spawn speechGenericHiddenWorker(result);
+		r = <-result;
+	}
+
+	if(createdspeech)
+		sys->remove("/mnt/speech");
+	if(createdmnt)
+		sys->remove("/mnt");
+	if(r != "")
+		t.error(r);
+}
+
+speechToolDerivedWorker(result: chan of string)
+{
+	sys->pctl(Sys->FORKNS, nil);
+	caps := ref NsConstruct->Capabilities(
+		"say" :: "hear" :: nil,
+		nil, nil, nil,
+		0 :: 1 :: 2 :: nil,
+		nil, 0, 0, -1, nil
+	, nil);
+	err := nsconstruct->restrictns(caps);
+	if(err != nil) {
+		result <-= sys->sprint("restrictns (speech tools) failed: %s", err);
+		return;
+	}
+	(speechok, nil) := sys->stat("/mnt/speech");
+	if(speechok < 0) {
+		result <-= "/mnt/speech missing for say/hear tool without raw path grant";
+		return;
+	}
+	result <-= "";
+}
+
+speechGenericHiddenWorker(result: chan of string)
+{
+	sys->pctl(Sys->FORKNS, nil);
+	caps := ref NsConstruct->Capabilities(
+		"read" :: nil,
+		nil, nil, nil,
+		0 :: 1 :: 2 :: nil,
+		nil, 0, 0, -1, nil
+	, nil);
+	err := nsconstruct->restrictns(caps);
+	if(err != nil) {
+		result <-= sys->sprint("restrictns (generic tool) failed: %s", err);
+		return;
+	}
+	(speechok, nil) := sys->stat("/mnt/speech");
+	if(speechok >= 0) {
+		result <-= "/mnt/speech visible to generic tool without speech capability";
+		return;
+	}
+	result <-= "";
+}
+
 
 # Combined /mnt grants must compose rather than replace one another.
 testRestrictNsMntCombined(t: ref T)
@@ -1708,6 +1799,14 @@ privilegedGrantPathsWorker(result: chan of string)
 		"/mnt/matrix/composition",
 		"/n/git",
 		"/n/git/ctl",
+		"/mnt/speech",
+		"/mnt/speech/ctl",
+		"/n/speech",
+		"/n/speech/ctl",
+		"/mnt/speechshim",
+		"/mnt/speechshim/ctl",
+		"/n/speechshim",
+		"/n/speechshim/ctl",
 		"/mnt/gpu",
 		"/mnt/gpu/clone",
 		"/mnt/gpu/0/ctl",
@@ -2126,6 +2225,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("RestrictNsMnt", testRestrictNsMnt);
 	run("RestrictNsMntLlm", testRestrictNsMntLlm);
 	run("RestrictNsGitToolDerived", testRestrictNsGitToolDerived);
+	run("RestrictNsSpeechToolDerived", testRestrictNsSpeechToolDerived);
 	run("RestrictNsMntCombined", testRestrictNsMntCombined);
 	run("RestrictNsMcpDeny", testRestrictNsMcpDeny);
 	run("RestrictNsRace", testRestrictNsRace);
