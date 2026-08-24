@@ -815,6 +815,95 @@ testSayWaitsForDrain(t: ref T)
 }
 
 
+# INF-43. During half-duplex playback the microphone carries the assistant's
+# own reply. The STT transcribes it, so every record arriving mid-playback is
+# suspect: the reply must never surface as a turn, but a spoken "cancel" must
+# get through or the user cannot interrupt.
+#
+# `cancel on` is that narrow window, and this pins both of its edges against a
+# helper that emits reply-shaped text ahead of the cancel word. Phase 1 is the
+# negative control and also the pre-fix behaviour: with the window shut, the
+# reply text is what comes back.
+#
+# The pump half of the fix - feeding the STT helper through the suppressed
+# window in `micmode device` - has no hermetic seam here: a fake helper's
+# stdin reports EOF rather than blocking when the pump withholds audio, so
+# "was it fed" cannot be told apart from "helper ran early". See INF-50.
+testSpokenCancelDuringPlayback(t: ref T)
+{
+	fd := sys->create(PCMFILE, Sys->OWRITE, 8r644);
+	t.assert(fd != nil, "create fake audio device");
+	if(fd == nil)
+		return;
+	fd = nil;
+
+	writefile(MNT + "/ctl", "audiodev " + PCMFILE);
+	writefile(MNT + "/ctl", "duplex half");
+	t.assert(writefile(MNT + "/ctl",
+		"kokorobin /bin/sh -c \"printf 0123456789; sleep 4; printf abcdef\"") > 0,
+		"configure slow fake synthesizer");
+	t.assert(hassubstr(readfile(MNT + "/ctl"), "cancel off"),
+		"the spoken-cancel window is shut by default");
+
+	sayfd := sys->open(MNT + "/say", Sys->ORDWR);
+	t.assert(sayfd != nil, "say opens");
+	if(sayfd == nil)
+		return;
+	b := array of byte "hello";
+	t.assert(sys->write(sayfd, b, len b) > 0, "say write accepted");
+	sys->sleep(300);	# let dosay enter its playback loop
+
+	# Phase 1, the default. Every record passes through untouched, so the
+	# helper's first line - the assistant's own reply - is what a reader
+	# gets. This is the behaviour the fix must leave alone.
+	t.assert(writefile(MNT + "/ctl",
+		"whisperstreambin /bin/sh -c \"echo final I am Veltro; " +
+		"echo final cancel; sleep 30\"") > 0,
+		"configure reply-then-cancel fake listen helper");
+	t.assert(hassubstr(readfile(MNT + "/level"), "mode=output"),
+		"playback is still running, so capture is suppressed");
+	off := readfile(MNT + "/listen");
+	t.assert(hassubstr(off, "I am Veltro"),
+		"cancel off leaves the listen stream unfiltered");
+
+	# Phase 2, the window open. Restarting the helper clears the records
+	# phase 1 left buffered, so this read cannot be answered from them.
+	t.assert(writefile(MNT + "/ctl", "cancel on") > 0, "cancel on accepted");
+	t.assert(hassubstr(readfile(MNT + "/ctl"), "cancel on"), "ctl reports cancel on");
+	t.assert(writefile(MNT + "/ctl",
+		"whisperstreambin /bin/sh -c \"echo final I am Veltro; " +
+		"echo final cancel; sleep 30\"") > 0,
+		"restart the fake listen helper");
+	t.assert(hassubstr(readfile(MNT + "/level"), "mode=output"),
+		"playback is still running for the second read");
+
+	listench := chan of string;
+	spawn readproc(MNT + "/listen", listench);
+	tmo := chan[1] of int;
+	spawn timer(tmo, 3000);
+	heard := "";
+	alt {
+	heard = <-listench =>
+		;
+	<-tmo =>
+		;
+	}
+	t.assert(hassubstr(heard, "final cancel"),
+		"a spoken cancel reaches the reader during playback");
+	t.assert(!hassubstr(heard, "I am Veltro"),
+		"the assistant's own reply is not offered as a transcript");
+
+	writefile(MNT + "/ctl", "cancel off");
+	writefile(MNT + "/ctl", "mic off");
+	writefile(MNT + "/ctl", "mic on");
+	sys->seek(sayfd, big 0, Sys->SEEKSTART);
+	rbuf := array[512] of byte;
+	sys->read(sayfd, rbuf, len rbuf);
+	sayfd = nil;
+	writefile(MNT + "/ctl", "duplex full");
+	writefile(MNT + "/ctl", "audiodev /dev/audio");
+}
+
 teardown()
 {
 	sys->unmount(nil, MNT);
@@ -851,6 +940,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("CancelKillsSay", testCancelKillsSay);
 	run("HalfDuplexSwallowsWakeDuringSay", testHalfDuplexSwallowsWakeDuringSay);
 	run("SayWaitsForDrain", testSayWaitsForDrain);
+	run("SpokenCancelDuringPlayback", testSpokenCancelDuringPlayback);
 	run("HelperErrorNamesCause", testHelperErrorNamesCause);
 
 	teardown();

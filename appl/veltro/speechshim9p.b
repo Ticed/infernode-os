@@ -8,7 +8,7 @@ implement Speechshim9p;
 #   ├── ctl      (rw)  kokorobin, whisperstreambin, wakebin, wakeword,
 #   │                  wakethreshold, whispermodel, voice, rate,
 #   │                  audiodev, capturedev, micmode, capturerate,
-#   │                  mic on|off
+#   │                  mic on|off, cancel on|off
 #   ├── listen   (r)   newline records from the streaming STT helper:
 #   │                  "partial [confidence=N] <text>" /
 #   │                  "final [confidence=N] <text>" / "error: <reason>"
@@ -118,6 +118,7 @@ suppressuntil := 0;		# sys->millisec() deadline; see suppressed()
 playuntil := 0;		# millisec when the device should finish emitting
 standby := 0;			# mic off: no helper (re)starts until the next listen/wake read
 listenoff := 0;			# listen off: the STT helper stays down until the next listen read
+cancelmode := 0;		# cancel on: feed STT during playback so a spoken cancel cuts the reply
 
 stderr: ref Sys->FD;
 user: string;
@@ -704,7 +705,24 @@ audiopump()
 			continue;
 		}
 		if(suppressed()) {
+			# Half-duplex playback: the microphone is on the same
+			# device as the speaker, and the device may hold our own
+			# TTS for duplextail. Normally that capture is discarded so
+			# the assistant cannot hear and answer itself. `cancel on`
+			# (INF-43) is the narrow, opt-in exception: while a voice
+			# daemon is listening for a spoken cancel, keep feeding the
+			# STT helper during playback so "cancel"/"stop" is heard and
+			# can cut off the reply. The WAKE sink and input level stay
+			# suppressed (the assistant's own voice must not wake or
+			# surface as a turn); readlisten() additionally lets only
+			# cancel words through the listen stream while playing, so
+			# the transcribed reply cannot leak into the turn pipeline.
+			# With `cancel off` (the default) capture is dropped exactly
+			# as before and no caller's behaviour changes.
 			clearinputlevel();
+			if(cancelmode && sinks[SINKLISTEN] != nil &&
+			   sys->write(sinks[SINKLISTEN], buf[0:n], n) < 0)
+				sinks[SINKLISTEN] = nil;	# STT helper died
 			continue;
 		}
 		setinputlevel(buf, n);
@@ -723,6 +741,51 @@ listencmd(): string
 			" --rate " + string capturerate + " --chans 1";
 	return whisperstreambin + " --model " + whispermodel +
 		" --rate 16000 --chans 1";
+}
+
+# True when a listen transcript is a spoken control word that should cut
+# playback. During half-duplex playback the microphone is on the same
+# device as the speaker (or the device holds the assistant's own TTS for
+# duplextail), so the STT hears the reply: those transcripts are not
+# cancel words and must not surface as anything a voice daemon could
+# mistake for a normal turn. Only exact cancel/stop words pass the gate.
+# Deliberately narrower than voicemode's gracecancel set: the audio being
+# transcribed here is the assistant's OWN voice, and a reply segment that
+# transcribes to exactly "no" or "wrong" (a natural phrase in a reply)
+# would self-cancel the reply. So the playback-cut set is limited to the
+# words a user actually says to interrupt (INF-43).
+cancelword(record: string): int
+{
+	r := strip(record);
+	if(r == nil)
+		return 0;
+	# Records may carry a "partial|final confidence=N <text>" prefix.
+	(nil, fields) := sys->tokenize(r, " \t");
+	if(fields != nil) {
+		w := hd fields;
+		if(w == "partial" || w == "final") {
+			fields = tl fields;
+			if(fields != nil && hasprefix(hd fields, "confidence="))
+				fields = tl fields;
+			r = "";
+			for(; fields != nil; fields = tl fields) {
+				if(r != "")
+					r += " ";
+				r += hd fields;
+			}
+		}
+	}
+	t := "";
+	for(i := 0; i < len r; i++) {
+		c := int r[i];
+		if(c >= 'A' && c <= 'Z')
+			c += 'a' - 'A';
+		if((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ' ')
+			t[len t] = c;
+	}
+	n := strip(t);
+	return n == "cancel" || n == "stop" ||
+		n == "never mind" || n == "nevermind" || n == "scratch that";
 }
 
 wakecmd(): string
@@ -765,9 +828,22 @@ readlisten(): string
 				return "error: mic off";
 			}
 		}
-		(record, ok) := readrecord(listenproc);
-		if(ok)
+		for(;;) {
+			(record, ok) := readrecord(listenproc);
+			if(!ok)
+				break;
+			# During half-duplex playback the mic carries our own TTS
+			# (and, strictly, duplextail echo). The STT transcribes it;
+			# let only a spoken cancel word through so the assistant's
+			# own reply never surfaces as a normal transcript/turn;
+			# everything else is discarded and we keep reading. This
+			# filter is active only under `cancel on` (INF-43): with the
+			# default `cancel off` every record passes through unchanged,
+			# so no caller's behaviour changes.
+			if(cancelmode && suppressed() && !cancelword(record))
+				continue;
 			return record;
+		}
 		dead := listenproc;
 		listenproc = nil;
 		# `mic off`/`listen off` while blocked in the read above kills
@@ -1111,6 +1187,10 @@ readconfig(): string
 		result += "listen off\n";
 	else
 		result += "listen on\n";
+	if(cancelmode)
+		result += "cancel on\n";
+	else
+		result += "cancel off\n";
 	return result;
 }
 
@@ -1247,6 +1327,22 @@ applyconfig(cmd: string): string
 			listenoff = 0;
 		* =>
 			return "error: listen must be on or off";
+		}
+	"cancel" =>
+		# Opt-in spoken-cancel path (INF-43): while `cancel on`, the
+		# capture pump keeps feeding the STT helper during half-duplex
+		# playback and readlisten lets only cancel words through, so a
+		# voice daemon can hear (and cut) the in-flight reply. Default
+		# is off: capture stays suppressed during playback and every
+		# caller's behaviour is unchanged. voicemode turns it on only
+		# while SPEAKING and off again when playback ends.
+		case val {
+		"off" =>
+			cancelmode = 0;
+		"on" =>
+			cancelmode = 1;
+		* =>
+			return "error: cancel must be on or off";
 		}
 	* =>
 		return "error: unknown config key: " + key;

@@ -71,6 +71,7 @@ listentimeout := 10000;
 wakecooldown := 1500;
 gracems := 3000;		# grace window before a final is submitted; 0 = immediate
 confidencethreshold := 650;	# thousandths; confidence metadata is optional
+speakingtimeout := 30000;	# cap on the SPEAKING (playback) cancel window
 pendingconfirm := "";
 
 testmode := 0;
@@ -302,6 +303,21 @@ listenoff()
 	writefile(speech + "/ctl", "listen off");
 }
 
+# Opt-in spoken-cancel window (INF-43): while a turn's reply is playing
+# (SPEAKING state), `cancel on` makes the provider keep the STT feeding
+# during otherwise-suppressed playback so a spoken "cancel"/"stop" can cut
+# the in-flight reply. Default off; must be balanced by canceloff() when
+# playback ends so no caller's suppression behaviour changes outside it.
+cancelon()
+{
+	writefile(speech + "/ctl", "cancel on");
+}
+
+canceloff()
+{
+	writefile(speech + "/ctl", "cancel off");
+}
+
 chime(kind: string)
 {
 	writefile(speech + "/chime", kind);
@@ -479,6 +495,18 @@ gracecancel(text: string): int
 	return n == "cancel" || n == "no" || n == "stop" || n == "wrong" ||
 		n == "never mind" || n == "nevermind" || n == "discard" ||
 		n == "scratch that";
+}
+
+# Words that cut a reply that is playing (SPEAKING state). Deliberately
+# narrower than gracecancel: the STT is transcribing the assistant's OWN
+# voice, and a reply segment that happened to transcribe to exactly "no"
+# or "wrong" would self-cancel the reply. Only words a user says to
+# interrupt are accepted. Mirrors speechshim9p's cancelword() (INF-43).
+playcancel(text: string): int
+{
+	n := normalize(text);
+	return n == "cancel" || n == "stop" ||
+		n == "never mind" || n == "nevermind" || n == "scratch that";
 }
 
 approvalpending(actid: int): int
@@ -698,7 +726,7 @@ drainresults()
 	}
 }
 
-WAITING, LISTENING, SENDING: con iota;
+WAITING, LISTENING, SENDING, SPEAKING: con iota;
 
 # Submit a completed utterance as the turn (test mode: canned reply, no LLM).
 submitfinal(actid: int, text: string)
@@ -752,6 +780,7 @@ voiceloop()
 	# non-blocking so an exited session never leaks a blocked proc).
 	sendgen := 0;
 	senddeadline := 0;
+	speakgen := 0;
 	lastappend := "";
 	lastwake := -wakecooldown;
 	errorshown := 0;
@@ -775,7 +804,7 @@ voiceloop()
 				return;
 			}
 		w := <-wakech =>
-			if(state != WAITING)
+			if(state != WAITING && state != SPEAKING)
 				continue;
 			if(iserror(w)) {
 				logerr("wake: " + strip(w));
@@ -805,6 +834,7 @@ voiceloop()
 			chime("wake");
 			# Barge-in: any active TTS is cut off before listening.
 			cancelspeech();
+			canceloff();	# leave SPEAKING if a reply was playing
 			actid = currentactivity();
 			cleardraft(actid);
 			state = LISTENING;
@@ -872,6 +902,55 @@ voiceloop()
 				ctxsending(actid, gracems);
 				draftinput(actid, pendingsend);
 				requestlisten(listengen);
+				continue;
+			}
+			if(state == SPEAKING) {
+				if(rec.gen != listengen)
+					continue;
+				(skind, stext, nil) := parselisten(rec.text);
+				if(skind == LISTEN_EMPTY || skind == LISTEN_PARTIAL) {
+					# Playback tail; keep the cancel ear open.
+					sys->sleep(100);
+					requestlisten(listengen);
+					continue;
+				}
+				# Playback is a half-duplex window: the reply plays into
+				# the mic the shim is windowing, and with `cancel on` the
+				# shim lets only cancel words through the listen stream
+				# while suppressed. So any transcript that does reach us
+				# through the stream is the assistant's own reply unless
+				# it is a cancel word the user actually spoke. A cancel
+				# word cuts the reply; suppress it. Anything else (an
+				# error, or a non-cancel residual) means playback has
+				# ended and the window can close.
+				if(skind == LISTEN_FINAL && playcancel(stext)) {
+					log("spoken cancel during playback: " + stext);
+					state = WAITING;
+					canceloff();
+					listenoff();
+					listenseq++;
+					listengen = listenseq;
+					cleardraft(actid);
+					cancelspeech();
+					controlinput(actid, "cancel");
+					ctxstatus(actid, "waiting");
+					chime("done");
+					sys->sleep(100);
+					request(startwake);
+					continue;
+				}
+				# Playback finished (or the ear errored): drop the
+				# residual and return to plain wake-only WAITING.
+				state = WAITING;
+				canceloff();
+				listenoff();
+				listenseq++;
+				listengen = listenseq;
+				cleardraft(actid);
+				ctxstatus(actid, "waiting");
+				chime("done");
+				sys->sleep(100);
+				request(startwake);
 				continue;
 			}
 			if(state != LISTENING)
@@ -1014,14 +1093,26 @@ voiceloop()
 				requestlisten(listengen);
 				continue;
 			}
-			state = WAITING;
-			listenoff();
+			# The turn is submitted and the reply begins playing. Enter
+			# the SPEAKING window: keep the STT helper armed (no
+			# listenoff) so a spoken "cancel"/"stop" can cut the reply,
+			# and ask the provider to feed/window capture during
+			# otherwise-suppressed playback (cancel on). A cancel word,
+			# the first non-cancel final (only a cancel word passes the
+			# shim while playback suppresses it, so a non-cancel final
+			# means playback is over and THUS ends the window), or the
+			# SPEAKING timeout returns to WAITING with cancel off.
 			cleardraft(actid);
 			submitfinal(actid, text);
+			state = SPEAKING;
+			speakgen++;
+			cancelon();
+			spawn timer(timerch, speakingtimeout, speakgen);
 			# Re-arm immediately: a wake during the spoken response is
 			# barge-in. The pacing sleep keeps mock file trees (always-
 			# ready reads) from spinning.
 			sys->sleep(100);
+			requestlisten(listengen);
 			request(startwake);
 		gen := <-timerch =>
 			if(state == LISTENING && gen == listengen) {
@@ -1036,6 +1127,18 @@ voiceloop()
 				cleardraft(actid);
 				ctxtimeout(actid);
 				chime("done");
+				request(startwake);
+			} else if(state == SPEAKING && gen == speakgen) {
+				# Playback has run past the cancel window; close it.
+				state = WAITING;
+				canceloff();
+				listenoff();
+				listenseq++;
+				listengen = listenseq;
+				cleardraft(actid);
+				ctxstatus(actid, "waiting");
+				chime("done");
+				sys->sleep(100);
 				request(startwake);
 			} else if(state == SENDING && gen == sendgen) {
 				now := sys->millisec();
@@ -1054,11 +1157,16 @@ voiceloop()
 				pendingsend = "";
 				listenseq++;
 				listengen = listenseq;
-				state = WAITING;
-				listenoff();
 				cleardraft(actid);
 				submitfinal(actid, sendtext);
+				state = SPEAKING;
+				speakgen++;
+				cancelon();
+				spawn timer(timerch, speakingtimeout, speakgen);
+				# Re-arm immediately: keep the STT helper armed (a
+				# spoken cancel can cut the reply), and wake for barge-in.
 				sys->sleep(100);
+				requestlisten(listengen);
 				request(startwake);
 			}
 		}

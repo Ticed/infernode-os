@@ -553,7 +553,7 @@ applyconfig(cmd: string): string
 		capturerate = r;
 		forwardprovider(key, val);
 	"audiodev" or "capturedev" or "micmode" or "duplex" or "duplextail" or
-	"capturedelay" or "mic" or "listen" =>
+	"capturedelay" or "mic" or "listen" or "cancel" =>
 		# Audio routing lives in the provider (docs/SPEECH-REMOTE-AUDIO.md);
 		# speech9p only passes the knobs through. `mic off` is written by
 		# voicemode on voice-mode exit so the provider releases the
