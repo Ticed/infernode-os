@@ -102,6 +102,14 @@ the emulator never halts.
 through `runcmd`/`devcmd` is mangled but tolerated, because `sh -c`
 ignores the extra positional arguments.
 
+That is not only a test convenience: it is what those keys *are*.
+`kokorobin`, `whisperstreambin` and `wakebin` hold whole command lines,
+so writing one is equivalent to running a host command and no value
+validation can make it safe — an attempt to constrain them to paths
+turned 12 passing tests red. They are closed by `seal on` at the end of
+boot instead (INF-56, `docs/SPEECH-ARCHITECTURE.md` §10.8). Read this
+entry before hardening anything on the speech ctl.
+
 **Do not run the full suite unless asked.** `./run-tests.sh` takes 30–60+
 minutes here, several tests hang in a non-tty environment, and
 `interop_test` aborts the emulator on macOS (LibreSSL DSA), killing the
