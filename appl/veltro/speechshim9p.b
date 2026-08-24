@@ -758,7 +758,7 @@ cancelword(record: string): int
 		if(c >= 'A' && c <= 'Z')
 			c += 'a' - 'A';
 		if((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ' ')
-			t += string c;
+			t[len t] = c;
 	}
 	n := strip(t);
 	return n == "cancel" || n == "stop" ||
