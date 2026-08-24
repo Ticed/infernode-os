@@ -70,6 +70,25 @@ is the signature the committed traces actually flip from red to green.
 
 Each of these cost real time at least once.
 
+**The GUI test needs the machine to itself.** It drives `process "o.emu"`
+by name through System Events, and waits for the desktop window to
+appear. Any other emulator running at the same time — a test loop in
+another worktree, a dispatched worker running suites — makes that name
+ambiguous and the window search unreliable. The failures do not name the
+cause: you get "the desktop's window never appeared within 90s", or
+"voice mode did not turn on within 30s", or an Accessibility error
+saying `Can't set process "o.emu" to true (-10006)`, none of which point
+at contention. Check `ps -ax | grep '[o]\.emu'` is empty before you
+start, and do not run the GUI test concurrently with agents working in
+other checkouts.
+
+**Accessibility permission belongs to the terminal that launches the
+test**, not to the emulator. Without it the run skips with the -10006
+error above. Grant it in System Settings -> Privacy & Security ->
+Accessibility. A missing LLM endpoint skips earlier and more clearly
+(`no LLM endpoint at http://127.0.0.1:11434/v1`), so a skip there is not
+evidence about the voice path at all.
+
 **A muted device is a perfect impostor.** It enumerates on both sides,
 accepts playback, clocks writes at real time, and hands its input
 nothing but zeros. Volume and mute are device properties, so they survive
