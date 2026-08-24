@@ -67,10 +67,15 @@ if {! ~ $skiplogon 1} {
 		llmbackend=`{sed -n 's/^backend=//p' /lib/ndb/llm >[2] /dev/null}
 		llmurl=`{sed -n 's/^url=//p' /lib/ndb/llm >[2] /dev/null}
 		llmmodel=`{sed -n 's/^model=//p' /lib/ndb/llm >[2] /dev/null}
-		# backend=cli is the host-side CLI gateway (claude-gate) —
-		# OpenAI-shaped on localhost, so llmsrv dials it the same way.
-		if {~ $llmbackend openai cli} {
-			llmsrv -b openai -u $llmurl -M $llmmodel >[2] /dev/null
+		# backend=cli/codex are the host-side CLI gateways (claude-gate,
+		# codex-gate) — OpenAI-shaped on localhost, so llmsrv dials them
+		# the same way.
+		if {~ $llmbackend openai cli codex} {
+			if {! ~ $llmmodel ''} {
+				llmsrv -b openai -u $llmurl -M $llmmodel >[2] /dev/null
+			}{
+				llmsrv -b openai -u $llmurl >[2] /dev/null
+			}
 		}{
 			if {! ~ $llmmodel ''} {
 				llmsrv -M $llmmodel >[2] /dev/null

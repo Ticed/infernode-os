@@ -27,6 +27,9 @@ include "bufio.m";
 include "string.m";
 	str: String;
 
+include "auditprov.m";
+	ap: AuditProv;
+
 include "agentlib.m";
 	agentlib: AgentLib;
 
@@ -68,6 +71,16 @@ llmaskfd: ref Sys->FD;
 # Survives namespace restriction via the same fd-keep pattern as llmaskfd.
 logfd: ref Sys->FD;
 
+# Agent provenance (INFR-355), set by spawn.b via setprov() after restrictns.
+# provid names this child in audit records; provfd0 is a dialed but
+# un-handshaken content-store connection (handshake completes in runloop,
+# inside the restricted namespace). Records seal through the bound
+# /mnt/audit/log; with no store attached payloads degrade to
+# content=unstored. provid == "" disables emission entirely.
+provid := "";
+provfd0: ref Sys->FD;
+provrequired := 0;
+
 init(): string
 {
 	sys = load Sys Sys->PATH;
@@ -92,7 +105,47 @@ init(): string
 	if(agentlib != nil)
 		agentlib->init();
 
+	# Provenance emitter (INFR-355) — loaded pre-restriction like agentlib;
+	# best-effort: an install without auditing just leaves ap nil.
+	ap = load AuditProv AuditProv->PATH;
+	if(ap != nil && ap->init() != nil)
+		ap = nil;
+
 	return nil;
+}
+
+setprov(id: string, fd: ref Sys->FD, required: int)
+{
+	provid = id;
+	provfd0 = fd;
+	provrequired = required;
+}
+
+# Seal one provenance record; no-op unless spawn.b armed us via setprov.
+# An armed required child fails closed on both sink and content-store errors.
+prov(event, msg: string, payload: array of byte)
+{
+	if(provid == "")
+		return;
+	if(ap == nil) {
+		if(provrequired)
+			raise "fail:audit";
+		return;
+	}
+	rc := ap->log("veltro", event, msg, payload);
+	if(provrequired && rc != 0)
+		raise "fail:audit";
+}
+
+joinnames(l: list of string): string
+{
+	s := "";
+	for(; l != nil; l = tl l) {
+		if(s != "")
+			s += ",";
+		s += hd l;
+	}
+	return s;
 }
 
 # Bridge MCP tools into this child (INFR-247). Set by spawn.b AFTER restrictns
@@ -127,6 +180,8 @@ runloop(task: string, tools: list of Tool, toolnames: list of string,
 
 	if(agentlib == nil)
 		return "ERROR:agentlib unavailable in subagent";
+	if(provrequired && ap == nil)
+		return "ERROR:required provenance module unavailable";
 
 	# Build namespace description
 	ns := discovernamespace(toolnames);
@@ -136,6 +191,22 @@ runloop(task: string, tools: list of Tool, toolnames: list of string,
 
 	logheader(task);
 
+	# Provenance (INFR-355): complete the content-store handshake inside
+	# the restricted namespace, then seal what this child was given.
+	if(ap != nil && provid != "") {
+		if(provfd0 != nil) {
+			aerr := ap->attachfd(provfd0);
+			provfd0 = nil;
+			if(aerr != nil && provrequired)
+				return "ERROR:required provenance store unavailable: " + aerr;
+		}
+		if(provrequired && !ap->attached())
+			return "ERROR:required provenance store unavailable";
+		prov("substart", "agent=" + provid + " tools=" + joinnames(toolnames),
+			array of byte systemprompt);
+		prov("subtask", "agent=" + provid, array of byte task);
+	}
+
 	loopstart := sys->millisec();
 	for(step := 0; step < maxsteps; step++) {
 		# Query the LLM via agentlib (same harmony/JSON-aware path + retry as the
@@ -143,8 +214,11 @@ runloop(task: string, tools: list of Tool, toolnames: list of string,
 		# line-parse/DONE protocol, which dropped gpt-oss's final-channel answer.
 		response := agentlib->queryllmfd(llmaskfd, prompt);
 		logllm(step + 1, len prompt, response);
+		prov("subllm", sys->sprint("agent=%s step=%d", provid, step + 1),
+			array of byte response);
 		if(response == "") {
 			logfooter("empty", step + 1, sys->millisec() - loopstart);
+			prov("subdone", sys->sprint("agent=%s steps=%d status=empty", provid, step + 1), nil);
 			return "ERROR:LLM returned empty response";
 		}
 
@@ -153,6 +227,8 @@ runloop(task: string, tools: list of Tool, toolnames: list of string,
 		# Turn complete: the model's text IS the subagent's result.
 		if(stopreason == "end_turn" || stopreason == "" || tcalls == nil) {
 			logfooter("done", step + 1, sys->millisec() - loopstart);
+			prov("subdone", sys->sprint("agent=%s steps=%d status=done", provid, step + 1),
+				array of byte text);
 			if(text != "")
 				return text;
 			return "ERROR:subagent produced no answer";
@@ -164,8 +240,12 @@ runloop(task: string, tools: list of Tool, toolnames: list of string,
 		results: list of (string, string);
 		for(tc := tcalls; tc != nil; tc = tl tc) {
 			(id, name, targs) := hd tc;
+			prov("subtool", sys->sprint("agent=%s step=%d tool=%s", provid, step + 1, name),
+				array of byte targs);
 			result := calltool(name, targs);
 			logstep(step + 1, name, targs, result);
+			prov("subtoolres", sys->sprint("agent=%s step=%d tool=%s", provid, step + 1, name),
+				array of byte result);
 			if(len result > STREAM_THRESHOLD) {
 				scratchfile := writescratch(result, step);
 				result = sys->sprint("(output written to %s, %d bytes)", scratchfile, len result);
@@ -178,6 +258,7 @@ runloop(task: string, tools: list of Tool, toolnames: list of string,
 	totaltime := sys->millisec() - loopstart;
 	sys->fprint(stderr, "subagent: max steps reached after %dms\n", totaltime);
 	logfooter("max-steps", maxsteps, totaltime);
+	prov("subdone", sys->sprint("agent=%s steps=%d status=max-steps", provid, maxsteps), nil);
 	return sys->sprint("ERROR:max steps (%d) reached without completion", maxsteps);
 }
 

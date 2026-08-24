@@ -26,6 +26,12 @@ include "nsconstruct.m";
 
 include "cowfs.m";
 
+include "keyring.m";
+	kr: Keyring;
+
+include "audit.m";
+	audit: Audit;
+
 # Trusted namespace construction state lives outside the agent workspace.
 # /tmp is narrowed only after all shadow-backed binds have been installed.
 SHADOW_BASE: con "/tmp/.veltro-ns/shadow";
@@ -201,7 +207,6 @@ restrictns(caps: ref Capabilities): string
 	# /n is the IMPORT YARD — foreign trees imported intact (docs/NAMESPACE-LAYOUT.md).
 	# All /n/ entries are capability-driven — never auto-exposed by existence:
 	#   /n/speech — "/n/speech" in caps.paths
-	#   /n/git    — fixed git tool
 	#   /n/wallet — "/n/wallet" in caps.paths
 	#   /n/pres-* — caps.xenith != 0
 	#   /n/local  — /n/local/ subpaths in caps.paths
@@ -223,15 +228,6 @@ restrictns(caps: ref Capabilities): string
 			(speechok, nil) := sys->stat("/n/speech");
 			if(speechok >= 0)
 				nallow = "speech" :: nallow;
-		}
-
-		# /n/git — fixed-function git service. The git tool mounts git/fs here
-		# during trusted init; generic path grants cannot expose gitfs ctl/raw
-		# repository state to unrelated tools.
-		if(inlist("git", caps.tools)) {
-			(gitok, nil) := sys->stat("/n/git");
-			if(gitok >= 0)
-				nallow = "git" :: nallow;
 		}
 
 		# /n/wallet — only if explicitly granted via caps.paths
@@ -331,6 +327,15 @@ restrictns(caps: ref Capabilities): string
 		(gpuok, nil) := sys->stat("/mnt/gpu");
 		if(gpuok >= 0 && !inlist("gpu", mntpaths))
 			mntpaths = "gpu" :: mntpaths;
+	}
+	# /mnt/git — fixed-function git service (git/fs, mounted by the git tool
+	# during trusted init; migrated from /n/git per docs/NAMESPACE-LAYOUT.md,
+	# INFR-401). Derived only from the git tool; generic path grants cannot
+	# expose gitfs ctl/raw repository state to unrelated tools.
+	if(inlist("git", caps.tools)) {
+		(gitok, nil) := sys->stat("/mnt/git");
+		if(gitok >= 0 && !inlist("git", mntpaths))
+			mntpaths = "git" :: mntpaths;
 	}
 	# /mnt/ui — presentation surface (luciuisrv), granted only to fixed-function
 	# UI tools. Per-invocation caps prevent unrelated tools from inheriting it.
@@ -435,11 +440,10 @@ restrictns(caps: ref Capabilities): string
 	}
 	# 8. Restrict /prog to this process. The process device otherwise exposes
 	# sibling namespaces, descriptors, status, stacks and writable control files.
-	# Non-shell tools only need the current process. Inferno sh creates another
-	# process and opens /prog/<child>/wait after restriction, so an explicit shell
-	# capability temporarily retains full /prog.
+	# Exec receives its own pre-opened wait descriptor from the trusted wrapper,
+	# so it needs no /prog entries even when named shell commands are granted.
 	(progok, nil) := sys->stat("/prog");
-	if(progok >= 0 && caps.shellcmds == nil) {
+	if(progok >= 0) {
 		progallow: list of string;
 		# The exec wrapper supplies sh with a pre-opened wait FD. Its command
 		# process therefore needs no /prog entry, including the wrapper's ctl.
@@ -581,6 +585,19 @@ restrictns(caps: ref Capabilities): string
 	if(err != nil)
 		return sys->sprint("restrict /tmp/veltro: %s", err);
 
+	# Provenance (INFR-355): record this restriction while the trusted
+	# /tmp/.veltro-ns tree is still reachable (step 10 hides it). The
+	# manifest lands in AUDIT_DIR and, when the install audits, its hash
+	# is sealed into /mnt/audit — the sink was bound by the caps grant
+	# above, so the record comes from inside the restricted namespace.
+	# ops are consumed newest-first (emitauditlog reverses them).
+	auditops := "restrict /tmp -> veltro (final, after this manifest)" ::
+		("shellcmds=" + joincsv(caps.shellcmds)) ::
+		("writepaths=" + joincsv(caps.writepaths)) ::
+		("paths=" + joincsv(caps.paths)) ::
+		("tools=" + joincsv(caps.tools)) :: nil;
+	emitauditlog(sys->sprint("%d", sys->pctl(0, nil)), auditops);
+
 	# 10. Restrict /tmp last. All bind-replace shadows and COW mounts must be
 	# constructed first; their backing channels remain valid after the trusted
 	# /tmp/.veltro-ns tree is hidden. Agents retain only their workspace.
@@ -589,6 +606,17 @@ restrictns(caps: ref Capabilities): string
 		return sys->sprint("restrict /tmp: %s", err);
 
 	return nil;
+}
+
+joincsv(l: list of string): string
+{
+	s := "";
+	for(; l != nil; l = tl l) {
+		if(s != "")
+			s += ",";
+		s += hd l;
+	}
+	return s;
 }
 
 tmpveltroallow(caps: ref Capabilities): list of string
@@ -645,7 +673,7 @@ restrictlocal(paths: list of string): string
 restrictwallet(): string
 {
 	accts := walletaccounts();
-	allow := "accounts" :: "default" :: nil;
+	allow := "accounts" :: "default" :: "network" :: nil;
 	for(a := accts; a != nil; a = tl a)
 		if(!inlist(hd a, allow))
 			allow = hd a :: allow;
@@ -654,8 +682,12 @@ restrictwallet(): string
 	if(err != nil)
 		return err;
 
+	# No "sign": raw hash signing is a blind oracle over the spend key
+	# and would let an agent authorize arbitrary transfers outside the
+	# budget/approval policy.  Agents get "authorize" (structured,
+	# policy-checked EIP-3009 requests) and "pay" (proposals) instead.
 	acctallow := "address" :: "balance" :: "chain" ::
-		"pay" :: "history" :: nil;
+		"pay" :: "authorize" :: "history" :: nil;
 	for(a = accts; a != nil; a = tl a) {
 		err = restrictdir("/n/wallet/" + hd a, acctallow, 1);
 		if(err != nil)
@@ -935,7 +967,7 @@ privilegedcontrolpath(path: string, tools: list of string): int
 	for(i := 0; i < len dangerous; i++)
 		if(path == dangerous[i] || prefix(path, dangerous[i] + "/"))
 			return 1;
-	if(walletaccountcontrolpath(path))
+	if(walletcontrolpath(path))
 		return 1;
 	if(ftreecontrolpath(path))
 		return 1;
@@ -956,11 +988,24 @@ privilegedcontrolpath(path: string, tools: list of string): int
 	return 0;
 }
 
-walletaccountcontrolpath(path: string): int
+#
+# Exported (NsConstruct->walletcontrolpath) so every namespace gate
+# uses ONE definition of this predicate; tools9p calls this rather
+# than keeping its own copy.
+#
+# "sign" is listed even though wallet9p no longer serves that file:
+# the guard costs nothing and keeps the oracle closed if it is ever
+# reintroduced.
+#
+walletcontrolpath(path: string): int
 {
 	if(!prefix(path, "/n/wallet/"))
 		return 0;
-	return componentcount(path) >= 4 && pathhascomponent(path, "ctl");
+	if(componentcount(path) < 4)
+		return 0;
+	# Per-account ctl (budget/approval config) and sign (blind signing
+	# oracle over the spend key) are trusted controller surfaces.
+	return pathhascomponent(path, "ctl") || pathhascomponent(path, "sign");
 }
 
 ftreecontrolpath(path: string): int
@@ -1056,6 +1101,7 @@ calendarcontrolpath(path: string): int
 fixedservicecontrolpath(path: string): int
 {
 	return path == "/mnt/matrix" || prefix(path, "/mnt/matrix/") ||
+		path == "/mnt/git" || prefix(path, "/mnt/git/") ||
 		path == "/n/git" || prefix(path, "/n/git/") ||
 		path == "/mnt/gpu" || prefix(path, "/mnt/gpu/") ||
 		path == "/mnt/web" || prefix(path, "/mnt/web/") ||
@@ -1211,7 +1257,6 @@ emitmanifest(caps: ref Capabilities, mpath: string)
 	# /n entries — capability-driven (import yard)
 	nentries := array[] of {
 		("/n/speech", "Speech",           "rw"),
-		("/n/git",    "Git",              "rw"),
 		("/n/wikia",  "Wiki Agent",       "rw"),
 		("/phone",    "Phone Bridge",     "rw"),
 		# The LLM (llm9p), UI surface (luciuisrv) and MCP providers live under
@@ -1222,6 +1267,7 @@ emitmanifest(caps: ref Capabilities, mpath: string)
 		("/mnt/mcp",  "MCP Providers",    "rw"),
 		("/mnt/matrix", "Matrix Runtime", "rw"),
 		("/mnt/gpu", "GPU Service", "rw"),
+		("/mnt/git", "Git", "rw"),
 		("/mnt/web", "Web Service", "rw"),
 		("/mnt/wiki", "Wiki Store", "rw"),
 		("/mnt/registry", "Registry", "rw"),
@@ -1355,27 +1401,50 @@ emitauditlog(id: string, ops: list of string)
 
 	mkdirp(AUDIT_DIR);
 
-	auditpath := AUDIT_DIR + "/" + id + ".ns";
-	fd := sys->create(auditpath, Sys->OWRITE, FILE_MODE);
-	if(fd == nil)
-		return;
+	content := sys->sprint("# Veltro Namespace Audit (v3)\n# ID: %s\n\n", id);
 
-	sys->fprint(fd, "# Veltro Namespace Audit (v3)\n# ID: %s\n\n", id);
-
-	# Write operations in reverse order (oldest first)
+	# Operations arrive newest-first; render oldest-first
 	revops: list of string;
 	for(; ops != nil; ops = tl ops)
 		revops = hd ops :: revops;
 	for(; revops != nil; revops = tl revops)
-		sys->fprint(fd, "%s\n", hd revops);
+		content += (hd revops) + "\n";
 
 	# Dump current namespace state
 	pid := sys->pctl(0, nil);
 	nscontent := readfile(sys->sprint("/prog/%d/ns", pid));
 	if(nscontent != "")
-		sys->fprint(fd, "\n# Current namespace:\n%s", nscontent);
+		content += "\n# Current namespace:\n" + nscontent;
 
-	fd = nil;
+	auditpath := AUDIT_DIR + "/" + id + ".ns";
+	fd := sys->create(auditpath, Sys->OWRITE, FILE_MODE);
+	if(fd != nil) {
+		b := array of byte content;
+		sys->write(fd, b, len b);
+		fd = nil;
+	}
+
+	# Provenance (INFR-355): seal the manifest hash into the audit chain.
+	# The full manifest stays in AUDIT_DIR; the chain pins it so it cannot
+	# be quietly edited after the fact. No-op when the install does not
+	# audit — /mnt/audit/log is simply not bound and audit->log returns -1.
+	if(audit == nil) {
+		audit = load Audit Audit->PATH;
+		if(audit != nil)
+			audit->init();
+	}
+	if(kr == nil)
+		kr = load Keyring Keyring->PATH;
+	if(audit != nil && kr != nil) {
+		mb := array of byte content;
+		digest := array[Keyring->SHA256dlen] of byte;
+		kr->sha256(mb, len mb, digest, nil);
+		hex := "";
+		for(i := 0; i < len digest; i++)
+			hex += sys->sprint("%.2ux", int digest[i]);
+		audit->log("veltro", "nsrestrict",
+			sys->sprint("id=%s sha256=%s size=%d", id, hex, len mb));
+	}
 }
 
 # Helper: create directory with parents

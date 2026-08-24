@@ -72,10 +72,16 @@ Settings: module
 	init: fn(ctxt: ref Draw->Context, argv: list of string);
 };
 
+# for running one-shot commands (snapd -1) in-process
+Runnable: module
+{
+	init: fn(ctxt: ref Draw->Context, argv: list of string);
+};
+
 # ── Categories ─────────────────────────────────────────────────
 
-CatTheme, CatLLM, CatTools, CatBudget, CatPaths, CatPrompts, CatProfile, CatMessaging, CatSecurity: con iota;
-NCATS: con 9;
+CatTheme, CatLLM, CatTools, CatBudget, CatPaths, CatPrompts, CatProfile, CatMessaging, CatSecurity, CatAudit, CatSnapshots: con iota;
+NCATS: con 11;
 
 catnames := array[] of {
 	"Theme",
@@ -87,6 +93,8 @@ catnames := array[] of {
 	"Startup Profile",
 	"Messaging",
 	"Security",
+	"Auditing",
+	"Snapshots",
 };
 
 # Short aliases for -c <name>: tab-friendly identifiers a launcher can
@@ -102,6 +110,8 @@ catshortnames := array[] of {
 	"profile",
 	"messaging",
 	"security",
+	"audit",
+	"snapshots",
 };
 
 # ── State ──────────────────────────────────────────────────────
@@ -128,13 +138,15 @@ SFONT: con "/fonts/combined/unicode.sans.14.font";
 theme_names: array of string;
 llm_mode_names := array[] of { "local", "remote" };
 llm_mode_labels := array[] of { "Local", "Remote (9P)" };
-# "cli" is the host-side CLI gateway (claude-gate, tools/claude-gate/):
-# Anthropic models over the host's Claude Code CLI login (subscription
-# billing) instead of an API key. On the wire it's OpenAI-shaped on
-# localhost, so llmsrv dials it with -b openai; the distinct ndb value
-# (backend=cli) keeps the intent visible to this UI and the boot profile.
-llm_backend_names := array[] of { "api", "openai", "cli" };
-llm_backend_labels := array[] of { "Remote API", "Local model", "Claude CLI" };
+# "cli" and "codex" are the host-side CLI gateways (claude-gate,
+# tools/claude-gate/; codex-gate, tools/codex-gate/): Anthropic models over
+# the host's Claude Code CLI login, or OpenAI models over its ChatGPT Codex
+# CLI login (subscription billing) instead of an API key. On the wire both
+# are OpenAI-shaped on localhost, so llmsrv dials them with -b openai; the
+# distinct ndb values keep the intent visible to this UI and the boot
+# profile.
+llm_backend_names := array[] of { "api", "openai", "cli", "codex" };
+llm_backend_labels := array[] of { "Remote API", "Local model", "Claude CLI", "Codex CLI" };
 llm_stack_names  := array[] of { "ollama", "sglang", "custom" };
 llm_stack_labels := array[] of { "Ollama (:11434)", "SGLang (:30000)", "Custom URL" };
 llm_is_remote: int;		# reflects the mode radio
@@ -337,6 +349,8 @@ buildpanel(cat: int)
 	CatProfile =>	panelprofile();
 	CatMessaging =>	panelmessaging();
 	CatSecurity =>	panelsecurity();
+	CatAudit =>	panelaudit();
+	CatSnapshots =>	panelsnapshots();
 	}
 	tk->cmd(top, "update");
 }
@@ -432,10 +446,10 @@ panelllm()
 				i, tk->quote(llm_backend_labels[i]), llm_backend_names[i], c_bg, c_fg, i));
 
 		llm_have_synthfs = synthfs_present();
-		# Claude CLI gateway: no stack radio (the backend radio IS the
+		# CLI gateways: no stack radio (the backend radio IS the
 		# choice), but surface llmctl's live view when available so the
-		# user can see whether claude-gate is actually up.
-		if(curbackend == "cli" && llm_have_synthfs)
+		# user can see whether the gate is actually up.
+		if(iscligateway(curbackend) && llm_have_synthfs)
 			lbl("lstat", readllmstatus_summary());
 		if(curbackend == "openai" && llm_have_synthfs){
 			lbl("lstat", readllmstatus_summary());
@@ -479,11 +493,13 @@ panelllm()
 			tk->cmd(top, "pack .content.modlsf -side top -anchor w -fill x");
 			tk->cmd(top, "bind .content.modlsf.lb <ButtonRelease-1> {send act llmmodel}");
 		}
-		# The CLI gateway authenticates with the host's own claude
-		# login (subscription) — no API key involved.
+		# The CLI gateways authenticate with the host CLI's own login
+		# (subscription) — no API key involved.
 		ks := "API key: not set (add via Keyring app)";
 		if(curbackend == "cli")
 			ks = "API key: not needed (uses host claude login)";
+		else if(curbackend == "codex")
+			ks = "API key: not needed (uses host codex login)";
 		else if(haskey)
 			ks = "API key: configured";
 		lbl("keyl", ks);
@@ -591,6 +607,239 @@ secentry(name, prompt: string)
 	tk->cmd(top, sys->sprint("pack .content.%s -side top -anchor w -fill x -pady 2", name));
 }
 
+
+# ── Auditing panel ─────────────────────────────────────────────
+# The tamper-evident audit log (auditfs(4)) + agent provenance
+# (auditprov(2)). Enable/disable persist the opt-in marker; the
+# services themselves start from the boot profile, so those need a
+# relaunch (same pattern as the LLM panel — mounts made from this
+# process would not be visible to the rest of the system). Checkpoint
+# and Verify act on the LIVE mount and work immediately.
+
+AUDITON: con "/usr/inferno/audit/on";
+
+panelaudit()
+{
+	hdr("audh", "Tamper-evident audit log");
+	lbl("audstat", auditstatus());
+	if(fileexists(AUDITON))
+		btn("auddis", "Disable auditing (relaunch required)", "auditdisable");
+	else
+		btn("auden", "Enable auditing (relaunch required)", "auditenable");
+	if(fileexists("/mnt/audit/ctl")) {
+		btn("audck", "Sign a checkpoint now", "auditck");
+		btn("audvf", "Verify the chain now", "auditverify");
+	}
+	lbl("audsign", "Signing key: run  sh /lib/sh/audit-setup  once in a shell (needs factotum).");
+	lbl("audres", "");
+}
+
+auditstatus(): string
+{
+	s := "";
+	if(fileexists(AUDITON))
+		s = "enabled (marker present)";
+	else
+		s = "disabled";
+	if(fileexists("/mnt/audit/ctl")) {
+		head := readfile1("/mnt/audit/head");
+		(n, toks) := sys->tokenize(head, " \n");
+		if(n >= 2)
+			s += sys->sprint("; running, %s records sealed", hd tl toks);
+		else
+			s += "; running";
+		if(len readfile1("/mnt/audit/pubkey") > 0)
+			s += "; checkpoints signed";
+		else
+			s += "; chain-only (no signer key)";
+	} else
+		s += "; not running this session";
+	return s;
+}
+
+# ── Snapshots panel ────────────────────────────────────────────
+# Daily vac snapshots of the durable /usr into the local venti store
+# (snapd(8)). Enable/disable persist the marker (daemons start at
+# boot); Snapshot Now talks to the store over TCP, so it works live
+# whenever the store is up.
+
+SNAPON: con "/usr/inferno/snapshots/on";
+SNAPLOG: con "/usr/inferno/snapshots/log";
+
+panelsnapshots()
+{
+	hdr("snph", "Snapshots (venti archive of /usr + config overlays)");
+	lbl("snpstat", snapstatus());
+	if(fileexists(SNAPON)) {
+		btn("snpdis", "Disable daily snapshots (relaunch required)", "snapdisable");
+		btn("snpnow", "Snapshot now", "snapnow");
+	} else
+		btn("snpen", "Enable daily snapshots (relaunch required)", "snapenable");
+	hdr("snplh", "Recent snapshots");
+	recent := recentsnapshots();
+	if(recent == "")
+		recent = "(none yet)";
+	lbl("snplist", recent);
+	lbl("snphint", "Mount one read-only:  mount {vacfs -a tcp!127.0.0.1!17034 <score>} /n/snap");
+	lbl("snpres", "");
+}
+
+snapstatus(): string
+{
+	s := "";
+	if(fileexists(SNAPON))
+		s = "enabled";
+	else
+		s = "disabled";
+	st := readfile1("/usr/inferno/snapshots/status");
+	if(st != "")
+		s += "; last: " + strip(st);
+	store := eget2("/env/ventistore");
+	if(store != "") {
+		(ok, d) := sys->stat(store + "/data");
+		if(ok >= 0)
+			s += sys->sprint("; store %bd MB", d.length / big (1024*1024));
+	}
+	return s;
+}
+
+recentsnapshots(): string
+{
+	a := readlines(SNAPLOG);
+	if(a == nil || len a == 0)
+		return "";
+	first := 0;
+	if(len a > 6)
+		first = len a - 6;
+	s := "";
+	for(i := len a - 1; i >= first; i--) {
+		if(s != "")
+			s += "\n";
+		s += a[i];
+	}
+	return s;
+}
+
+doauditenable()
+{
+	mkdirp2("/usr/inferno");
+	mkdirp2("/usr/inferno/audit");
+	if(touchfile(AUDITON))
+		flashstatus("auditing enabled — close InferNode and relaunch");
+	else
+		flashstatus(sys->sprint("cannot create marker: %r"));
+	buildpanel(CatAudit);
+}
+
+doauditdisable()
+{
+	if(sys->remove(AUDITON) < 0)
+		flashstatus(sys->sprint("cannot remove marker: %r"));
+	else
+		flashstatus("auditing disabled — close InferNode and relaunch");
+	buildpanel(CatAudit);
+}
+
+doauditck()
+{
+	fd := sys->open("/mnt/audit/ctl", Sys->OWRITE);
+	if(fd == nil) {
+		setpanellbl("audres", sys->sprint("cannot open audit ctl: %r"));
+		return;
+	}
+	b := array of byte "checkpoint";
+	if(sys->write(fd, b, len b) < 0)
+		setpanellbl("audres", sys->sprint("checkpoint failed: %r"));
+	else
+		setpanellbl("audres", "checkpoint signed");
+}
+
+doauditverify()
+{
+	setpanellbl("audres", "verify: " + strip(readfile1("/mnt/audit/verify")));
+}
+
+dosnapenable()
+{
+	mkdirp2("/usr/inferno");
+	mkdirp2("/usr/inferno/snapshots");
+	if(touchfile(SNAPON))
+		flashstatus("daily snapshots enabled — close InferNode and relaunch");
+	else
+		flashstatus(sys->sprint("cannot create marker: %r"));
+	buildpanel(CatSnapshots);
+}
+
+dosnapdisable()
+{
+	if(sys->remove(SNAPON) < 0)
+		flashstatus(sys->sprint("cannot remove marker: %r"));
+	else
+		flashstatus("daily snapshots disabled — close InferNode and relaunch");
+	buildpanel(CatSnapshots);
+}
+
+dosnapnow()
+{
+	snapd := load Runnable "/dis/snapd.dis";
+	if(snapd == nil) {
+		setpanellbl("snpres", sys->sprint("cannot load snapd: %r"));
+		return;
+	}
+	setpanellbl("snpres", "snapshotting...");
+	tk->cmd(top, "update");
+	{
+		snapd->init(nil, "snapd" :: "-1" :: nil);
+	} exception {
+	* =>
+		setpanellbl("snpres", "snapshot failed — is the store running? " + strip(readfile1("/usr/inferno/snapshots/status")));
+		return;
+	}
+	buildpanel(CatSnapshots);
+	flashstatus("snapshot taken");
+}
+
+# ── shared small helpers for the two panels ────────────────────
+
+fileexists(p: string): int
+{
+	return sys->stat(p).t0 >= 0;
+}
+
+readfile1(p: string): string
+{
+	fd := sys->open(p, Sys->OREAD);
+	if(fd == nil)
+		return "";
+	buf := array[2048] of byte;
+	n := sys->read(fd, buf, len buf);
+	if(n <= 0)
+		return "";
+	return string buf[:n];
+}
+
+eget2(p: string): string
+{
+	return strip(readfile1(p));
+}
+
+touchfile(p: string): int
+{
+	fd := sys->create(p, Sys->OWRITE, 8r644);
+	return fd != nil;
+}
+
+mkdirp2(p: string)
+{
+	sys->create(p, Sys->OREAD, Sys->DMDIR | 8r755);
+}
+
+setpanellbl(name, text: string)
+{
+	tk->cmd(top, sys->sprint(".content.%s configure -text %s", name, tk->quote(text)));
+	tk->cmd(top, "update");
+}
+
 # ── Action dispatch ────────────────────────────────────────────
 
 handleaction(a: string)
@@ -646,6 +895,13 @@ handleaction(a: string)
 		flashstatus("restart required for profile changes");
 	"msgedit" =>	openineditor("/lib/veltro/sources/email.conf");
 	"msgregister" =>	doregisteremail();
+	"auditenable" =>	doauditenable();
+	"auditdisable" =>	doauditdisable();
+	"auditck" =>	doauditck();
+	"auditverify" =>	doauditverify();
+	"snapenable" =>	dosnapenable();
+	"snapdisable" =>	dosnapdisable();
+	"snapnow" =>	dosnapnow();
 	"secenroll" =>	doenroll2fa();
 	"secaddkey" =>	doaddkey2fa();
 	"secdisable" =>	dodisable2fa();
@@ -1002,31 +1258,34 @@ applyllm()
 
 	# Local mode: determine selected backend
 	backend := tkv("llmbackend");
-	if(backend != "api" && backend != "openai" && backend != "cli")
+	if(backend != "api" && backend != "openai" && !iscligateway(backend))
 		backend = "api";
 
 	url := strip(eget(".content.url"));
 	model := strip(eget(".content.model"));
 
-	# Claude CLI gateway: hand off to llmctl ("set claude" starts
-	# claude-gate, stops the GPU stacks, waits for health, writes
-	# url= and backend=cli into ndb) when the /llm synthfs is mounted.
-	# Without the synthfs (no llmctl9p on this host) persist config
-	# only — the user starts the gate by hand (tools/claude-gate/).
-	if(backend == "cli") {
+	# CLI gateways: hand off to llmctl ("set claude" / "set codex" starts
+	# the gate, stops the GPU stacks, waits for health, writes url= and
+	# the backend into ndb) when the /llm synthfs is mounted. Without the
+	# synthfs (no llmctl9p on this host) persist config only — the user
+	# starts the gate by hand (tools/claude-gate, tools/codex-gate).
+	if(iscligateway(backend)) {
+		(gatename, gatedir, gateverb) := gateinfo(backend);
 		if(llm_have_synthfs) {
-			flashstatus("starting claude-gate…");
-			err := writellmctl("set claude");
+			flashstatus("starting " + gatename + "…");
+			err := writellmctl(gateverb);
 			if(err != "") {
 				flashstatus("llmctl error: " + err);
 				return;
 			}
 			writellmconfig("local", backend, url, model, "");
-			flashstatus("Claude CLI gateway active — restart llmsrv for the new URL to be dialed");
+			flashstatus(gatelabel(backend) +
+				" gateway active — restart llmsrv for the new URL to be dialed");
 			return;
 		}
 		writellmconfig("local", backend, url, model, "");
-		flashstatus("saved — start claude-gate on the host (tools/claude-gate), then relaunch");
+		flashstatus("saved — start " + gatename + " on the host (" + gatedir +
+			"), then relaunch");
 		return;
 	}
 
@@ -1071,7 +1330,29 @@ isdefaulturl(u: string): int
 		u == "http://localhost:11434/v1" ||
 		u == "http://127.0.0.1:11434/v1" ||
 		u == "http://127.0.0.1:30000/v1" ||
-		u == "http://127.0.0.1:11435/v1";
+		u == "http://127.0.0.1:11435/v1" ||
+		u == "http://127.0.0.1:11436/v1";
+}
+
+# The backends that are a host-side CLI gateway rather than a model server.
+iscligateway(backend: string): int
+{
+	return backend == "cli" || backend == "codex";
+}
+
+# (daemon name, checkout dir, llmctl verb) for a CLI-gateway backend.
+gateinfo(backend: string): (string, string, string)
+{
+	if(backend == "codex")
+		return ("codex-gate", "tools/codex-gate", "set codex");
+	return ("claude-gate", "tools/claude-gate", "set claude");
+}
+
+gatelabel(backend: string): string
+{
+	if(backend == "codex")
+		return "Codex CLI";
+	return "Claude CLI";
 }
 
 defaulturlfor(backend: string): string
@@ -1080,6 +1361,7 @@ defaulturlfor(backend: string): string
 	"openai" =>	return "http://localhost:11434/v1";
 	"api" =>	return "https://api.anthropic.com";
 	"cli" =>	return "http://127.0.0.1:11435/v1";
+	"codex" =>	return "http://127.0.0.1:11436/v1";
 	}
 	return "";
 }
@@ -1126,6 +1408,8 @@ readllmconfig(): (string, string, string, string, string, int)
 			url = "https://api.anthropic.com";
 		else if(backend == "cli")
 			url = "http://127.0.0.1:11435/v1";
+		else if(backend == "codex")
+			url = "http://127.0.0.1:11436/v1";
 	}
 
 	# Check for API key in factotum

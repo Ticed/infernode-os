@@ -110,7 +110,7 @@ No SDKs. No libraries. No protocol buffers. Just files.
 
 ### Namespaces are Private
 
-Every process has its own view of the filesystem. What you see at `/n/web` might not exist for another process. This is the foundation of security: you can't access what isn't in your namespace.
+Every process has its own view of the filesystem. What you see at `/mnt/web` might not exist for another process. This is the foundation of security: you can't access what isn't in your namespace.
 
 ### Text is Universal
 
@@ -732,17 +732,20 @@ echo 'network Base' > /n/wallet/ctl
 
 Veltro agents can use the `wallet` and `payfetch` tools:
 
-- **`wallet`** — List accounts, check balances, sign transactions
+- **`wallet`** — List accounts, check balances, queue payment proposals
 - **`payfetch`** — HTTP client that automatically handles x402 payment flows
 
-When a server returns HTTP 402 Payment Required, `payfetch` parses the payment requirements, checks the wallet budget, signs the authorization, and retries — all transparently.
+When a server returns HTTP 402 Payment Required, `payfetch` requests a payment authorization from the wallet and retries with it. By default the request waits in the wallet's approval queue — you approve or deny it in the wallet GUI (right-click → **Pending Payments**).
 
-Budget enforcement is server-side in wallet9p. Agents cannot bypass spending limits.
+Budget and approval enforcement is server-side in wallet9p. Agents cannot bypass spending limits or the approval queue.
+ERC-20 accounts use a separate ETH-denominated gas budget, and all external
+payment requests reserve budget before submission so an ambiguous network
+error cannot be retried around the session limit.
 
 ### Key Security
 
-- Private keys live in factotum, never in wallet9p's memory
-- Agents can queue payment proposals, but raw hash signing is not exposed through the agent wallet grant
+- Private keys live in factotum; wallet9p fetches them per operation and zeroes them immediately
+- Agents never see the raw signing interface. They submit structured payment requests (`pay`, `authorize`); wallet9p constructs what it signs, so the key only ever signs messages the wallet itself built and policy-checked
 - Wallet access is namespace-gated: agents need explicit `"/n/wallet"` in their capabilities
 - `/mnt/factotum/ctl` is blocked by nsconstruct — agents never see raw keys
 
@@ -754,7 +757,7 @@ See [docs/WALLET-AND-PAYMENTS.md](WALLET-AND-PAYMENTS.md) for the full architect
 
 ### The Namespace is the Security Boundary
 
-InferNode's security model is simple: **a process can only access what's in its namespace**. The Veltro harness uses this primitive to sandbox each running agent — see the README "Terminology" section for the harness/agent distinction.
+InferNode's security model is simple: **a process can only access what's in its namespace**. The Veltro harness uses this primitive to sandbox each running agent — see the Terminology section of `appl/veltro/SECURITY.md` for the harness/agent distinction.
 
 A running agent in a restricted namespace:
 ```

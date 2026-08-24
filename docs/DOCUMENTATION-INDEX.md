@@ -2,6 +2,16 @@
 
 **Purpose:** Navigate InferNode documentation
 
+## Start Here
+
+| Document | Description |
+|----------|-------------|
+| [DESIGN-PRINCIPLES.md](DESIGN-PRINCIPLES.md) | **The design philosophy** — namespace-as-capability, file interfaces, text protocols, mechanism over policy; read before designing anything |
+| [LIMBO-FOR-GO-PROGRAMMERS.md](LIMBO-FOR-GO-PROGRAMMERS.md) | Limbo mapped from Go, plus the gotchas that bite |
+| [INFERNO-SHELL.md](INFERNO-SHELL.md) | The rc-style shell dialect — POSIX→Inferno translation table, runtime gotchas, script conventions |
+| [NAMESPACE-LAYOUT.md](NAMESPACE-LAYOUT.md) | `/mnt` vs `/n` placement convention and why it is security work |
+| [compliance/](compliance/README.md) | Standards evidence register (CNSA 2.0, zero trust, SP 800-92 audit, SLSA, FIPS 140-3 readiness, AI governance) |
+
 ## For Users
 
 | Document | Description |
@@ -19,11 +29,12 @@
 | Document | Description |
 |----------|-------------|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System architecture, layer diagram, and component overview |
+| [decisions/0001-rooted-agent-capabilities.md](decisions/0001-rooted-agent-capabilities.md) | Proposed decision: rooted 9P filesystem capabilities and atomic agent delegation |
 | [LUCIFER-EVALUATION.md](LUCIFER-EVALUATION.md) | Lucifer GUI production readiness evaluation (P0/P1/P2 issues) |
 | [evaluations/fractal-app-evaluation.md](evaluations/fractal-app-evaluation.md) | Fractal app production readiness evaluation |
 | [architecture-review-veltro-unification.md](architecture-review-veltro-unification.md) | Veltro architecture review |
 | [matrix-architecture.md](matrix-architecture.md) | Matrix compositional module runtime — modules, compositions, the library, 9P control namespace, and the Lucifer GUI control surface |
-| [9p-data-conventions.md](9p-data-conventions.md) | 9P data conventions Matrix modules read from and write to |
+| [9p-data-conventions.md](9p-data-conventions.md) | Data conventions for 9P file servers — text records, hierarchy as schema, ctl files, `/mnt` placement, the no-JSON argument |
 | [RECOMMENDED-ADDITIONS.md](RECOMMENDED-ADDITIONS.md) | Recommended feature additions |
 
 ## For Developers
@@ -31,6 +42,7 @@
 | Document | Description |
 |----------|-------------|
 | [CLAUDE.md](../CLAUDE.md) | Development guide for Claude Code (build, test, project structure) |
+| [TUTORIAL-9P-SERVICE.md](TUTORIAL-9P-SERVICE.md) | **Worked tutorial** — design, build, test, and document a 9P service (`countfs`); every artifact ships in-tree |
 | [TESTING.md](TESTING.md) | Testing guide (unit tests, integration tests, CI) |
 | [PERFORMANCE-SPECS.md](PERFORMANCE-SPECS.md) | Performance specifications and benchmarks |
 | [BENCHMARKS.md](BENCHMARKS.md) | Benchmark results (v1, v2, v3 suites) |
@@ -56,6 +68,7 @@
 |----------|-------------|
 | [SECURITY.md](../SECURITY.md) | Security vulnerability reporting policy |
 | [SECURITY.md (Veltro)](../appl/veltro/SECURITY.md) | Veltro agent namespace security model (v3) |
+| [VELTRO-ESCAPE-ROOM.md](VELTRO-ESCAPE-ROOM.md) | Repeatable live adversarial-model protocol for testing Veltro namespace containment |
 | [NAMESPACE_SECURITY_REVIEW.md](NAMESPACE_SECURITY_REVIEW.md) | Namespace security deep analysis |
 | [VELTRO_NAMESPACE_SECURITY.md](VELTRO_NAMESPACE_SECURITY.md) | Veltro namespace security details |
 
@@ -109,10 +122,6 @@ Detailed JIT documentation is in `docs/arm64-jit/` (27 files covering implementa
 ## Formal Verification
 
 See [formal-verification/README.md](../formal-verification/README.md) for TLA+, SPIN, and CBMC verification of namespace isolation (3 tools, 11 properties, 3.17B+ states explored).
-
-## GoDis Compiler
-
-See [tools/godis/README.md](../tools/godis/README.md) for the Go-to-Dis compiler architecture, translation strategy, and 190+ passing tests.
 
 ## The Key 64-bit Fix
 

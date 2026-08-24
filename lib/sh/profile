@@ -44,18 +44,27 @@ if {~ $emuhost MacOSX Linux Nt}{
 	home=$ghome
 
 	# ── Writable overlay from ~/.infernode ──────────────────
-	# User state (secstore, config, tmp) always goes to ~/.infernode,
-	# regardless of whether this is a bundle, dev checkout, or headless.
-	# The emu root stays clean — no user data mixed with system files.
+	# User state always goes to ~/.infernode, regardless of whether this
+	# is a bundle, dev checkout, or headless. The emu root stays clean —
+	# no user data mixed with system files.
+	#
+	# ALL of /usr is durable (docs/PERSISTENCE.md): the whole tree is
+	# union-bound from ~/.infernode/usr, so every user home — including
+	# accounts made later with newuser(8) — and everything services put
+	# under /usr (secstore, the audit chain and its venti store,
+	# snapshots) survives app updates and reinstalls. This is the
+	# historical Inferno/Plan 9 contract re-created for hosted installs:
+	# updates replace the system tree; they never touch /usr.
 	infhome=$ghome^/.infernode
 
 	# Ensure every overlay SOURCE dir exists BEFORE the binds below. This runs
 	# unconditionally (not gated on first-run): `bind -bc` of a missing source
 	# silently falls back to the emu-root dir, so a deleted (or never-created)
-	# ~/.infernode/usr/inferno/secstore would route secstore into the emu root /
-	# bundle instead of the user's home — and 2FA enrollment would not persist.
+	# ~/.infernode/usr would route user state into the emu root / bundle
+	# instead of the user's home — and nothing would persist.
 	mkdir -p $infhome/usr/inferno/secstore
 	mkdir -p $infhome/usr/inferno/tmp
+	mkdir -p $infhome/usr/inferno/lib
 	mkdir -p $infhome/lib/ndb
 	mkdir -p $infhome/lib/lucifer/theme
 	mkdir -p $infhome/lib/veltro
@@ -63,19 +72,48 @@ if {~ $emuhost MacOSX Linux Nt}{
 	mkdir -p $infhome/lib/veltro-keys
 	mkdir -p $infhome/lib/keyring
 	mkdir -p $infhome/tmp
+	# The overlay contains secstore material, signer keys, API keys, audit
+	# payloads, and snapshot bearer scores. Tighten existing installations
+	# as well as fresh directories; mkdir does not repair old modes.
+	chmod 700 $infhome $infhome/usr/inferno/secstore $infhome/lib/keyring $infhome/lib/veltro-keys >[2] /dev/null
 
 	# First-run only: seed writable defaults from the emu root (don't clobber
 	# a user's existing config on later boots).
 	if {! ftest -f $infhome/lib/ndb/llm} {
-		cp /lib/ndb/llm $infhome/lib/ndb/llm >[2] /dev/null
+		# /lib/ndb/llm is git-ignored (a developer's endpoints stay
+		# local), so a source tree may not have one — fall back to the
+		# tracked template. Release artifacts ship their own defaults.
+		if {ftest -f /lib/ndb/llm} {
+			cp /lib/ndb/llm $infhome/lib/ndb/llm >[2] /dev/null
+		} {
+			cp /lib/ndb/llm.example $infhome/lib/ndb/llm >[2] /dev/null
+		}
 		cp /lib/lucifer/theme/current $infhome/lib/lucifer/theme/current >[2] /dev/null
 		cp /lib/veltro/meta.txt $infhome/lib/veltro/meta.txt >[2] /dev/null
 		cp /lib/veltro/agents/task.txt $infhome/lib/veltro-agents/task.txt >[2] /dev/null
 	}
 
-	# Writable overlay mounts
-	bind -bc $infhome/usr/inferno/secstore /usr/inferno/secstore
-	bind -bc $infhome/usr/inferno/tmp      /usr/inferno/tmp
+	# First-run only: seed the default user's home from the shipped
+	# /usr/inferno skeleton (the historical `cp -r /usr/inferno
+	# /usr/<name>` — doc/install.ms "Adding new users" — done once for
+	# the durable side). After this, /usr/inferno resolves entirely to
+	# the ~/.infernode copy; later skeleton changes in the system tree
+	# do not propagate to existing homes — the historical norm.
+	if {! ftest -f $infhome/usr/inferno/namespace} {
+		cp /usr/inferno/namespace $infhome/usr/inferno/namespace >[2] /dev/null
+		cp /usr/inferno/lib/plumbing $infhome/usr/inferno/lib/plumbing >[2] /dev/null
+		cp /usr/inferno/lib/profile $infhome/usr/inferno/lib/profile >[2] /dev/null
+		cp /usr/inferno/lib/functions $infhome/usr/inferno/lib/functions >[2] /dev/null
+		mkdir -p $infhome/usr/inferno/charon
+		cp /usr/inferno/charon/config $infhome/usr/inferno/charon/config >[2] /dev/null
+		mkdir -p $infhome/usr/inferno/keyring
+	}
+
+	# Writable overlay mounts. /usr is bound WHOLE: names present on the
+	# durable side win, creates land durable, and anything only in the
+	# system tree (e.g. the pristine skeleton, the testnode fixture)
+	# still shows through the union.
+	bind -bc $infhome/usr /usr
 	bind -bc $infhome/lib/ndb              /lib/ndb
 	bind -bc $infhome/lib/lucifer/theme    /lib/lucifer/theme
 	bind -bc $infhome/lib/veltro           /lib/veltro
@@ -84,6 +122,25 @@ if {~ $emuhost MacOSX Linux Nt}{
 	mkdir -p /lib/keyring >[2] /dev/null
 	bind -bc $infhome/lib/keyring          /lib/keyring >[2] /dev/null
 	bind -bc $infhome/tmp /tmp >[2] /dev/null
+
+	# ── Snapshots (venti archive) — OFF by default ──────────
+	# Daily vac snapshot of the whole durable /usr into a local venti
+	# (the dump filesystem's role; docs/PERSISTENCE.md). Enable with
+	# Settings → Snapshots, or: mkdir -p /usr/inferno/snapshots;
+	# touch /usr/inferno/snapshots/on. Durability of /usr does NOT
+	# depend on this — snapshots add history, not persistence.
+	# The store lives OUTSIDE /usr (a snapshot must not contain its
+	# own store): ~/.infernode/venti, on the canonical venti port.
+	# Size cap and snapd's -m must stay in sync.
+	if {ftest -f /usr/inferno/snapshots/on} {
+		mkdir -p $infhome/venti
+		touch $infhome/venti/data $infhome/venti/index >[2] /dev/null
+		chmod 700 $infhome/venti >[2] /dev/null
+		chmod 600 $infhome/venti/data $infhome/venti/index >[2] /dev/null
+		ventistore=$infhome/venti
+		ventisrv -d $ventistore/data -i $ventistore/index -w 'tcp!127.0.0.1!17034' 8589934592 8192 >[2] /dev/null &
+		snapd >[2] /dev/null &
+	}
 }{
 	# Non-desktop platforms (native hardware, embedded)
 	home=/usr/^$user
@@ -102,6 +159,7 @@ if {~ $emuhost MacOSX Linux Nt}{
 # operator step; the general build leaves it unset. See INFR-357 and
 # doc/compliance/SP800-92-audit-log.md. Non-fatal: never blocks boot.
 mkdir -p /usr/inferno/audit >[2] /dev/null
+chmod 700 /usr/inferno/audit >[2] /dev/null
 if {~ $emuhost MacOSX Linux}{
 	auditmode=`{os sh -c 'if [ -n "$AUDITMODE" ]; then echo on; fi' >[2] /dev/null}
 	if {~ $auditmode on} { touch /usr/inferno/audit/on >[2] /dev/null }
@@ -109,6 +167,16 @@ if {~ $emuhost MacOSX Linux}{
 if {ftest -f /usr/inferno/audit/on} {
 	mkdir -p /mnt/audit >[2] /dev/null
 	mount {auditfs} /mnt/audit >[2] /dev/null
+	# Agent-provenance content store (INFR-355): a local write-once
+	# venti holding audit-record payloads (auditprov(2), ventisrv(8)).
+	# Persistent under the audit dir; touch never truncates an existing
+	# store. Localhost-only; audit emitters find it at the auditprov
+	# default (override with the auditventi env var). Non-fatal.
+	mkdir -p /usr/inferno/audit/venti >[2] /dev/null
+	touch /usr/inferno/audit/venti/data /usr/inferno/audit/venti/index >[2] /dev/null
+	chmod 700 /usr/inferno/audit/venti >[2] /dev/null
+	chmod 600 /usr/inferno/audit/venti/data /usr/inferno/audit/venti/index >[2] /dev/null
+	ventisrv -d /usr/inferno/audit/venti/data -i /usr/inferno/audit/venti/index -w 'tcp!127.0.0.1!17040' 1073741824 8192 >[2] /dev/null &
 }
 
 # ── Secstored (persistent encrypted key storage) ──────────
@@ -208,10 +276,15 @@ if {~ $emuhost MacOSX Linux Nt}{
 		llmbackend=`{sed -n 's/^backend=//p' /lib/ndb/llm >[2] /dev/null}
 		llmurl=`{sed -n 's/^url=//p' /lib/ndb/llm >[2] /dev/null}
 		llmmodel=`{sed -n 's/^model=//p' /lib/ndb/llm >[2] /dev/null}
-		# backend=cli is the host-side CLI gateway (claude-gate) —
-		# OpenAI-shaped on localhost, so llmsrv dials it the same way.
-		if {~ $llmbackend openai cli} {
-			llmsrv -b openai -u $llmurl -M $llmmodel >[2] /dev/null &
+		# backend=cli/codex are the host-side CLI gateways (claude-gate,
+		# codex-gate) — OpenAI-shaped on localhost, so llmsrv dials them
+		# the same way.
+		if {~ $llmbackend openai cli codex} {
+			if {! ~ $llmmodel ''} {
+				llmsrv -b openai -u $llmurl -M $llmmodel >[2] /dev/null &
+			}{
+				llmsrv -b openai -u $llmurl >[2] /dev/null &
+			}
 		}{
 			if {! ~ $llmmodel ''} {
 				llmsrv -M $llmmodel >[2] /dev/null &

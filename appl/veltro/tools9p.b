@@ -56,6 +56,7 @@ include "string.m";
 include "tool.m";
 
 include "nsconstruct.m";
+	nsc: NsConstruct;
 
 Tools9p: module {
 	init: fn(nil: ref Draw->Context, nil: list of string);
@@ -190,20 +191,22 @@ TOOL_PATHS := array[] of {
 
 usage()
 {
-	sys->fprint(stderr, "Usage: tools9p [-DvN] [-a activityid] [-r role] [-m mountpoint] [-p path] ... tool [tool ...]\n");
+	sys->fprint(stderr, "Usage: tools9p [-DvN] [-a activityid] [-r role] [-m mountpoint] [-b tool,tool,...] [-p path[:ro|:rw]] ... tool [tool ...]\n");
 	sys->fprint(stderr, "  -D            Enable 9P debug tracing\n");
 	sys->fprint(stderr, "  -v            Verbose logging (forwarded to child lucibridge)\n");
 	sys->fprint(stderr, "  -r role       Agent role for /tool/meta: toplevel (default) or child\n");
 	sys->fprint(stderr, "  -N            Agent namespace has NODEVS applied (/tool/meta/nodevs=set)\n");
 	sys->fprint(stderr, "  -m mountpoint Mount point (default: /tool)\n");
-	sys->fprint(stderr, "  -p path       Expose extra path to agent namespace (repeatable)\n");
-	sys->fprint(stderr, "                e.g. -p /dis/wm exposes /dis/wm/ for GUI app discovery\n");
+	sys->fprint(stderr, "  -b tools      Delegation budget: the maximum tool set a child/subagent\n");
+	sys->fprint(stderr, "                may ever be granted (comma-separated; children narrow, never expand)\n");
+	sys->fprint(stderr, "  -p path       Expose extra path to agent namespace (repeatable; :ro/:rw\n");
+	sys->fprint(stderr, "                makes it a typed grant). e.g. -p /dis/wm for GUI app discovery\n");
 	sys->fprint(stderr, "\n");
 	sys->fprint(stderr, "Available tools:\n");
 	sys->fprint(stderr, "  Core:    read, list, find, search, grep, write, edit\n");
 	sys->fprint(stderr, "  Execute: exec, launch, spawn\n");
 	sys->fprint(stderr, "  UI:      xenith, ask, present, gap\n");
-	sys->fprint(stderr, "  Utils:   diff, json, http, git, memory, todo, websearch\n");
+	sys->fprint(stderr, "  Utils:   diff, json, webfetch, git, memory, todo, websearch\n");
 	sys->fprint(stderr, "  Vision:  vision, gpu\n");
 	raise "fail:usage";
 }
@@ -845,11 +848,19 @@ privilegedcontrolpath(path: string): int
 	return 0;
 }
 
+# Delegate to nsconstruct's single definition. A local copy of this
+# predicate drifted once already: nsconstruct learned that per-account
+# "sign" is privileged while this copy still allowed it, which would
+# have let an agent bind the raw signing oracle as a capability.
 walletaccountcontrolpath(path: string): int
 {
-	if(!prefix(path, "/n/wallet/"))
-		return 0;
-	return componentcount(path) >= 4 && pathhascomponent(path, "ctl");
+	if(nsc == nil) {
+		nsc = load NsConstruct NsConstruct->PATH;
+		if(nsc == nil)
+			return 1;	# fail closed: cannot verify, so deny
+		nsc->init();
+	}
+	return nsc->walletcontrolpath(path);
 }
 
 ftreecontrolpath(path: string): int
@@ -922,6 +933,7 @@ calendarcontrolpath(path: string): int
 fixedservicecontrolpath(path: string): int
 {
 	return path == "/mnt/matrix" || prefix(path, "/mnt/matrix/") ||
+		path == "/mnt/git" || prefix(path, "/mnt/git/") ||
 		path == "/n/git" || prefix(path, "/n/git/") ||
 		path == "/mnt/gpu" || prefix(path, "/mnt/gpu/") ||
 		path == "/mnt/web" || prefix(path, "/mnt/web/") ||
@@ -1158,10 +1170,7 @@ asyncexec(srv: ref Styxserver, tag: int, count: int, ti: ref ToolInfo, data: str
 	if(nserr != nil) {
 		ti.result = array of byte ("error: namespace restriction failed: " + nserr);
 		srv.reply(ref Rmsg.Error(tag, "namespace restriction failed"));
-		alt {
-		cleanupchan <-= mypid => ;
-		* => ;
-		}
+		cleanupchan <-= mypid;
 		return;
 	}
 	result := exectool(ti.name, data);
@@ -1171,12 +1180,15 @@ asyncexec(srv: ref Styxserver, tag: int, count: int, ti: ref ToolInfo, data: str
 	rbytes := array of byte result;
 	ti.result = rbytes;
 	srv.reply(ref Rmsg.Write(tag, count));
-	# Signal cleanup goroutine to remove this invocation's shadow dirs.
-	# Non-blocking: if buffer is full, drop (dirs cleaned at next startup).
-	alt {
-		cleanupchan <-= mypid => ;
-		* => ;
-	}
+	# Hand this invocation's shadow dirs to the cleanup goroutine.
+	#
+	# This send used to be non-blocking, dropping the pid whenever the
+	# 32-slot buffer was full — i.e. exactly under the concurrent tool
+	# load that creates shadows fastest.  A dropped pid is a permanent
+	# leak: nothing else knows those directories exist, and the startup
+	# sweep only runs on the next process.  The client has already been
+	# replied to above, so blocking here delays only this proc's exit.
+	cleanupchan <-= mypid;
 }
 
 rf(f: string): string
@@ -1191,22 +1203,48 @@ rf(f: string): string
 	return string b[0:n];
 }
 
-# Remove one shadow dir and its one-level-deep placeholder entries.
-# From the parent namespace (no FORKNS), the shadow dir's children are empty
-# placeholder dirs/files — the bind mounts over them exist only in child
-# goroutine namespaces and are invisible here.
+# Remove a shadow directory and everything beneath it.
+#
+# From the parent namespace (no FORKNS) a shadow dir's own entries are just
+# empty placeholder dirs/files — the bind mounts over them live in child
+# goroutine namespaces and are invisible here.  But the tree is not flat.
+#
+# Shadow dirs nest.  restrictns() restricts /tmp last, so every shadow a
+# *child* namespace builds lands inside its parent's shadow:
+#   shadow/<a>/.veltro-ns/shadow/<b>/.veltro-ns/shadow/<c>...
+# The previous one-level version could not remove those: sys->remove()
+# fails on a non-empty directory, so the nested child survived, the
+# remove of its parent then failed too, and the whole tree stayed on
+# disk for ever.  Both callers (removepidshadows per invocation and
+# cleanshadows at startup) funnel through here, so nothing ever reaped
+# a nested shadow — they accumulated across sessions without bound.
+#
+# Collect each directory's entries before deleting any of them: removing
+# during the dirread loop shifts the directory offset and silently skips
+# siblings.
 removeshadowdir(dir: string)
 {
+	entries: list of (string, int);
 	fd := sys->open(dir, Sys->OREAD);
 	if(fd != nil) {
 		for(;;) {
-			(n, entries) := sys->dirread(fd);
+			(n, d) := sys->dirread(fd);
 			if(n <= 0)
 				break;
 			for(i := 0; i < n; i++)
-				sys->remove(dir + "/" + entries[i].name);
+				entries = (d[i].name, d[i].mode & Sys->DMDIR) :: entries;
 		}
 		fd = nil;
+	}
+	for(; entries != nil; entries = tl entries) {
+		(name, isdir) := hd entries;
+		if(name == "." || name == "..")
+			continue;
+		child := dir + "/" + name;
+		if(isdir)
+			removeshadowdir(child);
+		else
+			sys->remove(child);
 	}
 	sys->remove(dir);
 }

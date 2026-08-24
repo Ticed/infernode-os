@@ -1,4 +1,4 @@
-# Infernode / Veltro — Operational Overview
+# InferNode / Veltro — Operational Overview
 
 ## The Platform
 
@@ -16,7 +16,7 @@ Inferno OS running as a native process on macOS ARM64, with a working JIT compil
 
 **lucibridge** is the GUI-side harness bridge. It runs in the background, connects Lucifer's conversation UI to the LLM, re-reads tool and path state at the start of each agent turn, and handles slash commands (`/bind`, `/unbind`, `/tools +/-name`) for interactive namespace management.
 
-(See the README "Terminology" section for the harness/agent distinction.)
+(See the Terminology section of `appl/veltro/SECURITY.md` for the harness/agent distinction.)
 
 ---
 
@@ -44,7 +44,7 @@ When an agent session starts, `nsconstruct` restricts the namespace:
 - `/dis` reduced to `lib/`, `veltro/` (+ `sh.dis` if exec is active)
 - `/dis/veltro/tools/` reduced to only the registered tool `.dis` files
 - `/dev` reduced to `cons`, `null`, `time`
-- `/n` reduced to capability-gated foreign imports (`/n/speech` only if explicitly granted via paths; `/n/git` only for the fixed `git` tool)
+- `/n` reduced to capability-gated foreign imports (`/n/speech` only if explicitly granted via paths); `/mnt/git` is derived only for the fixed `git` tool (migrated from `/n/git`, INFR-401)
 - `/tmp` writable only at `/tmp/veltro/scratch/`
 
 The agent cannot see files it wasn't granted. Subagents can only narrow further.
