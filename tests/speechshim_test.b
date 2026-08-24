@@ -904,6 +904,65 @@ testSpokenCancelDuringPlayback(t: ref T)
 	writefile(MNT + "/ctl", "audiodev /dev/audio");
 }
 
+# INF-56. kokorobin/whisperstreambin/wakebin name the host command a helper
+# runs — the tests above configure them as whole `sh -c` command lines, which
+# is what they are for. So a value cannot be sanitised into safety: writing one
+# is running a host command. They are operator configuration instead, closed by
+# `seal on` once boot has configured them, after which an agent holding the
+# speech grant cannot point a helper at a command of its own.
+#
+# The effect check reads /listen rather than looking for a file the injected
+# command created: the helper runs on the host, so a marker would land in the
+# host /tmp while the test sees Inferno's bound /tmp.
+#
+# Runs last: the seal is one-way, so any test needing a helper key must
+# already have run.
+testSealedKeysRefused(t: ref T)
+{
+	writefile(MNT + "/ctl", "micmode helper");
+	writefile(MNT + "/ctl", "mic on");
+	writefile(MNT + "/ctl", "listen on");
+	t.assert(writefile(MNT + "/ctl",
+		"whisperstreambin /bin/echo final sealed baseline") > 0,
+		"helper configured before the seal");
+	t.assert(hassubstr(readfile(MNT + "/ctl"), "seal off"), "starts unsealed");
+
+	t.assert(writefile(MNT + "/ctl", "seal on") > 0, "seal accepted");
+	t.assert(hassubstr(readfile(MNT + "/ctl"), "seal on"), "seal is observable");
+
+	closed := array[] of {
+		"whisperstreambin /usr/bin/true; echo final INF56INJECTED",
+		"kokorobin /bin/sh -c \"echo INF56INJECTED\"",
+		"wakebin /bin/echo INF56INJECTED",
+		"whispermodel /tmp/m.bin`echo INF56INJECTED`",
+		"wakeword hey \"; echo INF56INJECTED; \"",
+		"wakethreshold 0.5; echo INF56INJECTED",
+	};
+	for(i := 0; i < len closed; i++)
+		t.assert(writefile(MNT + "/ctl", closed[i]) < 0,
+			"refused after seal: " + closed[i]);
+
+	ctl := readfile(MNT + "/ctl");
+	t.assert(hassubstr(ctl, "whisperstreambin /bin/echo final sealed baseline\n"),
+		"a refused write leaves the helper command unchanged");
+	t.assert(!hassubstr(ctl, "INF56INJECTED"),
+		"no part of a refused value reaches the config");
+
+	record := readfile(MNT + "/listen");
+	t.log("listen returned: " + record);
+	t.assert(!hassubstr(record, "INF56INJECTED"),
+		"a command named after the seal must not run on the host");
+
+	# One-way, and the inert knobs the tools need stay writable.
+	t.assert(writefile(MNT + "/ctl", "seal off") < 0, "the seal cannot be lifted");
+	t.assert(writefile(MNT + "/ctl", "voice am_adam") > 0, "voice still writable");
+	t.assert(writefile(MNT + "/ctl", "mic off") > 0, "mic still writable");
+	t.assert(writefile(MNT + "/ctl", "mic on") > 0, "mic still writable");
+	t.assert(writefile(MNT + "/ctl", "duplex full") > 0, "duplex still writable");
+	t.assert(writefile(MNT + "/ctl", "voice am_adam; echo INF56INJECTED") < 0,
+		"voice is still constrained to a bare name");
+}
+
 teardown()
 {
 	sys->unmount(nil, MNT);
@@ -942,6 +1001,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("SayWaitsForDrain", testSayWaitsForDrain);
 	run("SpokenCancelDuringPlayback", testSpokenCancelDuringPlayback);
 	run("HelperErrorNamesCause", testHelperErrorNamesCause);
+	run("SealedKeysRefused", testSealedKeysRefused);
 
 	teardown();
 	if(testing->summary(passed, failed, skipped) > 0)

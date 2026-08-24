@@ -1013,8 +1013,14 @@ audio device entirely.
 
 ### 10.5 Switching to `engine api` on macOS
 
+`engine` is sealed once boot has configured speech (§10.8), so this is boot
+configuration, not a runtime switch: put these lines in the installer's
+`speech.ctl.sh`, which `lib/lucifer/boot.sh` replays before sealing. The same
+sequence works as-is against a stack `speechtest` bootstrapped itself, which is
+never sealed.
+
 ```sh
-# inside emu, with secstore unlocked or a key in env
+# in speech.ctl.sh, with secstore unlocked or a key in env
 echo 'engine api' > /n/speech/ctl
 echo 'apiurl https://api.openai.com/v1' > /n/speech/ctl
 echo 'apikey '$ANTHROPIC_API_KEY > /n/speech/ctl   # or factotum-derived
@@ -1042,6 +1048,9 @@ The auto-detection in `initplatform` only fires on Linux. On macOS the
 default stays `cmd`; if you `brew install piper` and download a voice
 model, you can flip manually:
 
+Like §10.5 this is boot configuration, not a runtime switch — `engine`,
+`piperbin`, `pipermodel` and `whispermodel` are all sealed (§10.8).
+
 ```sh
 echo 'engine local' > /n/speech/ctl
 echo 'piperbin /opt/homebrew/bin/piper' > /n/speech/ctl
@@ -1066,6 +1075,35 @@ switch on Intel macs where the cmd path is broken (§10.3).
 | `voice samantha` becomes Alloy on api engine            | Hard-coded fallback at `speech9p.b:501`.                                               | Set an explicit OpenAI-known voice (`alloy`/`echo`/`fable`/`nova`/`onyx`/`shimmer`). |
 | `cat /n/speech/voices` lists hundreds of voices         | `say -v ?` enumerates every installed voice, including the multi-language ones.        | Working as intended; pipe through `grep` to filter. |
 | Lucifer's "Speech" status zone goes idle while audio still playing | `speaktext()` flips to `idle` when its `write` returns, not when audio drains. | Cosmetic — see §9.8. |
+
+### 10.8 Sealed configuration keys
+
+Some ctl keys choose *what code runs*: the engine, the host helper commands
+(`kokorobin`, `whisperstreambin`, `wakebin`, `whispermodel`), the `.dis` module,
+and the provider tree that `say`/`listen` are proxied from. The helper keys hold
+whole command lines — the shim runs them through `sh -c` — so writing one is
+equivalent to running a host command.
+
+They are therefore operator configuration, not runtime knobs.
+`lib/lucifer/boot.sh` applies them, then writes:
+
+```sh
+echo seal on > /n/speech/ctl
+```
+
+speech9p forwards the seal to its provider, and boot seals the shim directly in
+case it is mounted alone. After the seal those keys are refused, and the refusal
+fails the write rather than only logging — an agent holding the `/n/speech`
+grant cannot point a helper at a command of its own (INF-56). The seal is
+one-way; there is no unseal.
+
+What stays writable is what the tools and voice mode actually need: `voice`
+(constrained to a bare name), `lang`, `rate`, `chans`, `bits`, and the audio
+routing and turn knobs (`mic`, `listen`, `cancel`, `duplex`, `audiodev`,
+`capturedev`, `micmode`, `capturerate`).
+
+A stack that `speechtest` bootstrapped itself is never sealed, so the
+diagnostic workflow is unaffected.
 
 ## 11. Pointers
 

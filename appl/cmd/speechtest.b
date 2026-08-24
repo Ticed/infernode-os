@@ -21,6 +21,12 @@ implement Speechtest;
 # selected, and -M 'dialaddr mountpt' (repeatable, unauthenticated)
 # mounts a remote 9P export first. See docs/SPEECH-REMOTE-AUDIO.md.
 #
+# Configuration keys that name a host helper command are sealed once
+# lib/lucifer/boot.sh has applied them (INF-56), so -H, -C and -c reconfigure
+# only a stack speechtest bootstrapped itself. Against an already-booted
+# system those writes are refused and each one says so; reboot with the
+# configuration you want instead.
+#
 # Host-side launcher: tools/speech-test.sh.
 #
 # The listen wire format and the junk-final filter are kept in sync

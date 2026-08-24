@@ -332,6 +332,53 @@ testCancel(t: ref T)
 		"cancel state should be readable");
 }
 
+# INF-56. These keys choose what code runs: the engine, the host helper
+# commands forwarded to the provider, the .dis module, and the provider tree
+# the say/listen files are proxied from. Writing one is equivalent to running a
+# host command, so they are operator configuration, closed by `seal on` once
+# boot has configured them.
+#
+# Runs last: the seal is one-way, so any test needing one of these keys must
+# already have run.
+testSealedKeysRefused(t: ref T)
+{
+	t.assert(hassubstr(readfile(MNT + "/ctl"), "seal off"), "starts unsealed");
+	t.assert(writefile(MNT + "/ctl", "seal on") > 0, "seal accepted");
+	t.assert(hassubstr(readfile(MNT + "/ctl"), "seal on"), "seal is observable");
+
+	closed := array[] of {
+		"whispermodel /tmp/m.bin; echo INF56INJECTED",
+		"kokorobin /bin/sh -c \"echo INF56INJECTED\"",
+		"whisperstreambin /bin/echo INF56INJECTED",
+		"wakebin /bin/echo INF56INJECTED",
+		"wakeword hey \"; echo INF56INJECTED; \"",
+		"wakethreshold 0.5; echo INF56INJECTED",
+		"engine cmd",
+		"module /dis/veltro/speechprovider.dis",
+		"provider /tmp/INF56INJECTED",
+		"parakeetmount /tmp/INF56INJECTED",
+		"parakeetlisten /tmp/INF56INJECTED/listen",
+		"pipersay /tmp/INF56INJECTED/say",
+	};
+	for(i := 0; i < len closed; i++)
+		t.assert(writefile(MNT + "/ctl", closed[i]) < 0,
+			"refused after seal: " + closed[i]);
+
+	ctl := readfile(MNT + "/ctl");
+	t.assert(hassubstr(ctl, "provider " + PARAKEETMNT + "\n"),
+		"a refused write leaves the provider mount unchanged");
+	t.assert(!hassubstr(ctl, "INF56INJECTED"),
+		"no part of a refused value reaches the config");
+	t.assert(!hassubstr(readfile(PARAKEETMNT + "/ctl"), "INF56INJECTED"),
+		"no refused value is forwarded to the provider");
+
+	# One-way, and the inert knobs the say/hear tools need stay writable.
+	t.assert(writefile(MNT + "/ctl", "seal off") < 0, "the seal cannot be lifted");
+	t.assert(writefile(MNT + "/ctl", "voice af_bella") > 0, "voice still writable");
+	t.assert(writefile(MNT + "/ctl", "rate 16000") > 0, "rate still writable");
+	t.assert(writefile(MNT + "/ctl", "mic off") > 0, "mic still writable");
+}
+
 teardown()
 {
 	sys->unmount(nil, MNT);
@@ -358,6 +405,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("SayqCompletion", testSayqCompletion);
 	run("DisEngineModule", testDisEngineModule);
 	run("Cancel", testCancel);
+	run("SealedKeysRefused", testSealedKeysRefused);
 
 	teardown();
 	if(testing->summary(passed, failed, skipped) > 0)

@@ -94,6 +94,8 @@ audbits := 16;
 enginepath := "";
 engineplugin: SpeechEngine;
 
+sealed := 0;     # Set by `seal on`; see sealedkey()
+
 # Platform-specific defaults for cmd engine
 cmdtts := "";    # Set in initplatform()
 cmdstt := "";    # Set in initplatform()
@@ -395,6 +397,10 @@ readconfig(): string
 
 	result := "engine " + ename + "\n";
 	result += "voice " + voice + "\n";
+	if(sealed)
+		result += "seal on\n";
+	else
+		result += "seal off\n";
 	result += "lang " + lang + "\n";
 	result += "rate " + string audrate + "\n";
 	result += "capturerate " + string capturerate + "\n";
@@ -439,6 +445,27 @@ readconfig(): string
 	return result;
 }
 
+# Ctl keys that choose what code runs: which engine, which host helper
+# command, which module, and which provider tree the say/listen files are
+# proxied from. Writing one is equivalent to running a host command, so they
+# are operator configuration rather than a runtime knob — boot.sh and the
+# installer write them while the system comes up, then boot writes `seal on`.
+# After that they are refused, so an agent holding the speech grant cannot
+# point a helper at a command of its own (INF-56). The keys left writable are
+# the inert ones the tools and voice mode need: voice, lang, rate, mic,
+# listen, cancel and the audio routing.
+sealedkey(key: string): int
+{
+	case key {
+	"engine" or "module" or "ttsengine" or "listenengine" or
+	"kokorobin" or "whisperstreambin" or "wakebin" or "whispermodel" or
+	"wakeword" or "wakethreshold" or
+	"provider" or "parakeetmount" or "parakeetlisten" or "pipersay" =>
+		return 1;
+	}
+	return 0;
+}
+
 # Parse and apply a configuration command
 applyconfig(cmd: string): string
 {
@@ -457,6 +484,9 @@ applyconfig(cmd: string): string
 		val += hd argv;
 	}
 
+	if(sealed && sealedkey(key))
+		return "error: " + key + " is sealed";
+
 	case key {
 	"engine" =>
 		case val {
@@ -474,6 +504,11 @@ applyconfig(cmd: string): string
 		err := loadengine(val);
 		if(err != nil && err != "")
 			return "error: " + err;
+	"seal" =>
+		if(val != "on")
+			return "error: seal must be on";
+		sealed = 1;
+		forwardprovider(key, val);
 	"voice" =>
 		if(!safename(val))
 			return "error: unsafe voice";
@@ -2204,10 +2239,15 @@ Serve:
 			path := int fid.path;
 			case path {
 			Qctl =>
+				# A refused write must fail for the writer, not just log:
+				# a caller that cannot see the refusal carries on believing
+				# the value took effect. Matches speechshim9p.
 				result := applyconfig(string m.data);
-				srv.reply(ref Rmsg.Write(m.tag, len m.data));
-				if(hasprefix(result, "error:"))
+				if(hasprefix(result, "error:")) {
 					sys->fprint(stderr, "speech9p: %s\n", result);
+					srv.reply(ref Rmsg.Error(m.tag, result));
+				} else
+					srv.reply(ref Rmsg.Write(m.tag, len m.data));
 			Qsay =>
 				text := string m.data;
 				fs := getfidstate(m.fid);

@@ -87,6 +87,7 @@ OUTBITS: con 16;
 
 
 # Configuration
+sealed := 0;			# Set by `seal on`; see sealedkey()
 kokorobin := "kokoro-cli";
 whisperstreambin := "whisper-stream";
 wakebin := "openwakeword-cli";
@@ -1179,6 +1180,10 @@ readconfig(): string
 	result += "duplex " + duplex + "\n";
 	result += "duplextail " + string duplextail + "\n";
 	result += "capturedelay " + string capturedelay + "\n";
+	if(sealed)
+		result += "seal on\n";
+	else
+		result += "seal off\n";
 	if(standby)
 		result += "mic off\n";
 	else
@@ -1206,6 +1211,39 @@ resetcapture()
 	pumpreset();
 }
 
+# Ctl keys that name the host command a helper runs. startproc assembles the
+# argv as one string and runs it through `sh -c`, so writing one is equivalent
+# to running a host command. They are operator configuration: boot.sh and the
+# installer write them while the system comes up, then boot writes `seal on`
+# and they are refused from then on (INF-56). speech9p forwards the same seal,
+# so one write covers both servers; the shim still checks for itself because a
+# grant on its own ctl would otherwise bypass speech9p entirely.
+sealedkey(key: string): int
+{
+	case key {
+	"kokorobin" or "whisperstreambin" or "wakebin" or
+	"whispermodel" or "sttmodel" or "wakeword" or "wakethreshold" =>
+		return 1;
+	}
+	return 0;
+}
+
+# `voice` stays writable after the seal — the say tool sets it — and it is
+# interpolated into the helper argv, so it must remain a bare name.
+safename(s: string): int
+{
+	if(s == nil || s == "" || s == "." || s == "..")
+		return 0;
+	for(i := 0; i < len s; i++) {
+		c := s[i];
+		if((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		   (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.')
+			continue;
+		return 0;
+	}
+	return 1;
+}
+
 applyconfig(cmd: string): string
 {
 	(n, argv) := sys->tokenize(cmd, " \t\n");
@@ -1219,6 +1257,9 @@ applyconfig(cmd: string): string
 			val += " ";
 		val += hd argv;
 	}
+
+	if(sealed && sealedkey(key))
+		return "error: " + key + " is sealed";
 
 	case key {
 	"kokorobin" =>
@@ -1244,7 +1285,13 @@ applyconfig(cmd: string): string
 		killproc(listenproc);
 		listenproc = nil;
 		whispermodel = val;
+	"seal" =>
+		if(val != "on")
+			return "error: seal must be on";
+		sealed = 1;
 	"voice" =>
+		if(!safename(val))
+			return "error: unsafe voice";
 		voice = val;
 	"rate" =>
 		r := int val;
