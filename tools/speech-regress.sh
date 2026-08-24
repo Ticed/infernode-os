@@ -48,6 +48,7 @@ fi
 # now cross those boundaries.
 SUITES="
 speechshim_test
+remote_speech_topology_test
 speech9p_voice_test
 speech_wake_test
 speech_listen_test
@@ -96,16 +97,16 @@ npass=0
 nskip=0
 
 run_suite() {
-  local name=$1 limit=$2
+  local name=$1 limit=$2 args=${3:-}
   local log=$logdir/$name.log status ok=0
 
   printf '== %s ' "$name"
   if [ "$verbose" = 1 ]; then
     echo
-    timeout "$limit" "$EMU" -r. "/tests/$name.dis" 2>&1 | tee "$log"
+    timeout "$limit" "$EMU" -r. "/tests/$name.dis" $args 2>&1 | tee "$log"
     status=${PIPESTATUS[0]}
   else
-    timeout "$limit" "$EMU" -r. "/tests/$name.dis" >"$log" 2>&1
+    timeout "$limit" "$EMU" -r. "/tests/$name.dis" $args >"$log" 2>&1
     status=$?
   fi
 
@@ -133,8 +134,11 @@ run_suite() {
 
 for t in $SUITES; do
   limit=240
+  args=""
+  [ "$t" = remote_speech_topology_test ] && limit=15
+  [ "$t" = remote_speech_topology_test ] && args="-p $((20000 + $$ % 10000))"
   [ "$t" = speech_kokoro_test ] && limit=120
-  run_suite "$t" "$limit"
+  run_suite "$t" "$limit" "$args"
 done
 
 run_host_test() {
@@ -170,6 +174,18 @@ run_host_test() {
 # This is the blocking composed path: real Lucia/LLM/speech services with
 # deterministic loopback fixtures replacing only microphones and models.
 run_host_test speech_e2e_test.sh
+run_host_test voice_ui_contract_test.sh
+run_host_test parakeet_turn_gate_test.sh
+run_host_test elevenlabs_speech_e2e_test.sh
+run_host_test remote_speech_scripts_test.sh
+run_host_test parakeet_distribution_test.sh
+
+# Topology 3's Android frontend. Hermetic: a fake adb and nc stand in for the
+# phone. It guards the silent-zero capture failure — Android silences the
+# microphone without erroring, so the export stays reachable while every PCM
+# sample is zero and the Mac-side STT just times out. The launcher must refuse
+# to call that "ready".
+run_host_test android_speech_frontend_test.sh
 
 # The download test is hermetic: it sources the installer with a fake curl.
 run_host_test speech_installer_download_test.sh
@@ -182,6 +198,25 @@ run_host_test speech_helpers_test.sh
 # when the current session lacks an audio device or TCC microphone permission.
 if [ "$(uname -s)" = Darwin ]; then
   run_host_test audio_macos_test.sh
+  run_host_test audio_device_select_test.sh
+  # The microphone-free rig: a loopback audio device stands in for both
+  # the microphone and the speaker, so these assert the live device path
+  # without depending on the room, the capture gain, or anyone speaking.
+  # Both skip when no loopback driver is installed — see
+  # docs/SPEECH-VIRTUAL-AUDIO.md.
+  run_host_test virtual_audio_loopback_test.sh
+  run_host_test virtual_mic_speech_test.sh
+  # The whole turn over one device: wake word, utterance, spoken reply,
+  # and the half-duplex suppression that keeps the stack from answering
+  # its own voice — which only means anything when playback and capture
+  # share a device, as they do on a laptop.
+  run_host_test virtual_voice_turn_test.sh
+  # The same turn through the desktop, asserted on the pixels: the wake
+  # word lighting the Voice tile, partials in the unsent turn, the send
+  # countdown counting, the answer drawn and spoken. Needs a logged-in
+  # session with Screen Recording and Accessibility permission, so it
+  # skips on a build machine.
+  run_host_test gui_voice_turn_test.sh
 fi
 
 echo

@@ -12,6 +12,8 @@
 # Usage:
 #   sh /lib/voice/listen           # port 7070
 #   sh /lib/voice/listen 7071      # override port
+#   sh /lib/voice/listen 7071 /tmp/voice-listen.endpoint
+#                                  # publish the announce endpoint for cleanup
 
 # Inferno sh is modular: `if`, `~`, etc. live in the `std` module.
 # Scripts invoked via plain `sh script` don't get -l (which would load
@@ -19,6 +21,7 @@
 load std
 
 port=$1
+endpointfile=$2
 if {~ $#port 0} {
 	port=7070
 }
@@ -43,9 +46,20 @@ echo 'rec_buffer_ms 100'  > /dev/audioctl >[2] /dev/null
 # the export worker can't reach a usable SDL state on macOS even
 # with SDL_Init / SDL_QuitSubSystem / SDL_Init retry.
 echo 'voice/listen:' $addr 'exporting /dev (pre-warmed)'
-listen -A $addr {
-	{sleep 99999 > /dev/audio} &
-	{sleep 99999 < /dev/audio > /dev/null} &
-	sleep 1
-	export /dev
+if {~ $#endpointfile 0} {
+	listen -A $addr {
+		{sleep 99999 > /dev/audio} &
+		{sleep 99999 < /dev/audio > /dev/null} &
+		sleep 1
+		export /dev
+	}
+} {
+	rm -f $endpointfile
+	initscript='{echo $net > '^$endpointfile^'}'
+	listen -A -i $initscript $addr {
+		{sleep 99999 > /dev/audio} &
+		{sleep 99999 < /dev/audio > /dev/null} &
+		sleep 1
+		export /dev
+	}
 }

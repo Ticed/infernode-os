@@ -68,7 +68,9 @@ writefile(path, data: string): int
 	if(fd == nil)
 		return -1;
 	b := array of byte data;
-	return sys->write(fd, b, len b);
+	n := sys->write(fd, b, len b);
+	fd = nil;
+	return n;
 }
 
 createfile(path: string): int
@@ -76,6 +78,7 @@ createfile(path: string): int
 	fd := sys->create(path, Sys->OWRITE, 8r666);
 	if(fd == nil)
 		return -1;
+	fd = nil;
 	return 0;
 }
 
@@ -85,7 +88,9 @@ createwithdata(path, data: string): int
 	if(fd == nil)
 		return -1;
 	b := array of byte data;
-	return sys->write(fd, b, len b);
+	n := sys->write(fd, b, len b);
+	fd = nil;
+	return n;
 }
 
 readfile(path: string): string
@@ -94,7 +99,8 @@ readfile(path: string): string
 	if(fd == nil)
 		return nil;
 	buf := array[16384] of byte;
-	n := sys->read(fd, buf, len buf);
+	n := sys->pread(fd, buf, len buf, big 0);
+	fd = nil;
 	if(n <= 0)
 		return nil;
 	return string buf[0:n];
@@ -136,11 +142,32 @@ waitcontains(path, sub: string, ms: int): int
 	return 0;
 }
 
+strip(s: string): string
+{
+	while(len s > 0 && (s[len s - 1] == '\n' || s[len s - 1] == '\r' ||
+			s[len s - 1] == ' ' || s[len s - 1] == '\t'))
+		s = s[0:len s - 1];
+	return s;
+}
+
+waitmode(want: string, ms: int): int
+{
+	for(waited := 0; waited < ms; waited += 25) {
+		if(strip(readfile("/mnt/ui/input-mode")) == want)
+			return 1;
+		sys->sleep(25);
+	}
+	return 0;
+}
+
 conversationrolecount(role, sub: string): int
 {
 	n := 0;
-	for(i := 0; i < 12; i++) {
-		msg := readfile("/mnt/ui/activity/0/conversation/" + string i);
+	for(i := 0; i < 128; i++) {
+		path := "/mnt/ui/activity/0/conversation/" + string i;
+		if(!pathexists(path))
+			break;
+		msg := readfile(path);
 		if(contains(msg, "role=" + role) && contains(msg, sub))
 			n++;
 	}
@@ -155,6 +182,65 @@ waitconversationrole(role, sub: string, ms: int): int
 		sys->sleep(50);
 	}
 	return 0;
+}
+
+clearfixtures()
+{
+	sys->remove(infernostate + "/wake.next");
+	sys->remove(infernostate + "/wake.next.tmp");
+	sys->remove(infernostate + "/wake.armed");
+	sys->remove(infernostate + "/wake.consumed");
+	sys->remove(infernostate + "/listen.next");
+	sys->remove(infernostate + "/listen.next.tmp");
+	sys->remove(infernostate + "/listen.armed");
+	sys->remove(infernostate + "/listen.consumed");
+}
+
+# Create dest as a new directory entry so a waiter that armed against a
+# missing or empty path cannot hold the inode we publish (INF-34).
+publishfixture(path, data: string): int
+{
+	tmp := path + ".tmp";
+	sys->remove(tmp);
+	if(createwithdata(tmp, data) <= 0)
+		return -1;
+	name := path;
+	for(i := len path - 1; i >= 0; i--)
+		if(path[i] == '/') {
+			name = path[i + 1:];
+			break;
+		}
+	nd := sys->nulldir;
+	nd.name = name;
+	sys->remove(path);
+	if(sys->wstat(tmp, nd) < 0)
+		return -1;
+	return 1;
+}
+
+# Arm is observed, then the fixture is published, then consume is
+# observed. Sending is the voicemode transition; its timeout is only a
+# safety net (INF-34).
+scriptvoiceturn(t: ref T, listen, why: string)
+{
+	clearfixtures();
+	t.assert(writefile("/mnt/ui/voice-control", "on source=compose-button") > 0,
+		why + " voice mode entered");
+	if(!waitpath(infernostate + "/wake.armed", 8000))
+		t.fatal(why + " wake helper armed");
+	t.assert(publishfixture(infernostate + "/wake.next", "wake e2e 0.99\n") > 0,
+		why + " wake event scripted");
+	if(!waitpath(infernostate + "/wake.consumed", 8000))
+		t.fatal(why + " wake helper consumed");
+	if(!waitpath(infernostate + "/listen.armed", 8000))
+		t.fatal(why + " listen helper armed");
+	t.assert(publishfixture(infernostate + "/listen.next", listen) > 0,
+		why + " transcript scripted");
+	if(!waitpath(infernostate + "/listen.consumed", 8000))
+		t.fatal(why + " listen helper consumed");
+	if(!waitcontains("/mnt/ui/activity/0/conversation/draft-status",
+			"Sending", 3000))
+		t.fatal(why + " reached grace window");
 }
 
 resourcecontains(sub: string): int
@@ -254,8 +340,12 @@ startstack(t: ref T)
 	t.assert(waitresource("label=Voice", 8000),
 		"lucibridge initialized its LLM session and speech resource");
 
+}
+
+startvoicemode(t: ref T)
+{
 	startmodule(t, "/dis/voicemode.dis", "voicemode",
-		"-g" :: "300" :: "-q" :: "650" :: "-t" :: "5000" ::
+		"-g" :: "300" :: "-q" :: "650" :: "-t" :: "20000" ::
 		"-w" :: "50" :: "-u" :: "/mnt/ui" :: "-s" :: "/n/speech" :: nil);
 	sys->sleep(300);
 }
@@ -264,16 +354,52 @@ testComposedTurn(t: ref T)
 {
 	startstack(t);
 
-	t.assert(writefile(infernostate + "/wake.next", "wake e2e 0.99\n") > 0,
-		"wake event scripted");
-	t.assert(writefile(infernostate + "/listen.next",
-		"partial confidence=940 Reply with exactly local LLM working\n" +
-		"final confidence=940 Reply with exactly: local LLM working.\n") > 0,
-		"streaming transcript scripted");
-	t.assert(writefile("/mnt/ui/input-mode", "v") > 0, "voice mode re-entered");
+	# Exercise the same semantic endpoint used by every visible entry surface.
+	# /voice-control is observable, so this remains headless while still proving
+	# the resulting UI mode and source attribution rather than source-text grep.
+	sources := "context-chip" :: "compose-button" :: "ctrl-space" ::
+		"escape-v" :: "alt-v" :: "slash-command" :: nil;
+	for(; sources != nil; sources = tl sources) {
+		source := hd sources;
+		t.assert(writefile("/mnt/ui/voice-control", "on source=" + source) > 0,
+			source + " enters voice mode");
+		t.assert(waitmode("v", 1000), source + " produced voice input mode");
+		t.assert(waitcontains("/mnt/ui/voice-control", "source=" + source, 1000),
+			source + " was captured by the UI server");
+		t.assert(writefile("/mnt/ui/voice-control", "off source=escape") > 0,
+			"Escape exits after " + source);
+		t.assert(waitmode("k", 1000), "keyboard restored after " + source);
+	}
 
-	t.assert(waitcontains("/mnt/ui/activity/0/conversation/draft",
-		"local LLM working", 5000), "live or final transcript reached Lucia draft");
+	# Start the resident daemon only after the pure entry/exit surface matrix.
+	# Rapidly arming real wake helpers is not part of that UI contract and would
+	# make the later cancellation scenario depend on discarded helper processes.
+	startvoicemode(t);
+
+	# Enter a final, wait until it is pending in the grace window, then model
+	# Lucifer's unconditional Escape path. The turn must never reach Lucia.
+	scriptvoiceturn(t,
+		"partial confidence=940 Cancel this pending voice message\n" +
+		"final confidence=940 Cancel this pending voice message.\n",
+		"cancel");
+	t.assert(writefile("/mnt/ui/voice-control", "off source=escape") > 0,
+		"Escape cancellation sent promptly");
+	t.assert(waitmode("k", 1000), "Escape restored keyboard mode promptly");
+	t.assert(waitcontains("/n/speechshim/ctl", "mic off", 3000),
+		"microphone released after Escape cancel");
+	sys->sleep(200);
+	t.asserteq(conversationrolecount("human", "Cancel this pending voice message"), 0,
+		"Escape prevented the pending voice turn from submitting");
+	t.assertseq(strip(readfile("/mnt/ui/activity/0/conversation/draft")), "",
+		"Escape cleared the pending voice draft");
+	t.assertseq(strip(readfile("/mnt/ui/activity/0/conversation/draft-status")), "",
+		"Escape left no leftover Sending status");
+
+	scriptvoiceturn(t,
+		"partial confidence=940 Reply with exactly local LLM working\n" +
+		"final confidence=940 Reply with exactly: local LLM working.\n",
+		"composed");
+
 	t.assert(waitconversationrole("human", "local LLM working", 8000),
 		"final transcript submitted to lucibridge");
 	t.assert(waitconversationrole("veltro", "local LLM working", 12000),
@@ -285,9 +411,21 @@ testComposedTurn(t: ref T)
 	t.assert(waitresource("label=Voice", 3000),
 		"Voice lifecycle resource is present");
 
-	t.assert(writefile("/mnt/ui/input-mode", "k") > 0, "keyboard mode restored");
+	t.assert(writefile("/mnt/ui/voice-control", "off source=escape") > 0,
+		"keyboard mode restored");
 	t.assert(waitcontains("/n/speechshim/ctl", "mic off", 3000),
 		"microphone released after composed turn");
+
+	# A plain keyboard turn after voice exit proves that lucibridge is no longer
+	# gating typed input and the normal conversation path recovered.
+	t.assert(writefile("/mnt/ui/activity/0/conversation/input",
+		"Keyboard recovery marker.") > 0, "keyboard turn written after voice exit");
+	t.assert(waitconversationrole("human", "Keyboard recovery marker", 5000),
+		"keyboard input recovered after voice mode");
+	for(waited := 0; conversationrolecount("veltro", "local LLM working") < 2 && waited < 8000; waited += 50)
+		sys->sleep(50);
+	t.assert(conversationrolecount("veltro", "local LLM working") >= 2,
+		"keyboard recovery turn received an assistant reply");
 }
 
 testNeedsWrapper(t: ref T)

@@ -3,6 +3,9 @@ set -euo pipefail
 
 PREFIX=${INFERNODE_SPEECH_HOME:-"$HOME/.local/share/infernode-speech"}
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PARAKEET_MANIFEST=${PARAKEET_MANIFEST:-"$SCRIPT_DIR/parakeet-eou.manifest"}
+# shellcheck source=parakeet-eou.manifest
+source "$PARAKEET_MANIFEST"
 VENV="$PREFIX/venv"
 BIN="$PREFIX/bin"
 LIBEXEC="$PREFIX/libexec"
@@ -27,14 +30,21 @@ WHISPER_MODEL_MIN_BYTES=${WHISPER_MODEL_MIN_BYTES:-100000000}
 
 # Parakeet realtime STT (preferred over whisper when it can be built).
 # PARAKEET_SRC may point at an existing parakeet.cpp checkout; otherwise the
-# upstream repo is cloned under the install prefix. The streaming EOU model
-# is not yet published as GGUF, so we also probe dev checkouts and accept an
-# explicit PARAKEET_EOU_MODEL path (see find_parakeet_eou_model).
+# exact upstream revision is cloned under the install prefix. The published
+# streaming EOU GGUF is pinned and verified through parakeet-eou.manifest;
+# an explicit PARAKEET_EOU_MODEL must match it unless a development override
+# is deliberately enabled (see find_parakeet_eou_model).
 PARAKEET_DIR="$MODELS/parakeet"
+PARAKEET_SRC_EXPLICIT=0
+[ -n "${PARAKEET_SRC:-}" ] && PARAKEET_SRC_EXPLICIT=1
 PARAKEET_SRC=${PARAKEET_SRC:-"$PREFIX/src/parakeet.cpp"}
-PARAKEET_REPO_URL=${PARAKEET_REPO_URL:-https://github.com/mudler/parakeet.cpp.git}
+PARAKEET_REPO_URL=${PARAKEET_REPO_URL:-$PARAKEET_CPP_REPO_URL}
+PARAKEET_REPO_COMMIT=${PARAKEET_REPO_COMMIT:-$PARAKEET_CPP_COMMIT}
 PARAKEET_EOU_MODEL=${PARAKEET_EOU_MODEL:-}
-PARAKEET_EOU_URL=${PARAKEET_EOU_URL:-https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/parakeet_realtime_eou_120m-v1-q8_0.gguf}
+PARAKEET_EOU_URL=${PARAKEET_EOU_URL:-https://huggingface.co/$PARAKEET_GGUF_REPO/resolve/$PARAKEET_GGUF_REVISION/$PARAKEET_GGUF_FILE}
+PARAKEET_EOU_SHA256=${PARAKEET_EOU_SHA256:-$PARAKEET_GGUF_SHA256}
+PARAKEET_EOU_SIZE=${PARAKEET_EOU_SIZE:-$PARAKEET_GGUF_SIZE}
+PARAKEET_ALLOW_UNVERIFIED_MODEL=${PARAKEET_ALLOW_UNVERIFIED_MODEL:-0}
 
 # Set by install_parakeet on success; selects the ctl configuration.
 PARAKEET_OK=0
@@ -42,6 +52,24 @@ PARAKEET_MODEL_PATH=""
 
 log() {
   printf '%s\n' "$*"
+}
+
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+verify_parakeet_model() {
+  local model=$1
+  local actual_size actual_sha
+  [ -s "$model" ] || return 1
+  actual_size=$(wc -c <"$model" | tr -d ' ')
+  [ "$actual_size" = "$PARAKEET_EOU_SIZE" ] || return 1
+  actual_sha=$(sha256_file "$model")
+  [ "$actual_sha" = "$PARAKEET_EOU_SHA256" ]
 }
 
 download_once() {
@@ -346,6 +374,31 @@ if [ ! -s "$model" ]; then
   exit 0
 fi
 
+# Probe the installed whisper-stream and pass only flags it advertises
+# (INF-38). Unknown arguments print usage and exit 0, which the speech
+# shim reports as a crash and then restarts.
+whisper_help=$("$bin" --help 2>&1 || true)
+whisper_has() {
+  printf '%s\n' "$whisper_help" | tr -s '[:space:],' '\n' | grep -Fx -- "$1" >/dev/null
+}
+
+set -- --model "$model"
+if whisper_has --capture; then
+  set -- "$@" --capture "$capture"
+fi
+if whisper_has --step; then
+  set -- "$@" --step 0
+fi
+if whisper_has --length; then
+  set -- "$@" --length "$length"
+fi
+if whisper_has --keep; then
+  set -- "$@" --keep 200
+fi
+if whisper_has --vad-thold; then
+  set -- "$@" --vad-thold 0.6
+fi
+
 # VAD mode: whisper-stream waits for end-of-utterance, then prints the
 # transcribed segment. Filter its chrome — "### Transcription" separators,
 # ANSI escapes, [timestamp] blocks — and emit each utterance as a final.
@@ -356,7 +409,7 @@ fi
 # \r is stripped per line in bash instead. stderr is not discarded: the
 # shim keeps a bounded tail of it, the only diagnostic when whisper dies.
 esc=$(printf '\033')
-"$bin" --model "$model" --capture "$capture" --step 0 --length "$length" --keep 200 --vad-thold 0.6 |
+"$bin" "$@" |
 while IFS= read -r line; do
   line=${line//$'\r'/}
   case "$line" in
@@ -485,35 +538,44 @@ PY
   chmod +x "$LIBEXEC/kokoro_cli.py" "$LIBEXEC/whisper_stream_cli.sh" "$LIBEXEC/openwakeword_cli.py"
 }
 
-# Locate (or fetch) the cache-aware streaming EOU GGUF. Echoes the path on
-# stdout, or nothing when unavailable. The model is not yet in the published
-# mudler/parakeet-cpp-gguf set, so the download is attempted last and is
-# allowed to fail.
+# Locate (or fetch) the cache-aware streaming EOU GGUF. The default artifact is
+# pinned by repository revision, byte size, and SHA-256 in the tracked manifest.
+# An arbitrary local model is accepted only through the explicit development
+# override, never silently selected by a clean install.
 find_parakeet_eou_model() {
   if [ -n "$PARAKEET_EOU_MODEL" ] && [ -s "$PARAKEET_EOU_MODEL" ]; then
-    echo "$PARAKEET_EOU_MODEL"
-    return 0
-  fi
-  local m
-  for m in "$PARAKEET_DIR"/parakeet_realtime_eou_120m*.gguf; do
-    [ -s "$m" ] && { echo "$m"; return 0; }
-  done
-  # Dev convenience: copy a locally converted model out of a checkout.
-  for m in "$PARAKEET_SRC"/models/parakeet_realtime_eou_120m*.gguf \
-           "$HOME"/Projects/parakeet.cpp/models/parakeet_realtime_eou_120m*.gguf; do
-    if [ -s "$m" ]; then
-      mkdir -p "$PARAKEET_DIR"
-      cp "$m" "$PARAKEET_DIR/"
-      echo "$PARAKEET_DIR/$(basename "$m")"
+    if verify_parakeet_model "$PARAKEET_EOU_MODEL" || [ "$PARAKEET_ALLOW_UNVERIFIED_MODEL" = 1 ]; then
+      echo "$PARAKEET_EOU_MODEL"
       return 0
     fi
-  done
-  local dest="$PARAKEET_DIR/$(basename "$PARAKEET_EOU_URL")"
-  if download_once "$PARAKEET_EOU_URL" "$dest" 2>/dev/null && [ -s "$dest" ]; then
+    log "reject: explicit Parakeet model does not match the pinned manifest" >&2
+    return 0
+  fi
+  local dest="$PARAKEET_DIR/$PARAKEET_GGUF_FILE"
+  if verify_parakeet_model "$dest"; then
     echo "$dest"
     return 0
   fi
-  rm -f "$dest.tmp"
+  local candidate
+  for candidate in "$PARAKEET_DIR"/*realtime_eou_120m*.gguf; do
+    if [ "$candidate" != "$dest" ] && verify_parakeet_model "$candidate"; then
+      cp "$candidate" "$dest"
+      echo "$dest"
+      return 0
+    fi
+  done
+  find "$dest" -maxdepth 0 -type f -delete 2>/dev/null || true
+  local tmp="$dest.tmp"
+  mkdir -p "$PARAKEET_DIR"
+  log "download: pinned Parakeet GGUF $PARAKEET_GGUF_REVISION" >&2
+  if curl -L --fail --retry 3 --retry-all-errors --retry-delay 1 \
+      --output "$tmp" "$PARAKEET_EOU_URL" >&2 && verify_parakeet_model "$tmp"; then
+    mv "$tmp" "$dest"
+    echo "$dest"
+    return 0
+  fi
+  log "reject: downloaded Parakeet GGUF failed manifest verification" >&2
+  find "$tmp" -maxdepth 0 -type f -delete 2>/dev/null || true
   return 0
 }
 
@@ -528,16 +590,35 @@ install_parakeet() {
     log "skip: parakeet needs cmake + git (whisper stack remains the default)"
     return 0
   fi
-  if [ ! -f "$PARAKEET_SRC/CMakeLists.txt" ]; then
-    log "clone: $PARAKEET_REPO_URL"
-    if ! git clone --depth 1 --recurse-submodules --shallow-submodules \
+  if [ ! -d "$PARAKEET_SRC/.git" ]; then
+    log "clone: $PARAKEET_REPO_URL at $PARAKEET_REPO_COMMIT"
+    if ! git clone --filter=blob:none --no-checkout \
         "$PARAKEET_REPO_URL" "$PARAKEET_SRC"; then
       log "skip: parakeet clone failed (whisper stack remains the default)"
       return 0
     fi
   fi
+  if [ "$PARAKEET_SRC_EXPLICIT" = 0 ]; then
+    log "checkout: pinned parakeet.cpp $PARAKEET_REPO_COMMIT"
+    local current
+    current=$(git -C "$PARAKEET_SRC" rev-parse HEAD 2>/dev/null || true)
+    if { [ "$current" = "$PARAKEET_REPO_COMMIT" ] ||
+         git -C "$PARAKEET_SRC" fetch --depth 1 origin "$PARAKEET_REPO_COMMIT" >/dev/null; } &&
+       git -C "$PARAKEET_SRC" checkout --detach "$PARAKEET_REPO_COMMIT" >/dev/null &&
+       git -C "$PARAKEET_SRC" submodule update --init --recursive --depth 1 >/dev/null; then
+      :
+    else
+      log "skip: pinned parakeet.cpp checkout failed (whisper stack remains the default)"
+      return 0
+    fi
+  elif [ ! -f "$PARAKEET_SRC/CMakeLists.txt" ]; then
+    log "skip: explicit PARAKEET_SRC has no CMakeLists.txt"
+    return 0
+  fi
 
-  local build="$PARAKEET_SRC/build-infernode"
+  # Key the build directory by the pinned source revision so an installer
+  # upgrade cannot reuse an ABI-incompatible CMake cache from an older clone.
+  local build="$PARAKEET_SRC/build-infernode-${PARAKEET_REPO_COMMIT:0:12}"
   local metal_flag=""
   if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
     metal_flag="-DPARAKEET_GGML_METAL=ON"
@@ -582,11 +663,10 @@ install_parakeet() {
   local model
   model=$(find_parakeet_eou_model)
   if [ -z "$model" ]; then
-    log "notice: parakeet-stream built, but no streaming EOU model found."
-    log "  Convert nvidia/parakeet_realtime_eou_120m-v1 with parakeet.cpp's"
-    log "  scripts/convert_parakeet_to_gguf.py into $PARAKEET_DIR/,"
-    log "  or set PARAKEET_EOU_MODEL=/path/to/model.gguf and re-run."
-    log "  Falling back to the whisper stack until then."
+    log "notice: parakeet-stream built, but the pinned EOU model could not be installed."
+    log "  Run tools/convert-parakeet-eou.sh --output $PARAKEET_DIR/$PARAKEET_GGUF_FILE"
+    log "  or set PARAKEET_EOU_MODEL to a manifest-matching artifact and re-run."
+    log "  Falling back to the whisper stack until a verified model is available."
     return 0
   fi
 

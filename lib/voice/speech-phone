@@ -1,0 +1,19 @@
+# speech-phone — export this device's /dev tree as a remote speech source.
+#
+# This development transport is deliberately unauthenticated. Bind it only on
+# a trusted local or overlay network until the Phase 2 security audit replaces
+# the -A listener with an authenticated, capability-scoped service.
+#
+# Usage:
+#   sh /lib/voice/speech-phone [port]
+
+load std
+
+port=$1
+if {~ $#port 0} {
+	port=17010
+}
+
+echo 'voice/speech-phone: exporting /dev on tcp!*!'$port
+echo '  development mode: unauthenticated 9P; trusted networks only'
+listen -A 'tcp!*!'$port {export /dev}

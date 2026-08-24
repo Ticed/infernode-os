@@ -1,0 +1,17 @@
+# Auditable source and deployment pins for Parakeet realtime EOU.
+# Shell-compatible so installer and conversion tooling share one source of truth.
+PARAKEET_CPP_REPO_URL=https://github.com/mudler/parakeet.cpp.git
+PARAKEET_CPP_COMMIT=1bfbebfaaf493866f49597cd3b7901959d395c60
+
+PARAKEET_MODEL_REPO=nvidia/parakeet_realtime_eou_120m-v1
+PARAKEET_MODEL_REVISION=a7e2b4629593dce0ec19f600e00e9904353fda2d
+PARAKEET_MODEL_FILE=parakeet_realtime_eou_120m-v1.nemo
+PARAKEET_MODEL_SHA256=6603a22a53b7c1a4bac4736cb24628fb568a7102ba931a28c799e2e72f109893
+PARAKEET_MODEL_SIZE=460062720
+
+PARAKEET_GGUF_REPO=mudler/parakeet-cpp-gguf
+PARAKEET_GGUF_REVISION=bf0af9f425fa01809cadec671b3cb672709d13e9
+PARAKEET_GGUF_FILE=realtime_eou_120m-v1-f16.gguf
+PARAKEET_GGUF_SHA256=d1a2b12f12b8a096a57499c9111ed13b442a2b786e17a292c168be45088f0edc
+PARAKEET_GGUF_SIZE=266517952
+PARAKEET_GGUF_DTYPE=f16

@@ -1,9 +1,10 @@
 # Voice Mode for Lucia: Phase 1
 
-Status: Phase 1 release candidate on `dev`. Automated implementation and the
-composed voice-to-LLM-to-speech path are covered by blocking tests. Real
-microphone/audio quality and physical GUI input remain human gates. Cross-host
-acceptance is Phase 2.
+Status: Phase 1 implementation is functionally frozen. Automated implementation,
+real-model prerecorded-audio, and composed voice-to-LLM-to-speech paths are
+covered by blocking tests. Real microphone/audio quality and physical GUI input
+remain deferred human-acceptance items; they do not block Phase 2 development,
+but must pass before the overarching voice feature merges into `dev`.
 
 ## Phase Boundary and Exit Criteria
 
@@ -16,8 +17,10 @@ confirmation, and one visibly capped busy-turn follow-up. It also includes the
 installer/boot selection path, LLM-free speech testing, and explicitly selected
 local OpenAI-compatible LLM backends.
 
-Phase 1 is complete only after all automated checks pass and a human confirms
-the hardware and physical-interface behavior that CI cannot reproduce:
+The Phase 1 implementation may be frozen and used as the Phase 2 base when all
+automated checks pass. Formal voice-feature acceptance additionally requires a
+human to confirm the hardware and physical-interface behavior that CI cannot
+reproduce before the overarching voice branch merges into `dev`:
 
 1. Through the real emulator microphone path, Parakeet produces usable live
    partial/final transcription and Kokoro playback is intelligible, natural
@@ -28,9 +31,11 @@ the hardware and physical-interface behavior that CI cannot reproduce:
    microphone is released on exit, and Esc stops audible TTS in half-duplex
    mode and returns to keyboard input.
 
-Grace, final deduplication, append/cancel, low-confidence confirmation, spoken
-approval/refinement/denial, capped follow-up queuing, explicit LLM-provider
-selection, and the full service composition are automated release gates.
+Real-time partial cadence, final timing and deduplication, grace, append/cancel,
+low-confidence confirmation, spoken approval/refinement/denial, capped
+follow-up queuing, explicit LLM-provider selection, consistent entry/exit
+control wiring, keyboard recovery, and the full service composition are
+automated freeze gates.
 
 Two-host/Jetson deployment, public Parakeet EOU model distribution, rich queue
 management, native 24000/48000 Hz playback, and any particular/custom wake-word
@@ -97,8 +102,10 @@ Phase 1 structure (1.0–1.6) is implemented. The branch now has:
   `conversation/draft-status`, and rendered as a bordered, visibly unsent user
   turn. Typed compose text remains visible but locked until voice mode exits.
 - A FIFO `conversation/control` path for spoken cancel, pause, resume, status,
-  and mid-turn refinements. Tool approvals consume the same voice input path,
-  fail closed, and remain cancellable.
+  and mid-turn refinements. Spoken tool approvals use the dedicated
+  `conversation/voiceapproval` path; the server accepts only explicit
+  `Allow`/`Deny` while the activity is blocked. They fail closed and remain
+  cancellable without releasing a queued refinement into the approval gate.
 - Low-confidence STT confirmation with a visual prompt and spoken read-back;
   the threshold defaults to 650 permille and is configurable with
   `voicemode -q`.
@@ -141,12 +148,20 @@ Phase 1 structure (1.0–1.6) is implemented. The branch now has:
   release. The test is part of `tools/speech-regress.sh` and therefore blocks
   CI.
 
-Remaining human acceptance:
+Deferred human acceptance, required before the overarching voice branch merges
+into `dev` but not before Phase 2 development begins:
 
 - Install the real helper models/binaries, grant macOS microphone permission,
   and confirm Parakeet/Kokoro quality through the emulator's actual audio path.
-- Exercise each physical GUI/keyboard entry surface once and confirm preserved
-  keyboard input, microphone release, and audible Esc cancellation.
+- Sample the physical GUI/keyboard entry surfaces and confirm the automated
+  behavior remains usable in the rendered application: preserved keyboard
+  input, microphone release, and audible Esc cancellation.
+
+The committed ElevenLabs PCM corpus and real Parakeet replay test replace the
+former requirement for a person to read standardized F4 utterances repeatedly.
+The semantic voice-control E2E and production compose-guard contract likewise
+cover consistent controls, prompt Escape cancellation, exactly-once voice
+submission, draft preservation, and keyboard recovery without manual repetition.
 
 The specific/custom wake model is intentionally deferred. Half-duplex is the
 shipped echo-safety default; full-duplex spoken barge-in remains an opt-in for
@@ -924,7 +939,8 @@ tools/speech-regress.sh
 - Cross-host acceptance and productization of the already-delivered 9P remote
   audio launch scripts, routing controls, and loadable engine modules.
 - Public distribution of the Parakeet EOU GGUF and a pinned conversion release.
-- Server-owned queue depth, queued-turn cancel/replace, and rich queue UI.
+- Queue policies beyond the server-owned capacity-one follow-up and Lucia's
+  queued-turn status/cancel/atomic-replace UI.
 - Native 24000/48000 Hz emulator playback.
 - Multilingual STT/TTS.
 - Voice biometrics or multi-speaker disambiguation.

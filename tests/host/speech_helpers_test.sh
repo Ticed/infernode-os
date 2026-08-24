@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+
 PREFIX=${INFERNODE_SPEECH_HOME:-"$HOME/.local/share/infernode-speech"}
 BIN="$PREFIX/bin"
 TMPDIR=${TMPDIR:-/tmp}
@@ -40,6 +42,17 @@ timeout 10 "$BIN/openwakeword-cli" --help >/dev/null
 mkdir -p "$WORKDIR/bin"
 cat >"$WORKDIR/bin/whisper-stream" <<'SH'
 #!/bin/sh
+if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+  cat <<'EOF'
+            --step N
+            --length N
+            --keep N
+  -c ID,    --capture ID
+  -vth N,   --vad-thold N
+  -m FNAME, --model FNAME
+EOF
+  exit 0
+fi
 printf '%s\n' "$@" >"$WHISPER_ARG_LOG"
 SH
 chmod +x "$WORKDIR/bin/whisper-stream"
@@ -58,6 +71,70 @@ if ! awk 'previous == "--length" && $0 == "5000" { found=1 } { previous=$0 } END
   echo "FAIL: whisper-stream-cli did not forward INFERNODE_SPEECH_WINDOW_MS" >&2
   exit 1
 fi
+if ! awk 'previous == "--step" && $0 == "0" { found=1 } { previous=$0 } END { exit !found }' \
+  "$WORKDIR/whisper.args"; then
+  echo "FAIL: whisper-stream-cli did not forward VAD --step 0" >&2
+  exit 1
+fi
+
+# INF-38: only forward flags the native binary advertises. A sparse
+# --help must not receive --step/--keep/--vad-thold; those unknown
+# args print usage and exit 0, which the shim treats as a crash.
+(
+  export INFERNODE_SPEECH_HOME="$WORKDIR/gen"
+  # shellcheck source=../../tools/install-speech-helpers.sh
+  source "$ROOT/tools/install-speech-helpers.sh"
+  write_wrappers
+  mkdir -p "$WORKDIR/sparse-bin"
+  cat >"$WORKDIR/sparse-bin/whisper-stream" <<'SH'
+#!/bin/sh
+if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+  cat <<'EOF'
+usage: whisper-stream [options]
+  -m FNAME, --model FNAME
+  -c ID,    --capture ID
+            --length N
+EOF
+  exit 0
+fi
+for arg in "$@"; do
+  case "$arg" in
+  --step|--keep|--vad-thold)
+    echo "error: unknown argument: $arg" >&2
+    echo "  -nfa,     --no-flash-attn [false  ] disable flash attention during inference" >&2
+    exit 0
+    ;;
+  esac
+done
+printf '%s\n' "$@" >"$WHISPER_ARG_LOG"
+SH
+  chmod +x "$WORKDIR/sparse-bin/whisper-stream"
+  PATH="$WORKDIR/sparse-bin:$PATH" \
+    INFERNODE_SPEECH_HOME="$WORKDIR/gen" \
+    INFERNODE_SPEECH_CAPTURE=2 \
+    INFERNODE_SPEECH_WINDOW_MS=5000 \
+    WHISPER_ARG_LOG="$WORKDIR/sparse.args" \
+    "$WORKDIR/gen/bin/whisper-stream-cli" --model "$WORKDIR/model.bin" >/dev/null
+  if ! awk 'previous == "--capture" && $0 == "2" { found=1 } { previous=$0 } END { exit !found }' \
+    "$WORKDIR/sparse.args"; then
+    echo "FAIL: sparse-help wrapper dropped --capture" >&2
+    cat "$WORKDIR/sparse.args" >&2
+    exit 1
+  fi
+  if ! awk 'previous == "--length" && $0 == "5000" { found=1 } { previous=$0 } END { exit !found }' \
+    "$WORKDIR/sparse.args"; then
+    echo "FAIL: sparse-help wrapper dropped --length" >&2
+    cat "$WORKDIR/sparse.args" >&2
+    exit 1
+  fi
+  if awk '$0 == "--step" || $0 == "--keep" || $0 == "--vad-thold" { found=1 } END { exit !found }' \
+    "$WORKDIR/sparse.args"; then
+    echo "FAIL: sparse-help wrapper forwarded unadvertised flags" >&2
+    cat "$WORKDIR/sparse.args" >&2
+    exit 1
+  fi
+)
+
 
 # Exercise stdin PCM without microphone permission or a costly real inference.
 # The fake whisper-cli writes the same full-JSON shape as whisper.cpp; energy
@@ -107,6 +184,10 @@ fi
 # while the producer is still running.
 cat >"$WORKDIR/bin/whisper-stream" <<'SH'
 #!/bin/sh
+if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+  echo "--model --capture --step --length --keep --vad-thold"
+  exit 0
+fi
 printf '### Transcription 0 START\n'
 printf '[00:00.000 --> 00:02.000]   hello from fake whisper\r\n'
 sleep 15

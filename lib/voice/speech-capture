@@ -2,12 +2,16 @@
 # tree and use only its audio device for speech capture.
 #
 # Usage:
-#   sh /lib/voice/speech-capture tcp!phone!17010 [capture-mount]
+#   sh /lib/voice/speech-capture tcp!phone!17010 [capture-mount] [mount-attempts] [state-file] [speech-ctl]
 
 load std
+load expr
 
 capture=$1
 capturemnt=$2
+mounttries=$3
+statefile=$4
+ctlfile=$5
 if {~ $#capture 0} {
 	echo 'usage: voice/speech-capture capture-device-addr [capture-mount]' >[1=2]
 	exit usage
@@ -15,13 +19,147 @@ if {~ $#capture 0} {
 if {~ $#capturemnt 0} {
 	capturemnt=/n/capture
 }
+if {~ $#mounttries 0} {
+	mounttries=30
+}
+if {~ $#statefile 0} {
+	statefile=/tmp/speech-capture.state
+}
+if {~ $#ctlfile 0} {
+	ctlfile=/n/speech/ctl
+}
+watchfile=$statefile^.watcher
 
-mkdir -p $capturemnt
-if {! mount -A $capture $capturemnt} {
-	echo 'voice/speech-capture: capture mount failed:' $capture >[1=2]
-	exit mount
+# Inferno sh's `>` opens an existing file without truncating it. Remove the
+# previous record first so state readers cannot match stale suffix bytes.
+fn setstate {
+	rm -f $statefile
+	echo $* > $statefile
 }
 
-echo 'capturedev '$capturemnt'/audio' > /n/speech/ctl
-echo 'micmode device' > /n/speech/ctl
+fn cleanupcapture {
+	unmount $capturemnt >[2] /dev/null
+}
+
+fn mountcapture {
+	tries=0
+	result=retry
+	while {~ $result retry} {
+		if {mount -A $capture $capturemnt} {
+			result=mounted
+		} {
+			tries=${expr $tries 1 +}
+			setstate waiting capture $capture attempt $tries^/$mounttries
+			if {~ $tries $mounttries} {
+				result=failed
+			}
+			if {~ $result retry} {
+				sleep 1
+			}
+		}
+	}
+}
+
+fn recovercapture {
+	tries=0
+	result=retry
+	while {~ $result retry} {
+		unmount $capturemnt >[2] /dev/null
+		if {mount -A $capture $capturemnt} {
+			if {ftest -e $capturemnt/audio} {
+				result=mounted
+			} {
+				tries=${expr $tries 1 +}
+				setstate waiting audio $capturemnt'/audio' attempt $tries^/$mounttries
+				unmount $capturemnt >[2] /dev/null
+				if {~ $tries $mounttries} {
+					result=failed
+				}
+				if {~ $result retry} {
+					sleep 1
+				}
+			}
+		} {
+			tries=${expr $tries 1 +}
+			setstate waiting capture $capture attempt $tries^/$mounttries
+			if {~ $tries $mounttries} {
+				result=failed
+			}
+			if {~ $result retry} {
+				sleep 1
+			}
+		}
+	}
+}
+
+fn routecapture {
+	result=configured
+	if {! sh -c 'echo capturedev $capturemnt/audio > $ctlfile'} {
+		result=failed
+	}
+	if {~ $result configured} {
+		if {! sh -c 'echo micmode device > $ctlfile'} {
+			result=failed
+		}
+	}
+}
+
+fn watchcapture {
+	while {~ 1 1} {
+		sleep 1
+		if {! ftest -e $capturemnt/audio} {
+			setstate disconnected capture $capture
+			# Keep the failure observable and avoid a hot remount loop.
+			sleep 1
+			recovercapture
+			if {~ $result mounted} {
+				routecapture
+				if {~ $result configured} {
+					setstate connected capture $capture device $capturemnt'/audio'
+				} {
+					cleanupcapture
+					rm -f $watchfile
+					setstate failed control $ctlfile
+					exit ctl
+				}
+			} {
+				cleanupcapture
+				rm -f $watchfile
+				setstate failed capture $capture
+				exit mount
+			}
+		}
+	}
+}
+
+setstate starting capture $capture
+rm -f $watchfile
+
+mkdir -p $capturemnt
+mountcapture
+if {! ~ $result mounted} {
+	echo 'voice/speech-capture: capture mount failed:' $capture >[1=2]
+	setstate failed capture $capture
+	cleanupcapture
+	exit mount
+}
+if {! ftest -e $capturemnt/audio} {
+	echo 'voice/speech-capture: remote audio not found:' $capturemnt'/audio' >[1=2]
+	cleanupcapture
+	setstate failed audio $capturemnt'/audio'
+	exit audio
+}
+
+routecapture
+if {! ~ $result configured} {
+	echo 'voice/speech-capture: speech control routing failed' >[1=2]
+	cleanupcapture
+	setstate failed control $ctlfile
+	exit ctl
+}
+setstate connected capture $capture device $capturemnt'/audio'
+watchcapture &
+watch_pid=$apid
+echo $watch_pid > $watchfile
 echo 'voice/speech-capture: capture device is' $capturemnt'/audio'
+echo '  recovery pid=' $watch_pid 'state=' $statefile

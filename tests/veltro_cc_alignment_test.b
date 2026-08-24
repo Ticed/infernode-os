@@ -426,14 +426,20 @@ testSystemTxtTodoMandate(t: ref T)
 		t.skip("system.txt not readable");
 		return;
 	}
-	# The CC-style emphasis ("non-trivial", "EXTREMELY helpful") was
-	# deliberately dropped when the prompt was reworked for small-model
-	# reliability (5ce3fea0, b781e9f5). The surviving mandate is the
-	# planning-discipline line.
-	t.assert(agentlib->contains(content, "use plan or todo BEFORE acting"),
+	# Prompt rework (5ce3fea0, b781e9f5, later INF-41) dropped:
+	#   - "use plan or todo BEFORE acting" (all-caps)
+	#   - a 'non-trivial tasks' threshold in system.txt
+	#   - CC-style todo encouragement in system.txt
+	# 'non-trivial' now lives in todo.txt (testTodoTxtMandate).
+	# The surviving system.txt mandate is the <complex_tasks> line.
+	t.assert(agentlib->contains(content, "Use plan (or todo) to record the steps before acting"),
 		"Fix1: system.txt mandates plan/todo before acting");
 	t.assert(!agentlib->contains(content, "3+ steps"),
 		"Fix1: old '3+ steps' threshold removed");
+	t.assert(!agentlib->contains(content, "non-trivial tasks"),
+		"Fix1: 'non-trivial tasks' threshold is not in system.txt");
+	t.assert(!agentlib->contains(content, "EXTREMELY helpful"),
+		"Fix1: CC-style todo encouragement is not in system.txt");
 }
 
 testTodoTxtMandate(t: ref T)

@@ -103,6 +103,9 @@ testListenShape(t: ref T)
 		"voice/listen calls listen builtin");
 	t.assert(contains(s, "export /dev"),
 		"voice/listen exports /dev");
+	t.assert(contains(s, "endpointfile=$2") &&
+		contains(s, "echo $net > "),
+		"voice/listen can publish its announce endpoint for supervision");
 }
 
 testDialShape(t: ref T)
@@ -136,14 +139,33 @@ testTestToneShape(t: ref T)
 testSpeechTerminalShape(t: ref T)
 {
 	s := script_contents(t, "/lib/voice/speech-terminal");
+	t.assert(contains(s, "run /lib/voice/speech-terminal"),
+		"speech-terminal documents the namespace-preserving entrypoint");
 	t.assert(contains(s, "sh /lib/voice/listen"),
 		"speech-terminal exports local audio through voice/listen");
 	t.assert(contains(s, "mount -A $engine $provider"),
 		"speech-terminal mounts the remote provider");
-	t.assert(contains(s, "echo 'provider '$provider > /n/speech/ctl"),
+	t.assert(contains(s, "ctlfile=/n/speech/ctl") &&
+		contains(s, "writectl 'provider '^$provider $ctlfile"),
 		"speech-terminal selects the mounted provider");
-	t.assert(contains(s, "echo 'duplex half' > /n/speech/ctl"),
+	t.assert(contains(s, "writectl 'duplex half' $ctlfile"),
 		"speech-terminal preserves the half-duplex default");
+	t.assert(contains(s, "writectl 'duplex half' $provider/ctl"),
+		"speech-terminal requires the remote provider to accept half-duplex");
+	t.assert(contains(s, "fn routeprovider") &&
+		contains(s, "setstate failed control $result"),
+		"speech-terminal reports routing failure instead of connected");
+	t.assert(contains(s, "watchprovider"),
+		"speech-terminal monitors and remounts a disconnected provider");
+	t.assert(contains(s, "connected provider"),
+		"speech-terminal exposes its connection state");
+	t.assert(contains(s, "mounttries=30"),
+		"speech-terminal bounds its initial mount attempts");
+	t.assert(contains(s, "rm -f $statefile"),
+		"speech-terminal replaces state records without stale suffixes");
+	t.assert(contains(s, "echo hangup > $listenerctl/ctl") &&
+		contains(s, "echo killgrp >/prog/$terminal_pid/ctl"),
+		"speech-terminal closes its listener endpoint and process group");
 }
 
 testSpeechEngineShape(t: ref T)
@@ -151,14 +173,25 @@ testSpeechEngineShape(t: ref T)
 	s := script_contents(t, "/lib/voice/speech-engine");
 	t.assert(contains(s, "mount -A $terminal $termmnt"),
 		"speech-engine imports terminal audio");
-	t.assert(contains(s, "speechshim9p -m $provider"),
+	t.assert(contains(s, "/dis/veltro/speechshim9p.dis -m $provider"),
 		"speech-engine starts a provider at an isolated mount");
-	t.assert(contains(s, "echo 'audiodev '$termmnt'/audio' > $provider/ctl"),
+	t.assert(contains(s, "writectl 'audiodev '^$termmnt'/audio' $provider/ctl"),
 		"speech-engine routes playback and default capture through imported audio");
-	t.assert(contains(s, "echo 'micmode device' > $provider/ctl"),
+	t.assert(contains(s, "writectl 'micmode device' $provider/ctl"),
 		"speech-engine enables namespace-backed PCM capture");
+	t.assert(contains(s, "listen -As $addr"),
+		"speech-engine keeps the provider listener attached for runtime state");
 	t.assert(contains(s, "export $provider"),
 		"speech-engine exports the provider contract");
+	t.assert(contains(s, "failed provider listener"),
+		"speech-engine exposes a runtime listener failure");
+	t.assert(contains(s, "mounttries=30"),
+		"speech-engine bounds its initial terminal mount attempts");
+	t.assert(contains(s, "rm -f $statefile"),
+		"speech-engine replaces state records without stale suffixes");
+	t.assert(contains(s, "fn cleanupengine") &&
+		contains(s, "echo killgrp >/prog/$shim_pid/ctl"),
+		"speech-engine tears down its mounts and shim process group");
 }
 
 testSpeechCaptureShape(t: ref T)
@@ -166,10 +199,34 @@ testSpeechCaptureShape(t: ref T)
 	s := script_contents(t, "/lib/voice/speech-capture");
 	t.assert(contains(s, "mount -A $capture $capturemnt"),
 		"speech-capture imports a remote device tree");
-	t.assert(contains(s, "echo 'capturedev '$capturemnt'/audio' > /n/speech/ctl"),
+	t.assert(contains(s, "ctlfile=/n/speech/ctl"),
+		"speech-capture defaults to the installed speech control file");
+	t.assert(contains(s, "echo capturedev $capturemnt/audio > $ctlfile"),
 		"speech-capture changes capture without changing playback");
-	t.assert(contains(s, "echo 'micmode device' > /n/speech/ctl"),
+	t.assert(contains(s, "echo micmode device > $ctlfile"),
 		"speech-capture enables device-fed helpers");
+	t.assert(contains(s, "watchcapture"),
+		"speech-capture monitors and remounts a disconnected audio export");
+	t.assert(contains(s, "connected capture"),
+		"speech-capture exposes its connection state");
+	t.assert(contains(s, "rm -f $statefile"),
+		"speech-capture replaces state records without stale suffixes");
+	t.assert(contains(s, "fn cleanupcapture") &&
+		contains(s, "watchfile=$statefile^.watcher"),
+		"speech-capture exposes and removes its supervised watcher state");
+}
+
+testSpeechPhoneShape(t: ref T)
+{
+	s := script_contents(t, "/lib/voice/speech-phone");
+	t.assert(contains(s, "port=17010"),
+		"speech-phone has the documented default port");
+	t.assert(contains(s, "listen -A 'tcp!*!'$port"),
+		"speech-phone exports through the explicit unauthenticated dev listener");
+	t.assert(contains(s, "{export /dev}"),
+		"speech-phone exports only the device tree");
+	t.assert(contains(s, "trusted networks only"),
+		"speech-phone identifies the development security boundary");
 }
 
 testSpeechTestUsesInstalledCtl(t: ref T)
@@ -177,6 +234,9 @@ testSpeechTestUsesInstalledCtl(t: ref T)
 	launcher := script_contents(t, "/tools/speech-test.sh");
 	t.assert(contains(launcher, "speech.ctl.sh"),
 		"headless speech test discovers the installer-selected ctl file");
+	t.assert(contains(launcher, "speech-test-ctl.XXXXXX") &&
+		contains(launcher, "configfile=\"/tmp/"),
+		"headless speech test stages host ctl inside the emulator root");
 	t.assert(contains(launcher, "-C"),
 		"headless speech test passes the selected ctl file to speechtest");
 
@@ -196,6 +256,21 @@ testVoiceDraftPresentation(t: ref T)
 		"the pending voice turn is explicitly marked unsent");
 	t.assert(contains(conv, "voiceactive() && k != 0"),
 		"keyboard compose edits are locked while voice owns the turn");
+	t.assert(contains(conv, "conversation/voicequeue"),
+		"conversation reads the server-owned follow-up queue state");
+	t.assert(contains(conv, "Queued follow-up - not sent"),
+		"queued follow-up renders as a visibly unsent conversation tile");
+	t.assert(contains(conv, "if(action == \"Cancel\")") &&
+		contains(conv, "replace \" + queueeditbuf"),
+		"queued follow-up exposes queue-scoped cancel and atomic replace");
+	t.assert(contains(conv, "queueeditbuf: string") &&
+		contains(conv, "typed compose is untouched"),
+		"replacement editing stays isolated from the typed compose buffer");
+	t.assert(contains(conv, "state=disconnected\\n"),
+		"a missing queue mount becomes an explicit disconnected state");
+	t.assert(contains(conv, "queuedepth > 0"),
+		"delivered leftover queue status is not drawn as a follow-up");
+
 
 	boot := script_contents(t, "/appl/cmd/lucifer.b");
 	t.assert(contains(boot, "convEvCh <-= ev"),
@@ -223,6 +298,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("SpeechTerminalShape", testSpeechTerminalShape);
 	run("SpeechEngineShape", testSpeechEngineShape);
 	run("SpeechCaptureShape", testSpeechCaptureShape);
+	run("SpeechPhoneShape", testSpeechPhoneShape);
 	run("SpeechTestUsesInstalledCtl", testSpeechTestUsesInstalledCtl);
 	run("VoiceDraftPresentation", testVoiceDraftPresentation);
 

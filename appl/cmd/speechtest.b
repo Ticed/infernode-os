@@ -63,6 +63,7 @@ echoback := 0;
 turns := 0;
 bootstrap := 0;
 bootstrapped := 0;
+wakewatch := 0;
 
 LISTEN_EMPTY, LISTEN_PARTIAL, LISTEN_FINAL, LISTEN_ERROR: con iota;
 
@@ -275,6 +276,30 @@ startsrv(dis: string, argv: list of string, ready: string): string
 	return nil;
 }
 
+# A read of the wake file blocks until the wake-word helper fires, so this
+# runs in its own proc beside the listen loop. Detection is reported rather
+# than acted on: the point is to prove the wake word reaches the helper,
+# including when capture comes from a remote device.
+wakereader()
+{
+	for(;;) {
+		rec := readfile(speech + "/wake");
+		if(rec == nil) {
+			sys->sleep(250);
+			continue;
+		}
+		line := strip(rec);
+		if(line == "")
+			continue;
+		if(len line > 6 && line[0:6] == "error:") {
+			sys->print("wake error: %s\n", errline(rec));
+			sys->sleep(1000);
+			continue;
+		}
+		sys->print("wake: %s\n", line);
+	}
+}
+
 ctlwrite(line: string)
 {
 	if(writefile(speech + "/ctl", line) < 0)
@@ -291,6 +316,9 @@ helperctl(bindir: string)
 	modeldir := bindir + "/../models";
 	if(len bindir > 4 && bindir[len bindir - 4:] == "/bin")
 		modeldir = bindir[:len bindir - 4] + "/models";
+	# Same as boot.sh: without this, /n/speech/say uses the host `say`
+	# command and the shim never sees the playback (INF-29).
+	ctlwrite("engine kokoro");
 	ctlwrite("kokorobin " + bindir + "/kokoro-cli");
 	ctlwrite("whisperstreambin " + bindir + "/whisper-stream-cli");
 	ctlwrite("whispermodel " + modeldir + "/ggml-base.en.bin");
@@ -363,7 +391,7 @@ init(nil: ref Draw->Context, args: list of string)
 	}
 
 	arg->init(args);
-	arg->setusage("speechtest [-bde] [-n turns] [-p phrase] [-s /n/speech] " +
+	arg->setusage("speechtest [-bdew] [-n turns] [-p phrase] [-s /n/speech] " +
 		"[-C ctlfile] [-H helperbindir] [-c 'key value'] [-M 'dialaddr mountpt']");
 	ctllines: list of string;
 	mounts: list of string;
@@ -374,6 +402,7 @@ init(nil: ref Draw->Context, args: list of string)
 		'b' =>	bootstrap = 1;
 		'd' =>	debug = 1;
 		'e' =>	echoback = 1;
+		'w' =>	wakewatch = 1;
 		'n' =>	turns = int arg->earg();
 		'p' =>	phrase = arg->earg();
 		's' =>	speech = arg->earg();
@@ -393,6 +422,7 @@ init(nil: ref Draw->Context, args: list of string)
 	}
 
 	if(bootstrap && !exists(speech + "/ctl")) {
+		sys->create("/n", Sys->OREAD, Sys->DMDIR | 8r755);
 		sys->print("speechtest: starting speech stack (speechshim9p + speech9p)\n");
 		err := startsrv(SHIMPATH, "speechshim9p" :: "-m" :: SHIMMNT :: nil,
 			SHIMMNT + "/ctl");
@@ -406,6 +436,11 @@ init(nil: ref Draw->Context, args: list of string)
 		ctlwrite("duplex half");
 	}
 
+	# -H and -C compose: helpers first (engine kokoro + bins), then the
+	# ctl script (leveltrace, extra topology). -C used to replace -H,
+	# which left /n/speech/say on the host `say` command (INF-29).
+	if(helperbin != "")
+		helperctl(helperbin);
 	if(ctlfile != "") {
 		sh := load Sh Sh->PATH;
 		if(sh == nil)
@@ -415,8 +450,6 @@ init(nil: ref Draw->Context, args: list of string)
 			fatal(sys->sprint("speech ctl file failed: %s: %s", ctlfile, err));
 		log("ctl file: " + ctlfile);
 	}
-	else if(helperbin != "")
-		helperctl(helperbin);
 	for(; ctllines != nil; ctllines = tl ctllines)
 		ctlwrite(hd ctllines);
 
@@ -426,6 +459,10 @@ init(nil: ref Draw->Context, args: list of string)
 	sys->print("speechtest: listening on %s — speak; every final transcript answers with %s\n",
 		speech, saywhat);
 	chime("on");
+	if(wakewatch) {
+		sys->print("speechtest: watching %s/wake\n", speech);
+		spawn wakereader();
+	}
 
 	completed := 0;
 	lastpartial := "";

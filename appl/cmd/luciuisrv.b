@@ -24,6 +24,9 @@ implement Luciuisrv;
 #                   ctl              write new messages
 #                   input            user text (blocking read)
 #                   voiceinput       voice-originated text (blocking read)
+#                   voicequeue       read-only bounded queue state and text
+#                   voicequeue-ctl   cancel or atomically replace queued text
+#                   voiceapproval    blocked Allow/Deny input (blocking read)
 #                   control          cancel/pause/resume/refine (blocking read)
 #                   draft            replaceable, non-submitting text
 #                   0, 1, 2...       numbered message files
@@ -114,6 +117,12 @@ Qconvvoiceinput: con 36;	# conversation/voiceinput, voice-originated input
 Qconvdraft:	con 37;	# conversation/draft, replaceable non-submitting text
 Qconvcontrol:	con 38;	# conversation/control, active-turn voice controls
 Qconvdraftstatus: con 39;	# conversation/draft-status, pending-turn presentation
+Qvoicecontrol:	con 40;	# /voice-control, semantic on/off/toggle commands
+Qconvvoicequeue: con 41;	# conversation/voicequeue, bounded queue status
+Qconvvoicequeuectl: con 42;	# conversation/voicequeue-ctl, cancel/replace
+Qconvvoiceapproval: con 43;	# conversation/voiceapproval, blocked Allow/Deny
+
+VOICE_QUEUE_CAPACITY: con 1;
 
 # --- QID encoding ---
 # 64-bit path: [activity_id:16][sub_id:16][unused:24][filetype:8]
@@ -203,6 +212,9 @@ Activity: adt {
 	nmsg:	int;
 	inputq:	list of string;
 	voiceinputq: list of string;
+	voicequeuestate: string;	# empty | queued | delivering | delivered | rejected | cancelled | replaced
+	voicequeuetext: string;	# last queue item; status-only, never consumed by reads
+	voiceapprovalq: list of string;
 	controlq: list of string;
 	draft:	string;
 	draftstatus: string;
@@ -247,6 +259,7 @@ nact: int;
 nextactid: int;
 currentact: int;		# id of current activity
 inputmode: string;		# "k" keyboard, "v" voice
+lastvoicecontrol: string;	# last semantic control command and resulting mode
 
 # Available resources catalog (loaded once at init from /lib/veltro/resources/)
 catalog: array of ref CatalogEntry;
@@ -387,6 +400,7 @@ init(nil: ref Draw->Context, args: list of string)
 	nextactid = 0;
 	currentact = -1;
 	inputmode = "k";
+	lastvoicecontrol = "mode=k action=init source=server";
 	vers = 0;
 
 	# Load available resources catalog from /lib/veltro/resources/
@@ -428,7 +442,7 @@ newactivity(label: string): ref Activity
 	a := ref Activity(
 		id, label, "active",
 		0,					# urgency
-		array[32] of ref ConvMsg, 0, nil, nil, nil, "", "", # conversation
+		array[32] of ref ConvMsg, 0, nil, nil, "empty", "", nil, nil, "", "", # conversation
 		"", array[16] of ref Artifact, 0,	# presentation
 		array[16] of ref Resource, 0,		# resources
 		array[8] of ref Gap, 0,			# gaps
@@ -662,6 +676,43 @@ addpending(fid, tag, ft, actid: int, m: ref Tmsg.Read)
 	pending = p;
 }
 
+activitybusy(a: ref Activity): int
+{
+	return a != nil && a.status != nil && a.status != "" &&
+		a.status != "idle" && a.status != "active" && a.status != "complete";
+}
+
+# A busy voice follow-up stays owned by luciuisrv even when lucibridge already
+# has a read pending. Release it only after the activity reaches a non-busy
+# boundary, so queue status/cancel/replace cover the sole pending turn.
+deliverqueuedvoice(a: ref Activity)
+{
+	if(a == nil || activitybusy(a) || a.voiceinputq == nil)
+		return;
+	prev: ref PendingRead;
+	p := pending;
+	while(p != nil) {
+		next := p.next;
+		if(p.ft == Qconvvoiceinput && p.actid == a.id) {
+			text := hd a.voiceinputq;
+			data := array of byte (text + "\n");
+			a.voiceinputq = tl a.voiceinputq;
+			a.voicequeuestate = "delivering";
+			a.voicequeuetext = text;
+			if(prev == nil)
+				pending = next;
+			else
+				prev.next = next;
+			srv_reply_read(p, data);
+			vers++;
+			pushevent(a.id, "voicequeue");
+			return;
+		}
+		prev = p;
+		p = next;
+	}
+}
+
 findeventsub(fid: int): ref EventSub
 {
 	s := eventsubs;
@@ -884,6 +935,8 @@ doread(srv: ref Styxserver, m: ref Tmsg.Read, c: ref Fid)
 		srv.reply(styxservers->readbytes(m, array of byte (string currentact + "\n")));
 	Qinputmode =>
 		srv.reply(styxservers->readbytes(m, array of byte (inputmode + "\n")));
+	Qvoicecontrol =>
+		srv.reply(styxservers->readbytes(m, array of byte (lastvoicecontrol + "\n")));
 
 	Qactlabel =>
 		a := findactivity(actid);
@@ -945,13 +998,47 @@ doread(srv: ref Styxserver, m: ref Tmsg.Read, c: ref Fid)
 			srv.reply(ref Rmsg.Error(m.tag, Enotfound));
 			break;
 		}
-		if(a.voiceinputq == nil) {
+		if(a.voiceinputq == nil || activitybusy(a)) {
 			addpending(m.fid, m.tag, Qconvvoiceinput, actid, m);
 		} else {
-			data := array of byte (hd a.voiceinputq + "\n");
+			text := hd a.voiceinputq;
+			data := array of byte (text + "\n");
 			a.voiceinputq = tl a.voiceinputq;
+			a.voicequeuestate = "delivering";
+			a.voicequeuetext = text;
+			vers++;
+			pushevent(actid, "voicequeue");
 			srv.reply(styxservers->readbytes(m, data));
 		}
+	Qconvvoiceapproval =>
+		a := findactivity(actid);
+		if(a == nil) {
+			srv.reply(ref Rmsg.Error(m.tag, Enotfound));
+			break;
+		}
+		if(a.voiceapprovalq == nil)
+			addpending(m.fid, m.tag, Qconvvoiceapproval, actid, m);
+		else {
+			data := array of byte (hd a.voiceapprovalq + "\n");
+			a.voiceapprovalq = tl a.voiceapprovalq;
+			srv.reply(ref Rmsg.Read(m.tag, data));
+		}
+	Qconvvoicequeue =>
+		a := findactivity(actid);
+		if(a == nil) {
+			srv.reply(ref Rmsg.Error(m.tag, Enotfound));
+			break;
+		}
+		depth := 0;
+		if(a.voiceinputq != nil)
+			depth = 1;
+		# Metadata is one attribute line; the queued transcript follows raw on
+		# the next line so spaces, equals signs, and quotes cannot be mistaken
+		# for status attributes by renderers.
+		status := sys->sprint("depth=%d capacity=%d state=%s\n%s\n",
+			depth, VOICE_QUEUE_CAPACITY, a.voicequeuestate,
+			a.voicequeuetext);
+		srv.reply(styxservers->readbytes(m, array of byte status));
 	Qconvcontrol =>
 		a := findactivity(actid);
 		if(a == nil) {
@@ -1171,6 +1258,43 @@ dowrite(srv: ref Styxserver, m: ref Tmsg.Write, c: ref Fid)
 		vers++;
 		pushglobalevent("input-mode " + inputmode);
 		srv.reply(ref Rmsg.Write(m.tag, len m.data));
+	Qvoicecontrol =>
+		(ntok, toks) := sys->tokenize(data, " \t");
+		if(ntok < 1 || ntok > 2) {
+			srv.reply(ref Rmsg.Error(m.tag,
+				"voice-control must be on|off|toggle [source=name]"));
+			break;
+		}
+		action := hd toks;
+		source := "unspecified";
+		if(ntok == 2) {
+			sourcearg := hd tl toks;
+			if(!hasprefix(sourcearg, "source=") || len sourcearg <= len "source=") {
+				srv.reply(ref Rmsg.Error(m.tag,
+					"voice-control source must be source=name"));
+				break;
+			}
+			source = sourcearg[len "source=":];
+		}
+		if(action == "on")
+			inputmode = "v";
+		else if(action == "off")
+			inputmode = "k";
+		else if(action == "toggle") {
+			if(inputmode == "v")
+				inputmode = "k";
+			else
+				inputmode = "v";
+		} else {
+			srv.reply(ref Rmsg.Error(m.tag,
+				"voice-control action must be on, off, or toggle"));
+			break;
+		}
+		lastvoicecontrol = "mode=" + inputmode + " action=" + action + " source=" + source;
+		vers++;
+		pushglobalevent("voice-control " + lastvoicecontrol);
+		pushglobalevent("input-mode " + inputmode);
+		srv.reply(ref Rmsg.Write(m.tag, len m.data));
 
 	Qactevent =>
 		# Write to the event file = flush: discard buffered events and kick
@@ -1203,6 +1327,13 @@ dowrite(srv: ref Styxserver, m: ref Tmsg.Write, c: ref Fid)
 			break;
 		}
 		a.status = safeattrtext(data);
+		if(a.status != "blocked")
+			a.voiceapprovalq = nil;
+		if(a.voicequeuestate == "delivering" && activitybusy(a)) {
+			a.voicequeuestate = "delivered";
+			pushevent(actid, "voicequeue");
+		}
+		deliverqueuedvoice(a);
 		vers++;
 		pushevent(actid, "status");
 		srv.reply(ref Rmsg.Write(m.tag, len m.data));
@@ -1275,28 +1406,98 @@ dowrite(srv: ref Styxserver, m: ref Tmsg.Write, c: ref Fid)
 			srv.reply(ref Rmsg.Error(m.tag, Enotfound));
 			break;
 		}
-		vdelivered := 0;
-		vprev: ref PendingRead;
-		vp := pending;
-		while(vp != nil) {
-			next := vp.next;
-			if(vp.ft == Qconvvoiceinput && vp.actid == actid) {
+		if(a.voiceinputq != nil) {
+			a.voicequeuestate = "rejected";
+			vers++;
+			pushevent(actid, "voicequeue");
+			srv.reply(ref Rmsg.Error(m.tag, "voice follow-up queue full"));
+			break;
+		}
+		a.voiceinputq = data :: nil;
+		a.voicequeuestate = "queued";
+		a.voicequeuetext = data;
+		vers++;
+		pushevent(actid, "voiceinput");
+		pushevent(actid, "voicequeue");
+		deliverqueuedvoice(a);
+		srv.reply(ref Rmsg.Write(m.tag, len m.data));
+	Qconvvoiceapproval =>
+		a := findactivity(actid);
+		if(a == nil) {
+			srv.reply(ref Rmsg.Error(m.tag, Enotfound));
+			break;
+		}
+		if(a.status != "blocked") {
+			srv.reply(ref Rmsg.Error(m.tag,
+				"voice approval requires blocked activity"));
+			break;
+		}
+		if(data != "Allow" && data != "Deny") {
+			srv.reply(ref Rmsg.Error(m.tag,
+				"voiceapproval must be Allow or Deny"));
+			break;
+		}
+		adelivered := 0;
+		aprev: ref PendingRead;
+		ap := pending;
+		while(ap != nil) {
+			next := ap.next;
+			if(ap.ft == Qconvvoiceapproval && ap.actid == actid) {
 				reply := array of byte (data + "\n");
-				srv_g.reply(styxservers->readbytes(vp.m, reply));
-				if(vprev == nil)
+				srv_reply_read(ap, reply);
+				if(aprev == nil)
 					pending = next;
 				else
-					vprev.next = next;
-				vdelivered = 1;
-				vp = next;
+					aprev.next = next;
+				adelivered = 1;
 				break;
 			}
-			vprev = vp;
-			vp = next;
+			aprev = ap;
+			ap = next;
 		}
-		if(!vdelivered)
-			a.voiceinputq = appendstr(a.voiceinputq, data);
-		pushevent(actid, "voiceinput");
+		if(!adelivered) {
+			if(a.voiceapprovalq != nil) {
+				srv.reply(ref Rmsg.Error(m.tag, "voice approval already pending"));
+				break;
+			}
+			a.voiceapprovalq = data :: nil;
+		}
+		pushevent(actid, "voiceapproval");
+		srv.reply(ref Rmsg.Write(m.tag, len m.data));
+	Qconvvoicequeuectl =>
+		a := findactivity(actid);
+		if(a == nil) {
+			srv.reply(ref Rmsg.Error(m.tag, Enotfound));
+			break;
+		}
+		if(data == "cancel") {
+			if(a.voiceinputq == nil) {
+				srv.reply(ref Rmsg.Error(m.tag, "voice follow-up queue empty"));
+				break;
+			}
+			a.voiceinputq = nil;
+			a.voicequeuestate = "cancelled";
+		} else if(hasprefix(data, "replace ")) {
+			text := data[len "replace ":];
+			if(text == "") {
+				srv.reply(ref Rmsg.Error(m.tag,
+					"voicequeue replace requires text"));
+				break;
+			}
+			if(a.voiceinputq == nil) {
+				srv.reply(ref Rmsg.Error(m.tag, "voice follow-up queue empty"));
+				break;
+			}
+			a.voiceinputq = text :: nil;
+			a.voicequeuestate = "replaced";
+			a.voicequeuetext = text;
+		} else {
+			srv.reply(ref Rmsg.Error(m.tag,
+				"voicequeue-ctl must be cancel or replace <text>"));
+			break;
+		}
+		vers++;
+		pushevent(actid, "voicequeue");
 		srv.reply(ref Rmsg.Write(m.tag, len m.data));
 	Qconvcontrol =>
 		a := findactivity(actid);
@@ -1491,6 +1692,8 @@ globalctl(data: string): string
 		activities[idx].pendingevent = nil;
 		activities[idx].inputq = nil;
 		activities[idx].voiceinputq = nil;
+		activities[idx].voicequeuestate = "disconnected";
+		activities[idx].voiceapprovalq = nil;
 		activities[idx].controlq = nil;
 		vers++;
 		pushglobalevent("activity delete " + idstr);
@@ -2142,6 +2345,8 @@ dirgen(p: big): (ref Sys->Dir, string)
 		return (dir(Qid(p, vers, Sys->QTFILE), "toast", big 0, 8r666), nil);
 	Qinputmode =>
 		return (dir(Qid(p, vers, Sys->QTFILE), "input-mode", big 0, 8r666), nil);
+	Qvoicecontrol =>
+		return (dir(Qid(p, vers, Sys->QTFILE), "voice-control", big 0, 8r666), nil);
 	Qactdir =>
 		return (dir(Qid(p, vers, Sys->QTDIR), "activity", big 0, 8r755), nil);
 	Qactcurrent =>
@@ -2164,6 +2369,12 @@ dirgen(p: big): (ref Sys->Dir, string)
 		return (dir(Qid(p, vers, Sys->QTFILE), "input", big 0, 8r666), nil);
 	Qconvvoiceinput =>
 		return (dir(Qid(p, vers, Sys->QTFILE), "voiceinput", big 0, 8r666), nil);
+	Qconvvoicequeue =>
+		return (dir(Qid(p, vers, Sys->QTFILE), "voicequeue", big 0, 8r444), nil);
+	Qconvvoicequeuectl =>
+		return (dir(Qid(p, vers, Sys->QTFILE), "voicequeue-ctl", big 0, 8r222), nil);
+	Qconvvoiceapproval =>
+		return (dir(Qid(p, vers, Sys->QTFILE), "voiceapproval", big 0, 8r666), nil);
 	Qconvcontrol =>
 		return (dir(Qid(p, vers, Sys->QTFILE), "control", big 0, 8r666), nil);
 	Qconvdraft =>
@@ -2249,6 +2460,8 @@ navigator(navops: chan of ref Navop)
 					n.path = MKPATH(0, 0, Qtoast);
 				"input-mode" =>
 					n.path = MKPATH(0, 0, Qinputmode);
+				"voice-control" =>
+					n.path = MKPATH(0, 0, Qvoicecontrol);
 				"activity" =>
 					n.path = MKPATH(0, 0, Qactdir);
 				"catalog" =>
@@ -2309,6 +2522,12 @@ navigator(navops: chan of ref Navop)
 					n.path = MKPATH(actid, 0, Qconvinput);
 				"voiceinput" =>
 					n.path = MKPATH(actid, 0, Qconvvoiceinput);
+				"voicequeue" =>
+					n.path = MKPATH(actid, 0, Qconvvoicequeue);
+				"voicequeue-ctl" =>
+					n.path = MKPATH(actid, 0, Qconvvoicequeuectl);
+				"voiceapproval" =>
+					n.path = MKPATH(actid, 0, Qconvvoiceapproval);
 				"control" =>
 					n.path = MKPATH(actid, 0, Qconvcontrol);
 				"draft" =>
@@ -2460,7 +2679,8 @@ navigator(navops: chan of ref Navop)
 						n.path = MKPATH(0, 0, Qactdir);
 					Qactlabel or Qactstatus or Qacturgency or Qactevent =>
 						n.path = MKPATH(actid, 0, Qact);
-					Qconvctl or Qconvinput or Qconvvoiceinput or Qconvcontrol or
+					Qconvctl or Qconvinput or Qconvvoiceinput or Qconvvoicequeue or
+					Qconvvoicequeuectl or Qconvvoiceapproval or Qconvcontrol or
 					Qconvdraft or Qconvdraftstatus or Qconvmsg =>
 						n.path = MKPATH(actid, 0, Qconvdir);
 					Qpresctl or Qprescurrent =>
@@ -2498,6 +2718,7 @@ navigator(navops: chan of ref Navop)
 					MKPATH(0, 0, Qnotification),
 					MKPATH(0, 0, Qtoast),
 					MKPATH(0, 0, Qinputmode),
+					MKPATH(0, 0, Qvoicecontrol),
 					MKPATH(0, 0, Qactdir),
 					MKPATH(0, 0, Qcatalogdir),
 				};
@@ -2544,9 +2765,10 @@ navigator(navops: chan of ref Navop)
 
 			Qconvdir =>
 				a := findactivity(actid);
-				# ctl + keyboard input + voice input + control + draft +
+				# ctl + keyboard input + voice input + queue status/control +
+				# voice approval + active-turn control + draft +
 				# draft-status + messages
-				total := 6;
+				total := 9;
 				if(a != nil)
 					total += a.nmsg;
 				i := n.offset;
@@ -2567,23 +2789,38 @@ navigator(navops: chan of ref Navop)
 					i++;
 				}
 				if(i == 3 && cnt > 0) {
-					n.reply <-= dirgen(MKPATH(actid, 0, Qconvcontrol));
+					n.reply <-= dirgen(MKPATH(actid, 0, Qconvvoicequeue));
 					cnt--;
 					i++;
 				}
 				if(i == 4 && cnt > 0) {
-					n.reply <-= dirgen(MKPATH(actid, 0, Qconvdraft));
+					n.reply <-= dirgen(MKPATH(actid, 0, Qconvvoicequeuectl));
 					cnt--;
 					i++;
 				}
 				if(i == 5 && cnt > 0) {
+					n.reply <-= dirgen(MKPATH(actid, 0, Qconvvoiceapproval));
+					cnt--;
+					i++;
+				}
+				if(i == 6 && cnt > 0) {
+					n.reply <-= dirgen(MKPATH(actid, 0, Qconvcontrol));
+					cnt--;
+					i++;
+				}
+				if(i == 7 && cnt > 0) {
+					n.reply <-= dirgen(MKPATH(actid, 0, Qconvdraft));
+					cnt--;
+					i++;
+				}
+				if(i == 8 && cnt > 0) {
 					n.reply <-= dirgen(MKPATH(actid, 0, Qconvdraftstatus));
 					cnt--;
 					i++;
 				}
 				if(a != nil) {
 					for(; i < total && cnt > 0; i++) {
-						midx := i - 6;
+						midx := i - 9;
 						n.reply <-= dirgen(MKPATH(actid, midx, Qconvmsg));
 						cnt--;
 					}

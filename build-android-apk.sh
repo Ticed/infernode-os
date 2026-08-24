@@ -19,12 +19,12 @@
 # Output (when gradle runs):
 #   android-app/app/build/outputs/apk/debug/app-debug.apk
 #
-# Prereqs:
-#   * Android NDK r29 (ANDROID_NDK_HOME, default $HOME/Android/Sdk/ndk/android-ndk-r29)
-#   * Host mk + limbo at Linux/amd64/bin/
-#   * (Optional, for full APK) JDK 17+ and Android SDK 35 with build-tools.
-#     The script tolerates the SDK being absent and tells the user what
-#     to do.
+# Prereqs (checked together by tools/android-speech-preflight.sh, INF-17):
+#   * Android SDK — $ANDROID_HOME, $ANDROID_SDK_ROOT, then the Android
+#     Studio default ~/Library/Android/sdk, then ~/Android/Sdk
+#   * Android NDK r29 under that SDK (or $ANDROID_NDK_HOME)
+#   * Host mk + limbo (Linux/amd64 or MacOSX/arm64|/amd64)
+#   * JDK 17+ on PATH or Android Studio's JBR, unless --skip-gradle
 #
 # Usage (from repo root):
 #   ./build-android-apk.sh                       # debug APK, arm64-v8a (phone hw)
@@ -44,6 +44,11 @@
 set -e
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+
+# INF-17: resolve SDK/NDK/host tools before any cross-compile starts, and
+# fail with every miss at once instead of one path after another.
+. "$ROOT/tools/android-speech-preflight.sh"
+
 
 GRADLE_TASK=assembleDebug
 SKIP_GRADLE=0
@@ -74,6 +79,15 @@ case "$ABI" in
         exit 2
         ;;
 esac
+
+need_java=1
+[ "$SKIP_GRADLE" -eq 1 ] && need_java=0
+android_preflight_init
+android_preflight_run_build "$need_java"
+android_preflight_finish || exit 1
+android_preflight_export
+android_preflight_write_local_properties
+
 
 # Internal helpers: ABI → NDK driver script + Inferno OBJTYPE + SDL3 prefix.
 ndk_script_for_abi() {
@@ -138,7 +152,8 @@ for abi in $ABIS; do
     # --- Step 2.x: libemu.so for this ABI --------------------------------
     echo "::: ${step}/4  [$abi] Link libemu.so (shared variant for JNI)"
     export ROOT
-    export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${HOME}/Android/Sdk/ndk/android-ndk-r29}"
+    # ANDROID_NDK_HOME was resolved by the INF-17 preflight above so the
+    # inner NDK/SDL3 scripts see the Studio path, not the stale default.
     # Same host-mk autodetection as build-android-ndk-arm64.sh: Linux CI
     # has Linux/amd64/bin/mk; a Mac dev box has MacOSX/arm64/bin/mk.
     HOST_BIN=""
@@ -228,7 +243,7 @@ cp -a "$ROOT/dis"    "$ASSETS/dis"
 # IMPORTANT: dot-prefixed names (.keep, .gitkeep, etc.) get stripped
 # by aapt during APK packaging, so use a normal name. Same trick for
 # every other Inferno-side bind/mount root that ships empty.
-for d in n phone usr/inferno/secstore usr/inferno/tmp; do
+for d in n mnt phone tmp usr/inferno/secstore usr/inferno/tmp; do
     mkdir -p "$ASSETS/$d"
     touch    "$ASSETS/$d/KEEPDIR"
 done

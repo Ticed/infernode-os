@@ -1,0 +1,10 @@
+provider=Kokoro
+voice=bm_george
+sample_rate=16000
+channels=1
+sample_format=s16le
+duration_ms=1280
+text=What is your name?
+sha256=8550978908580a36010a5e236639a5653fe0bcb42f3ac7d14d689a7892bc2af2
+generated_utc=2026-08-19T17:30:48+00:00
+generator=printf "What is your name?" | kokoro-cli --voice bm_george --rate 16000

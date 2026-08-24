@@ -1,0 +1,11 @@
+provider=Kokoro
+voice=bm_george
+sample_rate=16000
+channels=1
+sample_format=s16le
+duration_ms=1258
+text=Hey Jarvis.
+wake_model=hey_jarvis_v0.1
+sha256=e5025f0cf161c6959849fc32328bb1a41135cb7ef6aa62a3a4d9b443645232b3
+generated_utc=2026-08-19T17:30:48+00:00
+generator=printf "Hey Jarvis." | kokoro-cli --voice bm_george --rate 16000

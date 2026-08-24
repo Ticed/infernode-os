@@ -26,10 +26,22 @@ run_inferno() {
   "$EMU" -r. /dis/sh.dis -c "$1"
 }
 
+# An open that fails while the driver can still see devices is a real
+# regression, not an unusable host: the audio subsystem came up with an
+# empty device list (INF-22). The device-less case stays a skip.
+assert_devices_or_skip() {
+  if grep -q "devices present: yes" "$1"; then
+    echo "FAIL: audio open failed while the driver reports devices (INF-22)"
+    return 1
+  fi
+  return 0
+}
+
 run_audio_inferno() {
   local log="$AUDIODIR/audio-test.log"
   if run_inferno "$1" >"$log" 2>&1; then
     cat "$log"
+    assert_devices_or_skip "$log" || return 1
     if grep -Eq "cannot start CoreAudio (input|output): -66680" "$log"; then
       rm -f "$AUDIODIR/audio-capture.pcm"
       echo "SKIP: CoreAudio device unavailable in this host session"
@@ -37,6 +49,7 @@ run_audio_inferno() {
     return 0
   fi
   cat "$log"
+  assert_devices_or_skip "$log" || return 1
   if grep -Eq "cannot start CoreAudio (input|output): -66680" "$log"; then
     rm -f "$AUDIODIR/audio-capture.pcm"
     echo "SKIP: CoreAudio device unavailable in this host session"

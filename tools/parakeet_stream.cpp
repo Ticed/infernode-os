@@ -8,9 +8,14 @@
 //   partial <utterance text so far>
 //   final confidence=0.9123 <utterance text>
 //
-// A `final` fires on each model-emitted end-of-utterance (<EOU>/<EOB>)
-// event — the model itself decides when a turn is over, replacing the
-// energy-VAD heuristic the whisper wrapper needs. `confidence=` is the
+// A model-emitted end-of-utterance (<EOU>/<EOB>) event closes one decoder
+// segment. It becomes a provider `final` only after sustained acoustic
+// silence: the model can emit a false EOU during continuous speech, and
+// treating that token as an immediate turn boundary starts TTS over the user.
+// Silence is judged against the tracked noise floor rather than a fixed
+// level, so capture gain and room noise do not decide whether turns can
+// close at all; `--speech-rms` sets the quiet-room floor for that decision.
+// `confidence=` is the
 // mean of the utterance's per-word confidences (NeMo max_prob, min-
 // aggregated per word by parakeet.cpp); it is omitted when no words were
 // finalized. Exits 0 on stdin EOF after flushing the tail.
@@ -35,6 +40,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <cmath>
 
 #include "model.hpp"
 #include "mel.hpp"
@@ -42,6 +48,7 @@
 #include "ggml_graph.hpp"  // pk::set_num_threads
 
 #include "ggml.h"          // ggml_log_set, to keep helper stderr readable
+#include "parakeet_turn_gate.h"
 
 namespace {
 
@@ -107,9 +114,10 @@ void feed_ready_chunks(pk::StreamingSession& sess,
 
 struct RecordEmitter {
     pk::StreamingSession& sess;
-    size_t finalized_chars = 0;
     std::string last_partial;
+    std::string turn_text;
     std::vector<float> word_confs;
+    bool session_captured = false;
 
     explicit RecordEmitter(pk::StreamingSession& s) : sess(s) {}
 
@@ -118,40 +126,68 @@ struct RecordEmitter {
             word_confs.push_back(w.conf);
     }
 
-    void emit_final_if_any() {
-        const std::string& text = sess.text();
-        if (text.size() > finalized_chars) {
-            const std::string utter = trim_copy(text.substr(finalized_chars));
-            if (!utter.empty()) {
-                if (word_confs.empty()) {
-                    std::printf("final %s\n", utter.c_str());
-                } else {
-                    double sum = 0.0;
-                    for (float c : word_confs) sum += c;
-                    std::printf("final confidence=%.4f %s\n",
-                                sum / word_confs.size(), utter.c_str());
-                }
-                std::fflush(stdout);
+    static std::string join(const std::string& a, const std::string& b) {
+        if (a.empty()) return b;
+        if (b.empty()) return a;
+        return a + " " + b;
+    }
+
+    std::string current_text() const {
+        return trim_copy(sess.text());
+    }
+
+    std::string partial_text() const {
+        return join(turn_text, current_text());
+    }
+
+    void capture_segment() {
+        if (session_captured)
+            return;
+        const std::string segment = current_text();
+        if (!segment.empty())
+            turn_text = join(turn_text, segment);
+        session_captured = true;
+        last_partial.clear();
+    }
+
+    void reset_session() {
+        session_captured = false;
+        last_partial.clear();
+    }
+
+    bool has_text() const {
+        return !turn_text.empty() || !current_text().empty();
+    }
+
+    void emit_final() {
+        capture_segment();
+        if (!turn_text.empty()) {
+            if (word_confs.empty()) {
+                std::printf("final %s\n", turn_text.c_str());
+            } else {
+                double sum = 0.0;
+                for (float c : word_confs) sum += c;
+                std::printf("final confidence=%.4f %s\n",
+                            sum / word_confs.size(), turn_text.c_str());
             }
-            finalized_chars = text.size();
+            std::fflush(stdout);
         }
+        turn_text.clear();
         word_confs.clear();
         last_partial.clear();
     }
 
-    // Returns true when an end-of-utterance final was emitted, so the
-    // caller can reset the stream for the next turn.
-    bool step(bool flush) {
+    // Returns true when the decoder emitted EOU. Preserve its text as one
+    // segment, then let the caller reset the decoder without committing the
+    // user turn until the acoustic gate observes real silence.
+    bool step() {
         collect_words();
         std::vector<pk::EouEvent> evs = sess.drain_events();
-        if (!evs.empty() || flush) {
-            emit_final_if_any();
-            if (!evs.empty())
-                return true;
+        if (!evs.empty()) {
+            capture_segment();
+            return true;
         }
-        if (flush)
-            return false;
-        const std::string cur = trim_copy(sess.text().substr(finalized_chars));
+        const std::string cur = partial_text();
         if (!cur.empty() && cur != last_partial) {
             std::printf("partial %s\n", cur.c_str());
             std::fflush(stdout);
@@ -186,7 +222,10 @@ int main(int argc, char** argv) {
     std::string model_path;
     int rate = 16000;
     int chans = 1;
+    int final_silence_ms = 800;
+    double speech_rms = 0.008;
     bool use_stdin = false;
+    bool announce_ready = false;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--model") == 0 && i + 1 < argc) {
@@ -197,6 +236,12 @@ int main(int argc, char** argv) {
             chans = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--stdin") == 0) {
             use_stdin = true;
+        } else if (std::strcmp(argv[i], "--final-silence-ms") == 0 && i + 1 < argc) {
+            final_silence_ms = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--speech-rms") == 0 && i + 1 < argc) {
+            speech_rms = std::atof(argv[++i]);
+        } else if (std::strcmp(argv[i], "--ready") == 0) {
+            announce_ready = true;
         } else if (std::strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
             pk::set_num_threads(std::atoi(argv[++i]));
         } else if (i + 1 < argc && argv[i][0] == '-' && argv[i + 1][0] != '-') {
@@ -210,7 +255,8 @@ int main(int argc, char** argv) {
     if (model_path.empty()) {
         std::fprintf(stderr,
             "usage: parakeet-stream --stdin --model <eou.gguf> "
-            "[--rate HZ] [--chans N] [--threads N]\n");
+            "[--rate HZ] [--chans N] [--threads N] "
+            "[--final-silence-ms MS] [--speech-rms LEVEL]\n");
         return 2;
     }
     if (!use_stdin) {
@@ -222,8 +268,8 @@ int main(int argc, char** argv) {
             "set 'micmode device' on the speech shim\n");
         return 2;
     }
-    if (rate <= 0 || chans <= 0) {
-        std::fprintf(stderr, "error: bad --rate/--chans\n");
+    if (rate <= 0 || chans <= 0 || final_silence_ms < 0 || speech_rms < 0.0) {
+        std::fprintf(stderr, "error: bad rate/chans/final-silence-ms/speech-rms\n");
         return 2;
     }
 
@@ -247,6 +293,12 @@ int main(int argc, char** argv) {
     int fed_idx = 0;
     bool first_chunk = true;
     RecordEmitter emitter(sess);
+    ParakeetTurnGate turn_gate(final_silence_ms, speech_rms);
+
+    if (announce_ready) {
+        std::fprintf(stderr, "ready\n");
+        std::fflush(stderr);
+    }
 
     // 100ms of input per iteration keeps partial latency low without
     // burning a graph launch per tiny read.
@@ -297,28 +349,39 @@ int main(int argc, char** argv) {
         }
         if (feed->empty()) continue;
 
+        double square_sum = 0.0;
+        for (float sample : *feed)
+            square_sum += (double)sample * sample;
+        const double rms = std::sqrt(square_sum / feed->size());
+        const int block_ms = (int)((1000LL * feed->size()) / 16000);
+        turn_gate.observe_level(rms, block_ms);
+
         int n_new = 0;
         std::vector<float> frames = mel.feed(feed->data(), (int)feed->size(), n_new);
         append_mel_frames(mel_buf, n_mels, mel_T, frames, n_new);
         feed_ready_chunks(sess, mel_buf, n_mels, mel_T, fed_idx, first_chunk, false);
 
-        // After the model emits <EOU>, the streaming session stops
-        // producing text (matching NeMo's reset-per-turn realtime recipe;
-        // verified against upstream's own file --stream path). Restart the
-        // whole stream at each utterance boundary — that is also what
-        // bounds the session's hypothesis growth over an hours-long voice
-        // session. The few mel tail samples dropped land in post-turn
-        // silence.
-        if (emitter.step(false)) {
+        // The decoder stops producing text after EOU, so reset it immediately,
+        // but preserve the segment and wait for acoustic silence before a
+        // provider final. False EOU inside continuous speech is then harmless.
+        bool reset_stream = false;
+        if (emitter.step()) {
+            turn_gate.note_eou();
+            reset_stream = true;
+        }
+        if (turn_gate.ready() && emitter.has_text()) {
+            emitter.emit_final();
+            turn_gate.reset();
+            reset_stream = true;
+        }
+        if (reset_stream) {
             sess.reset();
             mel.reset();
             mel_buf.clear();
             mel_T = 0;
             fed_idx = 0;
             first_chunk = true;
-            emitter.finalized_chars = 0;
-            emitter.last_partial.clear();
-            emitter.word_confs.clear();
+            emitter.reset_session();
         }
     }
 
@@ -329,7 +392,8 @@ int main(int argc, char** argv) {
     append_mel_frames(mel_buf, n_mels, mel_T, tail, n_tail);
     feed_ready_chunks(sess, mel_buf, n_mels, mel_T, fed_idx, first_chunk, true);
     sess.finalize();
-    emitter.step(true);
+    emitter.step();
+    emitter.emit_final();
 
     // ggml-metal's static destructors abort in __cxa_finalize (observed on
     // macOS arm64 Metal builds); every record is already flushed, so skip

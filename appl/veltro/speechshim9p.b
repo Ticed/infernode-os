@@ -8,7 +8,7 @@ implement Speechshim9p;
 #   ├── ctl      (rw)  kokorobin, whisperstreambin, wakebin, wakeword,
 #   │                  wakethreshold, whispermodel, voice, rate,
 #   │                  audiodev, capturedev, micmode, capturerate,
-#   │                  mic on|off
+#   │                  mic on|off, cancel on|off
 #   ├── listen   (r)   newline records from the streaming STT helper:
 #   │                  "partial [confidence=N] <text>" /
 #   │                  "final [confidence=N] <text>" / "error: <reason>"
@@ -74,10 +74,17 @@ Speechshim9p: module {
 	init: fn(nil: ref Draw->Context, args: list of string);
 };
 
-Qroot, Qctl, Qlisten, Qwake, Qsay, Qcancel, Qvoices, Qchime: con iota;
+Qroot, Qctl, Qlisten, Qwake, Qsay, Qcancel, Qvoices, Qchime, Qlevel: con iota;
 
 # Bytes of helper stderr retained for diagnostics (see Hostproc.errtail).
 ERRTAIL: con 512;
+# Playback format openaudioout writes. drainremaining uses the same
+# numbers: /dev/audioctl has no queued-byte depth to poll (ctlsummary
+# reports configured rate/chans/buf percent only; SDL_GetAudioStreamQueued
+# is used only inside audio_file_close). INF-45.
+OUTCHANS: con 1;
+OUTBITS: con 16;
+
 
 # Configuration
 kokorobin := "kokoro-cli";
@@ -88,18 +95,30 @@ wakethreshold := "0.5";
 whispermodel := "";
 voice := "af_bella";
 # 22050, NOT Kokoro-native 24000: emu's devaudio only accepts the rates in
-# audio_rate_tbl {8000, 11025, 16000, 22050, 44100}. An unsupported rate is
-# rejected silently and playback runs at the 8000 default — Kokoro speech
-# comes out as 3x slow-motion. kokoro-cli resamples to --rate, so 22050 is
-# both accepted and near-native.
+# audio_rate_tbl {8000, 11025, 16000, 22050, 44100}. kokoro-cli resamples to
+# --rate, so 22050 is both accepted and near-native. The ctl and playback
+# paths below reject unsupported default-device rates explicitly.
 audrate := 22050;
 audiodev := "/dev/audio";
 capturedev := "";		# capture override; empty = audiodev
 micmode := "helper";		# helper | device
 capturerate := 16000;
 duplex := "full";		# full | half
+# Half-duplex suppression is a window, not a flag. `playing` alone reopens the
+# microphone the instant the last sample is *accepted* by the audio device,
+# which is well before it has been heard: the device still holds unplayed
+# audio, the room keeps reverberating, and on a remote capture device the
+# samples take a further trip through AAudio, 9P and emu buffering before the
+# pump sees them. Each of those puts our own speech back into the STT stream.
+# Measured on the physical Mac + Android rig: energy persists ~235ms after the
+# sound stops, which is what duplextail covers.
+duplextail := 300;		# ms of suppression after playback has drained
+capturedelay := 0;		# ms of capture-path delay to compensate (0 = local)
+suppressuntil := 0;		# sys->millisec() deadline; see suppressed()
+playuntil := 0;		# millisec when the device should finish emitting
 standby := 0;			# mic off: no helper (re)starts until the next listen/wake read
 listenoff := 0;			# listen off: the STT helper stays down until the next listen read
+cancelmode := 0;		# cancel on: feed STT during playback so a spoken cancel cuts the reply
 
 stderr: ref Sys->FD;
 user: string;
@@ -108,6 +127,11 @@ cmdbound := 0;
 audiobound := 0;
 cancelreq := 0;
 playing := 0;
+capturing := 0;
+inputrms := 0;
+inputpeak := 0;
+outputrms := 0;
+outputpeak := 0;
 
 # A host helper process behind #C. ctlfd is the clone fd (kept open —
 # killonclose is armed on it); writing "kill" to it terminates the process.
@@ -255,19 +279,48 @@ bindaudio()
 	audiobound = 1;
 }
 
-openaudioout(rate: int): ref Sys->FD
+defaultaudiorate(rate: int): int
 {
-	if(audiodev == "/dev/audio")
-		bindaudio();
-	ctl := sys->open(audiodev + "ctl", Sys->OWRITE);
-	if(ctl != nil) {
-		writectl(ctl, sys->sprint("out rate %d", rate));
-		writectl(ctl, "out chans 1");
-		writectl(ctl, "out bits 16");
-		writectl(ctl, "out enc pcm");
-		ctl = nil;
+	case rate {
+	8000 or 11025 or 16000 or 22050 or 44100 =>
+		return 1;
 	}
-	return sys->open(audiodev, Sys->OWRITE);
+	return 0;
+}
+
+openaudioout(rate: int): (ref Sys->FD, string)
+{
+	if(audiodev == "/dev/audio") {
+		if(!defaultaudiorate(rate))
+			return (nil, sys->sprint("error: /dev/audio does not support playback rate %d", rate));
+		bindaudio();
+	}
+	ctl := sys->open(audiodev + "ctl", Sys->OWRITE);
+	ctlopenerr := "";
+	if(ctl == nil)
+		ctlopenerr = sys->sprint("%r");
+	if(ctl != nil) {
+		cmds := array[] of {
+			sys->sprint("out rate %d", rate),
+			sys->sprint("out chans %d", OUTCHANS),
+			sys->sprint("out bits %d", OUTBITS),
+			"out enc pcm"
+		};
+		for(i := 0; i < len cmds; i++) {
+			data := array of byte cmds[i];
+			if(sys->write(ctl, data, len data) != len data)
+				return (nil, sys->sprint("error: cannot configure %sctl (%s): %r",
+					audiodev, cmds[i]));
+		}
+		ctl = nil;
+	} else if(audiodev == "/dev/audio" || sys->stat(audiodev + "ctl").t0 >= 0) {
+		return (nil, sys->sprint("error: cannot open %sctl for playback configuration: %s",
+			audiodev, ctlopenerr));
+	}
+	fd := sys->open(audiodev, Sys->OWRITE);
+	if(fd == nil)
+		return (nil, sys->sprint("error: cannot open %s: %r", audiodev));
+	return (fd, nil);
 }
 
 # Start a host command; the process dies with the shim (killonclose) or on
@@ -442,8 +495,141 @@ addsink(kind: int, p: ref Hostproc)
 
 pumpreset()
 {
+	clearinputlevel();
 	if(pumprunning)
 		pumpc <-= (SINKRESET, nil);
+}
+
+# Convert one s16le mono PCM chunk into normalized 0..1000 RMS and peak.
+# Samples are shifted before squaring so a 100ms 48kHz chunk cannot
+# overflow Limbo's int accumulator.
+pcmlevel(buf: array of byte, n: int): (int, int)
+{
+	n &= ~1;
+	if(n <= 0)
+		return (0, 0);
+	sum := 0;
+	peak := 0;
+	nsamp := n / 2;
+	for(i := 0; i < n; i += 2) {
+		v := (int buf[i] & 16rff) | ((int buf[i+1] & 16rff) << 8);
+		if(v & 16r8000)
+			v -= 16r10000;
+		if(v < 0)
+			v = -v;
+		if(v > peak)
+			peak = v;
+		v >>= 6;
+		sum += v * v;
+	}
+	rms := int math->sqrt(real (sum / nsamp));
+	return (rms * 1000 / 511, peak * 1000 / 32767);
+}
+
+setinputlevel(buf: array of byte, n: int)
+{
+	(inputrms, inputpeak) = pcmlevel(buf, n);
+	capturing = 1;
+}
+
+clearinputlevel()
+{
+	inputrms = 0;
+	inputpeak = 0;
+	capturing = 0;
+}
+
+setoutputlevel(buf: array of byte, n: int)
+{
+	(outputrms, outputpeak) = pcmlevel(buf, n);
+}
+
+clearoutputlevel()
+{
+	outputrms = 0;
+	outputpeak = 0;
+}
+
+# Milliseconds of audio handed to the device that it cannot have played
+# yet: duration of `nbytes` at the configured playback format, less the
+# wall time already spent writing it. Frame size matches openaudioout.
+drainremaining(nbytes: int, since: int): int
+{
+	bpf := (OUTBITS / 8) * OUTCHANS;
+	if(nbytes <= 0 || audrate <= 0 || bpf <= 0)
+		return 0;
+	playms := nbytes * 1000 / (audrate * bpf);
+	elapsed := sys->millisec() - since;
+	if(elapsed < 0)
+		elapsed = 0;
+	remain := playms - elapsed;
+	if(remain < 0)
+		return 0;
+	return remain;
+}
+
+# Hold /dev/audio until the queued tail should have left the device.
+# Closing earlier discards unplayed samples. The wait is a computed
+# duration (see drainremaining); integer division truncates by <1ms,
+# and the 50ms poll step may overshoot by one slice. INF-45.
+drainwait()
+{
+	while(cancelreq == 0) {
+		left := playuntil - sys->millisec();
+		if(left <= 0)
+			return;
+		if(left > 50)
+			left = 50;
+		sys->sleep(left);
+	}
+}
+
+# Keep the microphone shut until our own output can no longer reach it.
+# `playms` is how much audio the device still has to play out; on top of
+# that the room needs duplextail, and a remote capture device needs
+# capturedelay. The window only ever extends.
+holdsuppression(playms: int)
+{
+	deadline := sys->millisec() + playms + duplextail + capturedelay;
+	if(deadline - suppressuntil > 0)
+		suppressuntil = deadline;
+}
+
+# True while captured audio must be discarded rather than fed to the helpers.
+# The subtraction keeps this correct across the millisecond counter wrapping.
+suppressed(): int
+{
+	if(duplex != "half")
+		return 0;
+	if(playing)
+		return 1;
+	return suppressuntil - sys->millisec() > 0;
+}
+
+stillplaying(): int
+{
+	if(playing)
+		return 1;
+	return playuntil - sys->millisec() > 0;
+}
+
+readlevel(): string
+{
+	mode := "idle";
+	if(stillplaying())
+		mode = "output";
+	else if(suppressed())
+		# Distinct from "output": the device has drained, but the
+		# microphone is still shut because our own sound has not
+		# finished reaching it (duplextail + capturedelay).
+		mode = "suppressed";
+	else if(capturing)
+		mode = "input";
+	remain := 0;
+	if(!playing && suppressed())
+		remain = suppressuntil - sys->millisec();
+	return sys->sprint("mode=%s input-rms=%d input-peak=%d output-rms=%d output-peak=%d capture-rate=%d playback-rate=%d suppress-remaining-ms=%d\n",
+		mode, inputrms, inputpeak, outputrms, outputpeak, capturerate, audrate, remain);
 }
 
 opencapture(): ref Sys->FD
@@ -474,6 +660,7 @@ audiopump()
 	for(;;) {
 		if(sinks[SINKLISTEN] == nil && sinks[SINKWAKE] == nil) {
 			afd = nil;	# release the device while idle
+			clearinputlevel();
 			(k, fd) := <-pumpc;
 			if(k == SINKQUIT)
 				return;
@@ -514,10 +701,31 @@ audiopump()
 			afd = nil;
 			sinks[SINKLISTEN] = nil;
 			sinks[SINKWAKE] = nil;
+			clearinputlevel();
 			continue;
 		}
-		if(duplex == "half" && playing)
+		if(suppressed()) {
+			# Half-duplex playback: the microphone is on the same
+			# device as the speaker, and the device may hold our own
+			# TTS for duplextail. Normally that capture is discarded so
+			# the assistant cannot hear and answer itself. `cancel on`
+			# (INF-43) is the narrow, opt-in exception: while a voice
+			# daemon is listening for a spoken cancel, keep feeding the
+			# STT helper during playback so "cancel"/"stop" is heard and
+			# can cut off the reply. The WAKE sink and input level stay
+			# suppressed (the assistant's own voice must not wake or
+			# surface as a turn); readlisten() additionally lets only
+			# cancel words through the listen stream while playing, so
+			# the transcribed reply cannot leak into the turn pipeline.
+			# With `cancel off` (the default) capture is dropped exactly
+			# as before and no caller's behaviour changes.
+			clearinputlevel();
+			if(cancelmode && sinks[SINKLISTEN] != nil &&
+			   sys->write(sinks[SINKLISTEN], buf[0:n], n) < 0)
+				sinks[SINKLISTEN] = nil;	# STT helper died
 			continue;
+		}
+		setinputlevel(buf, n);
 		for(k := 0; k < 2; k++)
 			if(sinks[k] != nil && sys->write(sinks[k], buf[0:n], n) < 0)
 				sinks[k] = nil;	# helper died; drop the sink
@@ -533,6 +741,51 @@ listencmd(): string
 			" --rate " + string capturerate + " --chans 1";
 	return whisperstreambin + " --model " + whispermodel +
 		" --rate 16000 --chans 1";
+}
+
+# True when a listen transcript is a spoken control word that should cut
+# playback. During half-duplex playback the microphone is on the same
+# device as the speaker (or the device holds the assistant's own TTS for
+# duplextail), so the STT hears the reply: those transcripts are not
+# cancel words and must not surface as anything a voice daemon could
+# mistake for a normal turn. Only exact cancel/stop words pass the gate.
+# Deliberately narrower than voicemode's gracecancel set: the audio being
+# transcribed here is the assistant's OWN voice, and a reply segment that
+# transcribes to exactly "no" or "wrong" (a natural phrase in a reply)
+# would self-cancel the reply. So the playback-cut set is limited to the
+# words a user actually says to interrupt (INF-43).
+cancelword(record: string): int
+{
+	r := strip(record);
+	if(r == nil)
+		return 0;
+	# Records may carry a "partial|final confidence=N <text>" prefix.
+	(nil, fields) := sys->tokenize(r, " \t");
+	if(fields != nil) {
+		w := hd fields;
+		if(w == "partial" || w == "final") {
+			fields = tl fields;
+			if(fields != nil && hasprefix(hd fields, "confidence="))
+				fields = tl fields;
+			r = "";
+			for(; fields != nil; fields = tl fields) {
+				if(r != "")
+					r += " ";
+				r += hd fields;
+			}
+		}
+	}
+	t := "";
+	for(i := 0; i < len r; i++) {
+		c := int r[i];
+		if(c >= 'A' && c <= 'Z')
+			c += 'a' - 'A';
+		if((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ' ')
+			t[len t] = c;
+	}
+	n := strip(t);
+	return n == "cancel" || n == "stop" ||
+		n == "never mind" || n == "nevermind" || n == "scratch that";
 }
 
 wakecmd(): string
@@ -575,9 +828,22 @@ readlisten(): string
 				return "error: mic off";
 			}
 		}
-		(record, ok) := readrecord(listenproc);
-		if(ok)
+		for(;;) {
+			(record, ok) := readrecord(listenproc);
+			if(!ok)
+				break;
+			# During half-duplex playback the mic carries our own TTS
+			# (and, strictly, duplextail echo). The STT transcribes it;
+			# let only a spoken cancel word through so the assistant's
+			# own reply never surfaces as a normal transcript/turn;
+			# everything else is discarded and we keep reading. This
+			# filter is active only under `cancel on` (INF-43): with the
+			# default `cancel off` every record passes through unchanged,
+			# so no caller's behaviour changes.
+			if(cancelmode && suppressed() && !cancelword(record))
+				continue;
 			return record;
+		}
 		dead := listenproc;
 		listenproc = nil;
 		# `mic off`/`listen off` while blocked in the read above kills
@@ -621,7 +887,7 @@ readwake(): string
 		}
 		(record, ok) := readrecord(wakeproc);
 		if(ok) {
-			if(duplex == "half" && playing) {
+			if(suppressed()) {
 				killproc(wakeproc);
 				closeproc(wakeproc);
 				wakeproc = nil;
@@ -634,7 +900,7 @@ readwake(): string
 		wakeproc = nil;
 		attempt++;
 		if(attempt >= 2) {
-			if(!(duplex == "half" && playing))
+			if(!suppressed())
 				break;
 			# A dead helper (exits with no output — e.g. not
 			# installed) must not spawn-storm while playback pins
@@ -676,12 +942,23 @@ dosay(text: string): string
 	sys->write(tofd, b, len b);
 	tofd = nil;
 
-	afd := openaudioout(audrate);
+	(afd, audioerr) := openaudioout(audrate);
+	if(afd == nil) {
+		killproc(p);
+		closeproc(p);
+		sayproc = nil;
+		return audioerr;
+	}
 
 	total := 0;
 	buf := array[8192] of byte;
 	status := "";
-	playing = 1;
+	# playing is armed on the first sample, not here: synthesis can
+	# take seconds, and the meter should not say "output" before any
+	# PCM has reached the device.
+	playstart := 0;
+	clearinputlevel();
+	clearoutputlevel();
 	for(;;) {
 		n := sys->read(p.datafd, buf, len buf);
 		if(n <= 0)
@@ -691,8 +968,11 @@ dosay(text: string): string
 			status = "error: speech canceled";
 			break;
 		}
-		if(afd == nil)
-			continue;	# drain helper; no audio device
+		setoutputlevel(buf, n);
+		if(total == 0) {
+			playstart = sys->millisec();
+			playing = 1;
+		}
 		if(sys->write(afd, buf[0:n], n) < 0) {
 			status = sys->sprint("error: audio write failed: %r");
 			killproc(p);
@@ -700,14 +980,24 @@ dosay(text: string): string
 		}
 		total += n;
 	}
+	# Writes returning is not the speaker going quiet. Hold the fd
+	# and keep playing set so half-duplex stays shut for the audible
+	# tail; apply duplextail only after that wait ends. Keep the
+	# output level live for the whole drain so the meter is not flat
+	# while the audio is still audible. INF-45, INF-44.
+	remain := drainremaining(total, playstart);
+	until := sys->millisec() + remain;
+	if(until - playuntil > 0)
+		playuntil = until;
+	drainwait();
+	clearoutputlevel();
 	playing = 0;
+	holdsuppression(0);
 	closeproc(p);
 	sayproc = nil;
 	if(status != "")
 		return status;
 	if(total == 0) {
-		if(afd == nil)
-			return sys->sprint("error: cannot open %s: %r", audiodev);
 		return "error: kokoro produced no audio";
 	}
 	return sys->sprint("ok: played %d bytes", total);
@@ -719,41 +1009,53 @@ put16le(buf: array of byte, off, val: int)
 	buf[off+1] = byte ((val >> 8) & 16rFF);
 }
 
-playnote(fd: ref Sys->FD, freq, ms: int)
+playnote(fd: ref Sys->FD, freq, ms: int): int
 {
 	nsamp := audrate * ms / 1000;
 	if(nsamp <= 0)
-		return;
+		return 0;
 	buf := array[nsamp * 2] of byte;
 	for(i := 0; i < nsamp; i++) {
 		v := int (12000.0 * math->sin(2.0 * Math->Pi *
 			real freq * real i / real audrate));
 		put16le(buf, i * 2, v);
 	}
+	setoutputlevel(buf, len buf);
 	sys->write(fd, buf, len buf);
+	return len buf;
 }
 
 playchime(kind: string)
 {
-	afd := openaudioout(audrate);
+	total := 0;
+	start := sys->millisec();
+	(afd, err) := openaudioout(audrate);
 	if(afd != nil) {
 		case kind {
 		"wake" =>
-			playnote(afd, 660, 120);
-			playnote(afd, 880, 120);
+			total += playnote(afd, 660, 120);
+			total += playnote(afd, 880, 120);
 		"done" =>
-			playnote(afd, 440, 140);
+			total += playnote(afd, 440, 140);
 		"on" =>
-			playnote(afd, 523, 90);
-			playnote(afd, 659, 90);
-			playnote(afd, 784, 120);
+			total += playnote(afd, 523, 90);
+			total += playnote(afd, 659, 90);
+			total += playnote(afd, 784, 120);
 		"off" =>
-			playnote(afd, 784, 90);
-			playnote(afd, 659, 90);
-			playnote(afd, 523, 120);
+			total += playnote(afd, 784, 90);
+			total += playnote(afd, 659, 90);
+			total += playnote(afd, 523, 120);
 		}
-	}
+	} else
+		sys->fprint(stderr, "speechshim9p: chime: %s\n", err);
+	remain := drainremaining(total, start);
+	until := sys->millisec() + remain;
+	if(until - playuntil > 0)
+		playuntil = until;
+	drainwait();
+	clearoutputlevel();
 	playing = 0;
+	holdsuppression(0);
 }
 
 startchime(kind: string)
@@ -762,6 +1064,8 @@ startchime(kind: string)
 	case kind {
 	"wake" or "done" or "on" or "off" =>
 		playing = 1;
+		clearinputlevel();
+		clearoutputlevel();
 		spawn playchime(kind);
 	* =>
 		sys->fprint(stderr, "speechshim9p: unknown chime: %s\n", kind);
@@ -873,6 +1177,8 @@ readconfig(): string
 	result += "micmode " + micmode + "\n";
 	result += "capturerate " + string capturerate + "\n";
 	result += "duplex " + duplex + "\n";
+	result += "duplextail " + string duplextail + "\n";
+	result += "capturedelay " + string capturedelay + "\n";
 	if(standby)
 		result += "mic off\n";
 	else
@@ -881,6 +1187,10 @@ readconfig(): string
 		result += "listen off\n";
 	else
 		result += "listen on\n";
+	if(cancelmode)
+		result += "cancel on\n";
+	else
+		result += "cancel off\n";
 	return result;
 }
 
@@ -940,8 +1250,12 @@ applyconfig(cmd: string): string
 		r := int val;
 		if(r < 8000 || r > 48000)
 			return "error: rate must be 8000-48000";
+		if(audiodev == "/dev/audio" && !defaultaudiorate(r))
+			return "error: /dev/audio rate must be one of 8000, 11025, 16000, 22050, 44100";
 		audrate = r;
 	"audiodev" =>
+		if(val == "/dev/audio" && !defaultaudiorate(audrate))
+			return sys->sprint("error: /dev/audio does not support configured rate %d", audrate);
 		audiodev = val;
 		resetcapture();
 	"capturedev" =>
@@ -964,6 +1278,26 @@ applyconfig(cmd: string): string
 		if(val != "full" && val != "half")
 			return "error: duplex must be full or half";
 		duplex = val;
+	"duplextail" =>
+		# How long our own sound keeps reaching the microphone after the
+		# device has drained: room reverberation plus input AGC settling.
+		# Measured at ~235ms on the Mac + Android rig; 0 restores the old
+		# reopen-immediately behaviour.
+		t := int val;
+		if(t < 0 || t > 5000)
+			return "error: duplextail must be 0-5000 ms";
+		duplextail = t;
+	"capturedelay" =>
+		# Transport delay before captured samples reach the pump. Local
+		# capture is ~0, so that stays the default and local behaviour is
+		# unchanged. A phone exporting /dev/audio over 9P is a different
+		# story: bracketed on the physical rig at roughly 2s (1500 still
+		# leaked our own speech into the next turn, 2500 was clean), which
+		# is far too large to absorb in duplextail.
+		d := int val;
+		if(d < 0 || d > 5000)
+			return "error: capturedelay must be 0-5000 ms";
+		capturedelay = d;
 	"mic" =>
 		# Voice-mode teardown: `mic off` kills the mic-side helpers
 		# (and the capture pump's device fd) so the microphone is not
@@ -993,6 +1327,22 @@ applyconfig(cmd: string): string
 			listenoff = 0;
 		* =>
 			return "error: listen must be on or off";
+		}
+	"cancel" =>
+		# Opt-in spoken-cancel path (INF-43): while `cancel on`, the
+		# capture pump keeps feeding the STT helper during half-duplex
+		# playback and readlisten lets only cancel words through, so a
+		# voice daemon can hear (and cut) the in-flight reply. Default
+		# is off: capture stays suppressed during playback and every
+		# caller's behaviour is unchanged. voicemode turns it on only
+		# while SPEAKING and off again when playback ends.
+		case val {
+		"off" =>
+			cancelmode = 0;
+		"on" =>
+			cancelmode = 1;
+		* =>
+			return "error: cancel must be on or off";
 		}
 	* =>
 		return "error: unknown config key: " + key;
@@ -1076,6 +1426,8 @@ walkto(n: ref Navop.Walk)
 		n.path = big Qchime;
 	"voices" =>
 		n.path = big Qvoices;
+	"level" =>
+		n.path = big Qlevel;
 	* =>
 		n.reply <-= (nil, Enotfound);
 		return;
@@ -1112,6 +1464,9 @@ dirgen(path: int): (ref Sys->Dir, string)
 	Qvoices =>
 		name = "voices";
 		perm = 8r444;
+	Qlevel =>
+		name = "level";
+		perm = 8r444;
 	* =>
 		return (nil, Enotfound);
 	}
@@ -1138,7 +1493,7 @@ readdir(n: ref Navop.Readdir, path: int)
 		n.reply <-= (nil, Enotfound);
 		return;
 	}
-	entries := array[] of {Qctl, Qlisten, Qwake, Qsay, Qcancel, Qchime, Qvoices};
+	entries := array[] of {Qctl, Qlisten, Qwake, Qsay, Qcancel, Qchime, Qvoices, Qlevel};
 	for(i := n.offset; i < len entries && i < n.offset + n.count; i++) {
 		(d, err) := dirgen(entries[i]);
 		if(err != nil) {
@@ -1187,6 +1542,8 @@ Serve:
 				srv.reply(styxservers->readstr(m, readconfig()));
 			Qvoices =>
 				srv.reply(styxservers->readstr(m, listvoices()));
+			Qlevel =>
+				srv.reply(styxservers->readstr(m, readlevel()));
 			Qlisten =>
 				if(listenbusy)
 					srv.reply(styxservers->readstr(m, "error: listen busy"));
@@ -1230,9 +1587,11 @@ Serve:
 			case path {
 			Qctl =>
 				result := applyconfig(string m.data);
-				srv.reply(ref Rmsg.Write(m.tag, len m.data));
-				if(hasprefix(result, "error:"))
+				if(hasprefix(result, "error:")) {
 					sys->fprint(stderr, "speechshim9p: %s\n", result);
+					srv.reply(ref Rmsg.Error(m.tag, result));
+				} else
+					srv.reply(ref Rmsg.Write(m.tag, len m.data));
 			Qsay =>
 				fs := getfidstate(m.fid);
 				fs.sayresp = nil;
@@ -1243,6 +1602,7 @@ Serve:
 				# Hard cancel: kill the synthesizing helper and let
 				# the playback loop notice within one chunk.
 				cancelreq = 1;
+				clearoutputlevel();
 				killproc(sayproc);
 				srv.reply(ref Rmsg.Write(m.tag, len m.data));
 			Qchime =>

@@ -25,6 +25,9 @@ include "menu.m";
 include "softkbd.m";
 	softkbd: Softkbd;
 
+include "math.m";
+	math: Math;
+
 LuciConv: module
 {
 	PATH: con "/dis/luciconv.dis";
@@ -60,6 +63,14 @@ DlgButton: adt {
 	rect:  Rect;		# hit-test rectangle of the drawn button
 	label: string;		# option text to send as input on click
 	msgidx: int;		# index into msgstore of the parent dialogue tile
+};
+
+# Controls for the synthetic queued-follow-up tile. These never write to the
+# ordinary conversation input path: cancel/replace stay scoped to the sole
+# server-owned voice queue item.
+QueueButton: adt {
+	rect: Rect;
+	action: string;
 };
 
 Attr: adt {
@@ -113,6 +124,29 @@ inputbuf: string;
 inputpos := 0;		# cursor position within inputbuf
 draftbuf: string;		# replaceable STT hypothesis; never submitted
 draftstatusbuf: string;	# listening/countdown state shown with the hypothesis
+
+# A live tile is held across the state writes that would otherwise
+# create and destroy it. 300ms is just over the ~250ms notice threshold:
+# shorter than that reads as a flash, not a state.
+LIVEDWELL: con 300;
+livedraft: string;		# last shown hypothesis; held after the source clears
+livestatus: string;
+liveat := 0;			# millisec the live tile first appeared
+liveholding := 0;
+speakon := 0;			# speaking indicator is visible, including dwell
+speakat := 0;
+speakholding := 0;
+dwellc: chan of int;
+heldoutrms := 0;		# last measured playback energy while Speaking
+heldoutpeak := 0;
+levelbuf: string;		# live /n/speech/level PCM telemetry
+queuebuf: string;		# server-owned queued follow-up; display-only
+queuestate: string;		# queue lifecycle state from conversation/voicequeue
+queuedepth := 0;
+queuecapacity := 1;
+queueediting := 0;
+queueeditbuf: string;		# isolated replacement editor; typed compose is untouched
+queueeditpos := 0;
 scrollpx := 0;
 maxscrollpx := 0;
 viewport_h := 400;
@@ -130,6 +164,8 @@ ntiles := 0;
 # Dialogue button layout (populated during dialogue tile rendering)
 dlgbuttons: array of ref DlgButton;
 ndlgbuttons := 0;
+queuebuttons: array of ref QueueButton;
+nqueuebuttons := 0;
 
 # --- init ---
 
@@ -143,6 +179,7 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 {
 	sys = load Sys Sys->PATH;
 	draw = load Draw Draw->PATH;
+	math = load Math Math->PATH;
 	stderr = sys->fildes(2);
 
 	# KLUDGE-MOBILE-ACCORDION-INFR-119 — same env var lucifer.b reads.
@@ -210,6 +247,19 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 	inputpos = 0;
 	draftbuf = "";
 	draftstatusbuf = "";
+	livedraft = "";
+	livestatus = "";
+	liveat = 0;
+	liveholding = 0;
+	speakon = 0;
+	speakat = 0;
+	speakholding = 0;
+	dwellc = chan[4] of int;
+	queuebuf = "";
+	queuestate = "empty";
+	queueediting = 0;
+	queueeditbuf = "";
+	queueeditpos = 0;
 	username = readdevuser();
 	# Agent display name (branding); empty => fall back to the raw role string.
 	an := readfile("/lib/veltro/agent-name");
@@ -224,7 +274,12 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 	if(actid >= 0) {
 		loadmessages();
 		loaddraft();
+		loadqueue();
 	}
+	levelc := chan[1] of string;
+	spawn metermonitor(levelc);
+	queuec := chan[1] of string;
+	spawn queuemonitor(queuec);
 
 	redrawconv();
 
@@ -270,6 +325,20 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 						softkbd->clear_rect();
 				}
 			}
+			# Queue controls take precedence over compose and message tiles.
+			queuehandled := 0;
+			for(qi := 0; qi < nqueuebuttons; qi++) {
+				qb := queuebuttons[qi];
+				if(qb != nil && qb.rect.contains(p.xy)) {
+					queuebuttonclick(qb.action);
+					queuehandled = 1;
+					redrawconv();
+					break;
+				}
+			}
+			if(queuehandled)
+				;
+			else
 			# KLUDGE-MOBILE-ACCORDION-INFR-119 — Send button hit
 			# test before any other handlers. Same effect as
 			# pressing Return on desktop: submit inputbuf if
@@ -284,7 +353,7 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 			} else
 			# Check the voice-mode toggle button first
 			if(micrect.dx() > 0 && micrect.contains(p.xy)) {
-				togglevoice();
+				togglevoice("compose-button");
 				redrawconv();
 			} else {
 				# Check for dialogue button clicks first
@@ -350,7 +419,10 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 			prevbuttons = 0;
 		}
 	k := <-kbd =>
-		if(voiceactive() && k != 0 && k != 16rF00E && k != 16rF00F) {
+		if(queueediting) {
+			queueeditkey(k);
+			redrawconv();
+		} else if(voiceactive() && k != 0 && k != 16rF00E && k != 16rF00F) {
 			# Voice owns the pending turn. Preserve the typed compose
 			# verbatim until the user exits voice mode.
 			redrawconv();
@@ -358,7 +430,7 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 		case k {
 		0 =>
 			# Ctrl+Space — toggle voice mode (same as Esc-V / Voice chip)
-			togglevoice();
+			togglevoice("ctrl-space");
 		1 =>
 			# Ctrl-A — beginning of line
 			inputpos = 0;
@@ -451,6 +523,14 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 	ev := <-evch =>
 		handleevent(ev);
 		redrawconv();
+	level := <-levelc =>
+		levelbuf = level;
+		redrawconv();
+	queue := <-queuec =>
+		setqueue(queue);
+		redrawconv();
+	<-dwellc =>
+		redrawconv();
 	newimg := <-rsz =>
 		mainwin = newimg;
 		# Skip the redraw when the sub-image is a 1×1 mobile-accordion
@@ -471,6 +551,47 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 	}
 }
 
+# Keep namespace I/O out of the drawing/event process. The monitor is only
+# active while voice owns the input mode, publishes changes at 10Hz, and
+# clears the UI immediately when keyboard mode returns.
+metermonitor(c: chan of string)
+{
+	last := "";
+	for(;;) {
+		next := "";
+		if(voiceactive()) {
+			next = strip(readfile("/n/speech/level"));
+			if(next == nil)
+				next = "mode=idle input-rms=0 input-peak=0 output-rms=0 output-peak=0";
+		}
+		if(next != last) {
+			c <-= next;
+			last = next;
+		}
+		sys->sleep(100);
+	}
+}
+
+# Queue state is polled independently of the event stream so a server or mount
+# disappearing becomes an explicit disconnected state instead of leaving a
+# stale queued tile on screen.
+queuemonitor(c: chan of string)
+{
+	last := "";
+	for(;;) {
+		path := sys->sprint("%s/activity/%d/conversation/voicequeue",
+			mountpt_g, actid_g);
+		next := strip(readfile(path));
+		if(next == nil)
+			next = "depth=0 capacity=1 state=disconnected\n";
+		if(next != last) {
+			c <-= next;
+			last = next;
+		}
+		sys->sleep(200);
+	}
+}
+
 handleevent(ev: string)
 {
 	if(hasprefix(ev, "switchactivity ")) {
@@ -483,17 +604,40 @@ handleevent(ev: string)
 			actid_g = newid;
 			draftbuf = "";
 			draftstatusbuf = "";
+			livedraft = "";
+			livestatus = "";
+			liveat = 0;
+			liveholding = 0;
+			speakon = 0;
+			speakat = 0;
+			speakholding = 0;
+			queuebuf = "";
+			queuestate = "empty";
+			queueediting = 0;
+			queueeditbuf = "";
+			queueeditpos = 0;
 			loadmessages();
 			loaddraft();
+			loadqueue();
 		}
 	} else if(hasprefix(ev, "input-mode ")) {
 		if(strip(ev[len "input-mode ":]) == "v") {
 			reqkbd(0);
 			if(softkbd != nil)
 				softkbd->clear_rect();
+		} else {
+			livedraft = "";
+			livestatus = "";
+			liveat = 0;
+			liveholding = 0;
+			speakon = 0;
+			speakat = 0;
+			speakholding = 0;
 		}
 	} else if(ev == "conversation draft") {
 		loaddraft();
+	} else if(ev == "conversation voicequeue") {
+		loadqueue();
 	} else if(hasprefix(ev, "conversation update ")) {
 		idx := strtoint(ev[len "conversation update ":]);
 		if(idx >= 0)
@@ -576,6 +720,39 @@ drawconversation(zone: Rect)
 		(zone.max.x - pad, zone.max.y));
 	inputrect = inputr;
 	locked := voiceactive();
+	now := sys->millisec();
+	lmode := getattr(parseattrs(levelbuf), "mode");
+	if(lmode == "output") {
+		speakat = now;
+		speakon = 1;
+		speakholding = 0;
+	} else if(speakon) {
+		if(now - speakat < LIVEDWELL) {
+			if(!speakholding) {
+				speakholding = 1;
+				remain := LIVEDWELL - (now - speakat);
+				if(remain < 1)
+					remain = 1;
+				armdwell(remain);
+			}
+		} else {
+			speakon = 0;
+			speakholding = 0;
+		}
+	}
+	meterh := 0;
+	if(locked) {
+		meterh = mainfont.height + 24;
+		# Speaking belongs with the assistant turn. Listening and
+		# idle stay in the composer so the microphone state stays
+		# next to the input it describes.
+		if(!speakon) {
+			meterr := Rect((zone.min.x + pad, inputr.min.y - meterh - 2),
+				(zone.max.x - pad, inputr.min.y - 2));
+			drawvoicemeter(meterr);
+			msgy -= meterh + 2;
+		}
+	}
 	inputfill := inputcol;
 	if(locked)
 		inputfill = bordercol;
@@ -686,8 +863,51 @@ drawconversation(zone: Rect)
 		mainwin.draw(Rect((cx, cy), (cx + cw, cy + ch)), cursorcol, nil, (0, 0));
 	}
 
-	hasdraft := draftbuf != nil && draftbuf != "";
+	srcdraft := (draftbuf != nil && draftbuf != "") ||
+		(draftstatusbuf != nil && draftstatusbuf != "") ||
+		lmode == "input";
+	if(srcdraft) {
+		if(livedraft == "" && livestatus == "")
+			liveat = now;
+		if(draftbuf != nil && draftbuf != "")
+			livedraft = draftbuf;
+		else if(lmode == "input" && humanreplaced(livedraft))
+			livedraft = "";
+		if(draftstatusbuf != nil && draftstatusbuf != "")
+			livestatus = draftstatusbuf;
+		else if((livestatus == nil || livestatus == "") && lmode == "input")
+			livestatus = "Listening...";
+		liveholding = 0;
+	} else if(livedraft != "" || livestatus != "") {
+		if(humanreplaced(livedraft) || now - liveat >= LIVEDWELL) {
+			livedraft = "";
+			livestatus = "";
+			liveat = 0;
+			liveholding = 0;
+		} else if(!liveholding) {
+			liveholding = 1;
+			remain := LIVEDWELL - (now - liveat);
+			if(remain < 1)
+				remain = 1;
+			armdwell(remain);
+		}
+	}
+	hasdraft := (livedraft != nil && livedraft != "") ||
+		(livestatus != nil && livestatus != "");
+	# A live follow-up is depth>0. delivered/cancelled leftovers stay in
+	# voicequeue as status history (INF-28) and must not be drawn again.
+	hasqueue := queuedepth > 0 ||
+		(queuestate == "disconnected" && queuebuf != nil && queuebuf != "");
+	lastasst := -1;
+	for(ai := 0; ai < nmsg; ai++)
+		if(isassistant(msgstore[ai]))
+			lastasst = ai;
+	hasspeak := speakon && lastasst < 0;
 	drawn := nmsg;
+	if(hasspeak)
+		drawn++;
+	if(hasqueue)
+		drawn++;
 	if(hasdraft)
 		drawn++;
 	if(drawn == 0) {
@@ -701,6 +921,8 @@ drawconversation(zone: Rect)
 	ntiles = 0;
 	dlgbuttons = array[drawn * 4] of ref DlgButton;  # up to 4 buttons per dialogue
 	ndlgbuttons = 0;
+	queuebuttons = array[2] of ref QueueButton;
+	nqueuebuttons = 0;
 
 	tilegap := 4;
 	tpadv := 3;
@@ -717,9 +939,30 @@ drawconversation(zone: Rect)
 	marr := array[drawn] of ref ConvMsg;
 	for(mi := 0; mi < nmsg; mi++)
 		marr[mi] = msgstore[mi];
+	nextmsg := nmsg;
+	if(hasspeak) {
+		role := agentname;
+		if(role == "")
+			role = "veltro";
+		marr[nextmsg++] = ref ConvMsg(role, "", "", nil,
+			"voice-speak", "", "", "");
+	}
+	if(hasqueue) {
+		qtext := queuebuf;
+		qoptions := "";
+		if(queueediting) {
+			qtext = queueeditbuf;
+			qoptions = "Cancel edit,Save replacement";
+		} else if(queuedepth > 0)
+			qoptions = "Cancel,Replace";
+		qtitle := sys->sprint("Queued follow-up - not sent - %s - %d/%d",
+			queuestate, queuedepth, queuecapacity);
+		marr[nextmsg++] = ref ConvMsg("human", qtext, "", nil,
+			"voice-queue", qtitle, "", qoptions);
+	}
 	if(hasdraft)
-		marr[nmsg] = ref ConvMsg("human", draftbuf, "", nil,
-			"voice-draft", draftstatusbuf, "", "");
+		marr[nextmsg] = ref ConvMsg("human", livedraft, "", nil,
+			"voice-draft", livestatus, "", "");
 
 	# Pass 1: estimate heights
 	harr := array[drawn] of int;
@@ -738,8 +981,16 @@ drawconversation(zone: Rect)
 			total_h += h + tilegap;
 			continue;
 		}
+		if(marr[pi].dtype == "voice-speak") {
+			harr[pi] = meterh + 2 * tpadv;
+			if(harr[pi] < meterh)
+				harr[pi] = meterh;
+			total_h += harr[pi] + tilegap;
+			continue;
+		}
 		# Dialogue tiles have their own height calculation
-		if(marr[pi].dtype == "dialogue" || marr[pi].dtype == "form") {
+		if(marr[pi].dtype == "dialogue" || marr[pi].dtype == "form" ||
+				marr[pi].dtype == "voice-queue") {
 			DLGPAD := 8;
 			PROGBAR_H := 10;
 			BTNROW_H := 24;
@@ -793,6 +1044,10 @@ drawconversation(zone: Rect)
 		harr[pi] = mainfont.height + imgh + 2 * tpadv;
 		total_h += harr[pi] + tilegap;
 	}
+	if(speakon && lastasst >= 0 && lastasst < drawn && meterh > 0) {
+		harr[lastasst] += meterh + 2;
+		total_h += meterh + 2;
+	}
 
 	viewport_h = msgy - zone.min.y;
 	newmax := total_h - viewport_h;
@@ -819,6 +1074,7 @@ drawconversation(zone: Rect)
 			marr[ri].text[len marr[ri].text - 1] == 16r258C;
 		if(marr[ri].rendimg == nil && rlay != nil && marr[ri].role != "human" &&
 				marr[ri].dtype != "dialogue" && marr[ri].dtype != "form" &&
+				marr[ri].dtype != "voice-speak" &&
 				!streaming) {
 			bgc_r := veltrocol;
 			style_r := ref Rlayout->Style(
@@ -851,6 +1107,8 @@ drawconversation(zone: Rect)
 			break;
 
 		msg := marr[i];
+		isqueue := msg.dtype == "voice-queue";
+		isspeak := msg.dtype == "voice-speak";
 		isdialogue := msg.dtype == "dialogue" || msg.dtype == "form";
 		pending := msg.dtype == "voice-draft";
 		human := msg.role == "human" && !isdialogue;
@@ -858,6 +1116,12 @@ drawconversation(zone: Rect)
 		tilecol: ref Image;
 		rolecol: ref Image;
 		if(isdialogue) {
+			tilecol = veltrocol;
+			rolecol = accentcol;
+		} else if(isqueue) {
+			tilecol = humancol;
+			rolecol = text2col;
+		} else if(isspeak) {
 			tilecol = veltrocol;
 			rolecol = accentcol;
 		} else if(pending) {
@@ -962,7 +1226,9 @@ drawconversation(zone: Rect)
 						br := Rect((dx, dy), (dx + dw, dy + mbtnh));
 						if(br.min.y < msgy && br.max.y > zone.min.y) {
 							drawdlgbutton(br, opt);
-							if(ndlgbuttons < len dlgbuttons)
+							if(msg.dtype == "voice-queue" && nqueuebuttons < len queuebuttons)
+								queuebuttons[nqueuebuttons++] = ref QueueButton(br, opt);
+							else if(ndlgbuttons < len dlgbuttons)
 								dlgbuttons[ndlgbuttons++] = ref DlgButton(br, opt, i);
 						}
 						dy += mbtnh + 6;
@@ -976,7 +1242,9 @@ drawconversation(zone: Rect)
 						br := Rect((bx, dy), (bx + bw, dy + BTNROW_H));
 						if(br.min.y < msgy && br.max.y > zone.min.y) {
 							drawdlgbutton(br, opt);
-							if(ndlgbuttons < len dlgbuttons)
+							if(msg.dtype == "voice-queue" && nqueuebuttons < len queuebuttons)
+								queuebuttons[nqueuebuttons++] = ref QueueButton(br, opt);
+							else if(ndlgbuttons < len dlgbuttons)
 								dlgbuttons[ndlgbuttons++] = ref DlgButton(br, opt, i);
 						}
 						bx += bw + 8;
@@ -985,6 +1253,79 @@ drawconversation(zone: Rect)
 				}
 			}
 
+			y = tiletop;
+			continue;
+		}
+		if(isqueue) {
+			DLGPAD := 8;
+			BTNROW_H := 24;
+			dx := tilex + DLGPAD;
+			dw := tilew - 2 * DLGPAD;
+			dy := tiletop + DLGPAD;
+			if(msg.title != "") {
+				tx := tilex + tilew - DLGPAD - mainfont.width(msg.title);
+				if(dy >= zone.min.y && dy + mainfont.height <= msgy)
+					mainwin.text((tx, dy), text2col, (0, 0), mainfont, msg.title);
+				dy += mainfont.height + 4;
+			}
+			bodytext := strip(msg.text);
+			if(bodytext != "") {
+				lines := wraptext(bodytext, dw);
+				for(ll := lines; ll != nil; ll = tl ll) {
+					if(dy >= msgy) break;
+					if(dy + mainfont.height > zone.min.y) {
+						lx := tilex + tilew - DLGPAD - mainfont.width(hd ll);
+						mainwin.text((lx, dy), textcol, (0, 0), mainfont, hd ll);
+					}
+					dy += mainfont.height;
+				}
+				dy += 4;
+			}
+			if(msg.options != "") {
+				(nil, opts) := sys->tokenize(msg.options, ",");
+				if(mobile) {
+					mbtnh := mainfont.height + 24;
+					if(mbtnh < 132) mbtnh = 132;
+					for(; opts != nil; opts = tl opts) {
+						opt := hd opts;
+						br := Rect((dx, dy), (dx + dw, dy + mbtnh));
+						if(br.min.y < msgy && br.max.y > zone.min.y) {
+							drawdlgbutton(br, opt);
+							if(nqueuebuttons < len queuebuttons)
+								queuebuttons[nqueuebuttons++] = ref QueueButton(br, opt);
+						}
+						dy += mbtnh + 6;
+					}
+				} else {
+					rev: list of string;
+					for(; opts != nil; opts = tl opts)
+						rev = hd opts :: rev;
+					bx := dx + dw;
+					for(; rev != nil; rev = tl rev) {
+						opt := hd rev;
+						bw := mainfont.width(opt) + 24;
+						bx -= bw;
+						if(bx < dx)
+							break;
+						br := Rect((bx, dy), (bx + bw, dy + BTNROW_H));
+						if(br.min.y < msgy && br.max.y > zone.min.y) {
+							drawdlgbutton(br, opt);
+							if(nqueuebuttons < len queuebuttons)
+								queuebuttons[nqueuebuttons++] = ref QueueButton(br, opt);
+						}
+						bx -= 8;
+					}
+					dy += BTNROW_H + 4;
+				}
+			}
+			y = tiletop;
+			continue;
+		}
+
+		if(isspeak && meterh > 0) {
+			meterr := Rect((tilex, tiletop + tpadv),
+				(tilex + tilew, tiletop + tileh - tpadv));
+			drawvoicemeter(meterr);
 			y = tiletop;
 			continue;
 		}
@@ -1054,7 +1395,130 @@ drawconversation(zone: Rect)
 			}
 		}
 
+		if(speakon && i == lastasst && meterh > 0) {
+			meterr := Rect((tilex, tiletop + tileh - meterh),
+				(tilex + tilew, tiletop + tileh));
+			drawvoicemeter(meterr);
+		}
 		y = tiletop;
+	}
+}
+
+# Provider RMS/peak is linear 0..1000 in shifted-sample energy.
+# The feed's speech energy sits far below full scale, so a linear
+# height map draws every bar at 1px. A dB map from 1..25 (INF-44)
+# fits the energy that actually arrives at the meter and leaves
+# the top for louder turns. Sub-floor energy stays 1px.
+MeterFloor: con 1;
+MeterFull: con 25;
+
+voicemeterlevel(raw: int): int
+{
+	if(raw <= 0)
+		return 0;
+	if(raw < MeterFloor)
+		return 1;
+	if(raw >= MeterFull)
+		return 1000;
+	mapped := int (1000.0 * math->log10(real raw / real MeterFloor) /
+		math->log10(real MeterFull / real MeterFloor));
+	if(mapped < 1)
+		mapped = 1;
+	if(mapped > 1000)
+		mapped = 1000;
+	return mapped;
+}
+
+# Draw two deliberately different activity grammars from the same stable
+# text record: microphone bars rise from the baseline; playback bars expand
+# symmetrically around the centre line. No transcript or activity state is
+# used as a proxy for actual audio.
+drawvoicemeter(r: Rect)
+{
+	mainwin.draw(r, inputcol, nil, (0, 0));
+	mainwin.draw(Rect(r.min, (r.max.x, r.min.y + 1)), bordercol, nil, (0, 0));
+
+	attrs := parseattrs(levelbuf);
+	mode := getattr(attrs, "mode");
+	rms := 0;
+	peak := 0;
+	label := "Voice ready";
+	barcol := dimcol;
+	if(mode == "output" || speakon) {
+		if(mode == "output") {
+			rms = strtoint(getattr(attrs, "output-rms"));
+			peak = strtoint(getattr(attrs, "output-peak"));
+		}
+		# Writes can return before the device has finished playing,
+		# at which point the provider clears RMS but mode stays
+		# output. Keep the last measured playback energy so the
+		# bars do not collapse while the UI still says Speaking.
+		if(rms > 0) {
+			heldoutrms = rms;
+			heldoutpeak = peak;
+		} else if(heldoutrms > 0) {
+			rms = heldoutrms;
+			if(peak < heldoutpeak)
+				peak = heldoutpeak;
+		}
+		label = "Speaking";
+		barcol = progfgcol;
+	} else {
+		heldoutrms = 0;
+		heldoutpeak = 0;
+		if(mode == "input") {
+			rms = strtoint(getattr(attrs, "input-rms"));
+			peak = strtoint(getattr(attrs, "input-peak"));
+			label = "Listening";
+			barcol = accentcol;
+		} else if(mode == "suppressed") {
+			label = "Suppressed";
+			barcol = dimcol;
+		}
+	}
+	if(rms < 0) rms = 0;
+	if(rms > 1000) rms = 1000;
+	if(peak < rms) peak = rms;
+	if(peak > 1000) peak = 1000;
+	rms = voicemeterlevel(rms);
+	peak = voicemeterlevel(peak);
+
+	pad := 6;
+	labelw := mainfont.width(label) + pad;
+	mainwin.text((r.min.x + pad, r.min.y + 3), barcol, (0, 0), mainfont, label);
+	barminx := r.min.x + labelw + pad;
+	barmaxx := r.max.x - pad;
+	nbar := 18;
+	if(barmaxx - barminx < nbar)
+		return;
+	gap := 2;
+	barw := (barmaxx - barminx - (nbar - 1) * gap) / nbar;
+	if(barw < 1)
+		barw = 1;
+	basey := r.max.y - 5;
+	centery := (r.min.y + r.max.y) / 2;
+	maxh := r.dy() - 10;
+	for(i := 0; i < nbar; i++) {
+		# A fixed profile makes the scalar envelope legible as a bank of
+		# bars while every height remains driven by measured PCM energy.
+		shape := 55 + ((i * 37 + 13) % 46);
+		level := rms * shape / 100;
+		if(i == nbar / 2 || i == nbar / 2 - 1)
+			level = peak;
+		h := maxh * level / 1000;
+		x := barminx + i * (barw + gap);
+		if(mode == "output" || speakon) {
+			h /= 2;
+			if(level > 0 && h < 1)
+				h = 1;
+			mainwin.draw(Rect((x, centery - h), (x + barw, centery + h + 1)),
+				barcol, nil, (0, 0));
+		} else {
+			if(level > 0 && h < 1)
+				h = 1;
+			mainwin.draw(Rect((x, basey - h), (x + barw, basey)),
+				barcol, nil, (0, 0));
+		}
 	}
 }
 
@@ -1253,6 +1717,141 @@ loaddraft()
 	draftstatusbuf = strip(readfile(path));
 }
 
+loadqueue()
+{
+	if(actid_g < 0) {
+		setqueue("depth=0 capacity=1 state=disconnected\n");
+		return;
+	}
+	path := sys->sprint("%s/activity/%d/conversation/voicequeue",
+		mountpt_g, actid_g);
+	status := strip(readfile(path));
+	if(status == nil)
+		status = "depth=0 capacity=1 state=disconnected\n";
+	setqueue(status);
+}
+
+setqueue(status: string)
+{
+	meta := status;
+	text := "";
+	for(i := 0; i < len status; i++)
+		if(status[i] == '\n') {
+			meta = status[0:i];
+			text = status[i+1:];
+			break;
+		}
+	attrs := parseattrs(meta);
+	state := getattr(attrs, "state");
+	if(state == nil || state == "")
+		state = "disconnected";
+	depth := strtoint(getattr(attrs, "depth"));
+	capacity := strtoint(getattr(attrs, "capacity"));
+	if(depth < 0)
+		depth = 0;
+	if(capacity < 1)
+		capacity = 1;
+	# A failed read has no payload. Keep the last known queued transcript so
+	# the disconnected presentation is truthful rather than silently stale.
+	if(state != "disconnected" || text != "")
+		queuebuf = text;
+	queuestate = state;
+	queuedepth = depth;
+	queuecapacity = capacity;
+	if(state == "empty")
+		queuebuf = "";
+	if((depth == 0 || state == "disconnected") && queueediting) {
+		queueediting = 0;
+		queueeditbuf = "";
+		queueeditpos = 0;
+	}
+}
+
+queuebuttonclick(action: string)
+{
+	if(action == "Replace") {
+		queueediting = 1;
+		queueeditbuf = queuebuf;
+		queueeditpos = len queueeditbuf;
+		if(mobile) {
+			if(softkbd != nil)
+				softkbd->set_rect(inputrect.min.x, inputrect.min.y,
+					inputrect.dx(), inputrect.dy());
+			reqkbd(1);
+		}
+		return;
+	}
+	if(action == "Cancel edit") {
+		queueediting = 0;
+		queueeditbuf = "";
+		queueeditpos = 0;
+		if(mobile && voiceactive())
+			reqkbd(0);
+		return;
+	}
+	ctl := sys->sprint("%s/activity/%d/conversation/voicequeue-ctl",
+		mountpt_g, actid_g);
+	command := "";
+	if(action == "Cancel")
+		command = "cancel";
+	else if(action == "Save replacement" && strip(queueeditbuf) != "")
+		command = "replace " + queueeditbuf;
+	if(command == "")
+		return;
+	fd := sys->open(ctl, Sys->OWRITE);
+	if(fd == nil) {
+		setqueue("depth=0 capacity=1 state=disconnected\n");
+		return;
+	}
+	b := array of byte command;
+	if(sys->write(fd, b, len b) != len b) {
+		sys->fprint(stderr, "luciconv: voice queue control failed: %r\n");
+		loadqueue();
+		return;
+	}
+	queueediting = 0;
+	queueeditbuf = "";
+	queueeditpos = 0;
+	if(mobile && voiceactive())
+		reqkbd(0);
+	loadqueue();
+}
+
+# The replacement editor is deliberately separate from inputbuf. It provides
+# atomic replace without consuming or corrupting the user's typed compose.
+queueeditkey(k: int)
+{
+	case k {
+	'\n' or 13 =>
+		queuebuttonclick("Save replacement");
+	8 or 127 =>
+		if(queueeditpos > 0) {
+			queueeditbuf = queueeditbuf[0:queueeditpos-1] + queueeditbuf[queueeditpos:];
+			queueeditpos--;
+		}
+	27 =>
+		queuebuttonclick("Cancel edit");
+	16rFF51 =>
+		if(queueeditpos > 0)
+			queueeditpos--;
+	16rFF53 =>
+		if(queueeditpos < len queueeditbuf)
+			queueeditpos++;
+	16rFF61 =>
+		queueeditpos = 0;
+	16rFF57 =>
+		queueeditpos = len queueeditbuf;
+	* =>
+		if(k >= 32 && k < 16rFFFF) {
+			ch := "x";
+			ch[0] = k;
+			queueeditbuf = queueeditbuf[0:queueeditpos] + ch +
+				queueeditbuf[queueeditpos:];
+			queueeditpos++;
+		}
+	}
+}
+
 writedraft(text: string)
 {
 	if(actid_g < 0)
@@ -1291,16 +1890,16 @@ voiceactive(): int
 	return strip(readfile(mountpt_g + "/input-mode")) == "v";
 }
 
-togglevoice()
+togglevoice(source: string)
 {
-	path := mountpt_g + "/input-mode";
+	path := mountpt_g + "/voice-control";
 	ctl := sys->sprint("%s/activity/%d/context/ctl", mountpt_g, actid_g);
 	if(voiceactive()) {
-		writestring(path, "k");
+		writestring(path, "off source=" + source);
 		writestring(ctl, "resource upsert path=/n/speech label=Voice "
 			+ "type=audio status=idle via=voice-mode");
 	} else {
-		writestring(path, "v");
+		writestring(path, "on source=" + source);
 		writestring(ctl, "resource upsert path=/n/speech label=Voice "
 			+ "type=audio status=starting via=voice-mode");
 	}
@@ -1313,6 +1912,47 @@ writestring(path, text: string)
 		return;
 	b := array of byte text;
 	sys->write(fd, b, len b);
+}
+
+armdwell(ms: int)
+{
+	spawn dwellsleep(ms);
+}
+
+dwellsleep(ms: int)
+{
+	sys->sleep(ms);
+	dwellc <-= 1;
+}
+
+isassistant(m: ref ConvMsg): int
+{
+	if(m == nil)
+		return 0;
+	if(m.role == "human" || m.role == "error")
+		return 0;
+	if(m.dtype == "dialogue" || m.dtype == "form" ||
+			m.dtype == "voice-queue" || m.dtype == "voice-draft" ||
+			m.dtype == "voice-speak")
+		return 0;
+	t := strip(m.text);
+	if(t == "" || t == "▌" || t == "…")
+		return 0;
+	return 1;
+}
+
+humanreplaced(text: string): int
+{
+	t := strip(text);
+	if(t == "")
+		return 0;
+	for(i := nmsg - 1; i >= 0; i--) {
+		m := msgstore[i];
+		if(m.role == "human" && (m.dtype == nil || m.dtype == "") &&
+				strip(m.text) == t)
+			return 1;
+	}
+	return 0;
 }
 
 # --- Word wrapping ---

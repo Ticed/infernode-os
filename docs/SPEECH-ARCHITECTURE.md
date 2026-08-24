@@ -123,10 +123,10 @@ write /n/speech/ctl <- pipermodel /opt/piper/models/en_US-lessac-medium.onnx
 | `piperbin` / `pipermodel`     | binary path / `.onnx` voice model | `local` engine. |
 | `whisperbin` / `whispermodel` | binary path / `.bin` GGML model    | `local` engine. |
 | `ttsengine` | `engine` or `piper` | Selects whether `/n/speech/say` uses the configured speech9p TTS engine or delegates to the provider's `say` file. |
-| `provider` | provider mount root | The speech provider mount behind `listen`, `wake`, kokoro-engine `say`, and `cancel` (see the provider contract below). Default `/n/parakeet`; boot points it at `/n/speechshim`. |
+| `provider` | provider mount root | The speech provider mount behind `listen`, `wake`, kokoro-engine `say`, `cancel`, and live `level` telemetry (see the provider contract below). Default `/n/parakeet`; boot points it at `/n/speechshim`. |
 | `listenengine` | `whisper` or `parakeet` | Compatibility alias; both values consume the provider mount. |
 | `whisperstreambin` / `wakebin` / `kokorobin` / `wakeword` / `wakethreshold` | helper commands and wake tuning | Stored for introspection and forwarded to the provider's `ctl`; `speechshim9p` consumes them. `speech9p` itself runs no helpers. |
-| `audiodev` / `capturedev` / `micmode` / `capturerate` | audio routing (see SPEECH-REMOTE-AUDIO.md) | Forwarded to the provider's `ctl` unchanged. In `speechshim9p`: `audiodev` is the playback (and default capture) device path; `capturedev` overrides capture (`default` clears it); `micmode helper\|device` chooses whether the helper CLI grabs the host mic or the shim pumps PCM from the capture device into helper stdin; `capturerate` is the pump sample rate. |
+| `audiodev` / `capturedev` / `micmode` / `capturerate` | audio routing (see SPEECH-REMOTE-AUDIO.md) | Forwarded to the provider's `ctl` unchanged. In `speechshim9p`: `audiodev` is the playback (and default capture) device path; `/dev/audio` playback accepts only 8000, 11025, 16000, 22050, or 44100 Hz, while non-default devices may use any configured 8000–48000 Hz rate their own control endpoint supports. `capturedev` overrides capture (`default` clears it); `micmode helper\|device` chooses whether the helper CLI grabs the host mic or the shim pumps PCM from the capture device into helper stdin; `capturerate` remains independently configurable from 8000–48000 Hz for the capture/Parakeet resampling path. |
 | `duplex` | `full` or `half` | Forwarded to the provider's `ctl`. In `speechshim9p`, `half` suppresses wake/capture delivery while playback or chimes are active. |
 | `mic` | `on` or `off` | Forwarded to the provider's `ctl`. In `speechshim9p`, `off` kills the mic-side helpers (and the capture pump's device fd) and fails pending `listen`/`wake` reads with `error: mic off` instead of restarting them; the next read re-arms the microphone. `voicemode` writes `mic off` on voice-mode exit, so the mic is only open during a voice session. |
 | `listen` | `on` or `off` | Forwarded to the provider's `ctl`. In `speechshim9p`, `off` kills only the STT helper and fails a pending `listen` read with `error: listen off` instead of restarting it; wake stays armed, and the next `listen` read restarts STT. `voicemode` writes `listen off` at the end of every voice turn (final, error, or timeout), so speech between turns — ambient talk, the assistant's own TTS — cannot queue as stale records that replay into the next turn. |
@@ -146,6 +146,7 @@ mount** — a 9P namespace serving this contract:
 | `<provider>/say`    | write text to synthesize and play; read the last TTS status |
 | `<provider>/cancel` | write to hard-cancel active TTS |
 | `<provider>/chime`  | optional write-only local earcons: `wake`, `done`, `on`, `off` |
+| `<provider>/level`  | optional read-only live PCM telemetry: `mode=input\|output\|idle input-rms=0..1000 input-peak=0..1000 output-rms=0..1000 output-peak=0..1000 capture-rate=Hz playback-rate=Hz` |
 | `<provider>/ctl`    | optional provider configuration (helper paths, wake word, voice, ...) |
 | `<provider>/voices` | optional voice list |
 
@@ -154,6 +155,16 @@ mount** — a 9P namespace serving this contract:
 no helper binaries itself. Streaming reads ignore the fid offset (a consumer
 holds one fd across many reads), and helper-configuration keys written to
 `/n/speech/ctl` are forwarded to the provider's `ctl`.
+
+`speech9p` re-exports provider telemetry as `/n/speech/level`. Providers that
+do not implement the optional file produce a zeroed `mode=idle` record with
+the configured capture and playback rates. `speechshim9p` calculates RMS and
+peak directly from each s16le capture/playback chunk; it clears levels on
+EOF, reset, cancellation, and playback completion. In half-duplex mode it
+suppresses capture before publishing input levels, so input and output cannot
+be reported active simultaneously. Lucia polls this file at 10Hz only while
+voice mode owns input, drawing bottom-up microphone bars and a distinct
+centre-out playback animation above the locked compose row.
 
 InferNode boots voice mode in half-duplex by writing `duplex half` after the
 default `/n/speechshim` provider is selected. During playback and earcons, the
@@ -184,7 +195,7 @@ long-lived microphone stream, for example:
 ```
 cd <parakeet-checkout>
 <build-dir>/examples/cli/parakeet-cli transcribe \
-    --model models/parakeet_realtime_eou_120m-v1-f16.gguf \
+    --model models/realtime_eou_120m-v1-f16.gguf \
     --mic --stream --lines
 ```
 
@@ -329,9 +340,9 @@ cache-aware streaming transducer that emits `<EOU>`/`<EOB>` tokens: **the
 model decides when the utterance is over**.
 
 - Source: `tools/parakeet_stream.cpp` (tracked here), compiled by the
-  installer against a clone of upstream
-  [parakeet.cpp](https://github.com/mudler/parakeet.cpp) (committed API
-  only: `ModelLoader`, `StreamingMel`, `StreamingSession`).
+  installer against the exact upstream revision recorded in
+  `tools/parakeet-eou.manifest` (committed API only: `ModelLoader`,
+  `StreamingMel`, `StreamingSession`).
 - Input: s16le PCM on **stdin only** — the shim's capture pump feeds it
   (`micmode device`, `capturerate 16000`), which is what makes remote-mic
   topologies pure namespace composition. There is deliberately no
@@ -343,10 +354,31 @@ model decides when the utterance is over**.
   stops emitting after an EOU otherwise (verified against upstream's own
   file-streaming path), and the reset also bounds hypothesis growth over
   an hours-long session.
-- The streaming EOU model is not yet published as GGUF; the installer
-  probes `PARAKEET_EOU_MODEL`, its own models dir, and dev checkouts, and
-  prints conversion instructions when none is found (whisper remains the
-  fallback in that case).
+- An `<EOU>` becomes a `final` only once the audio has also been quiet for
+  `--final-silence-ms` (default 800), because the model emits EOU mid-speech
+  often enough that acting on the token alone talks over the user.
+  "Quiet" is measured against the tracked noise floor, not a fixed level:
+  `--speech-rms` (default 0.008) is the floor for a silent room, and the
+  adapter raises the bar to twice the observed noise floor when the room or
+  the capture gain is louder, up to four times that floor. A fixed level
+  cannot work — a MacBook's built-in microphone at full input gain sits at
+  RMS ≈ 0.0115, so every block reads as speech, the silence timer never
+  advances, and no turn ever closes. The floor falls toward quiet in ~2s
+  and rises in ~20s, so a long utterance cannot drag it up into its own
+  level. See `tools/parakeet_turn_gate.h`.
+- The installer downloads the published F16 EOU GGUF from the immutable
+  repository revision in `tools/parakeet-eou.manifest`, then verifies its
+  byte length and SHA-256 before use. Explicit or pre-existing model files
+  must match that manifest unless the development-only
+  `PARAKEET_ALLOW_UNVERIFIED_MODEL=1` override is set.
+- `tools/convert-parakeet-eou.sh` provides the auditable source path. It
+  downloads and verifies the pinned NVIDIA `.nemo` checkpoint, checks out
+  the pinned `parakeet.cpp` converter, creates a CPython 3.10 environment with
+  the direct package versions in `tools/parakeet-convert-requirements.txt`,
+  emits F16 GGUF, and accepts the result only when it matches the deployment
+  manifest. Transitive Python resolution is platform-specific, so the output
+  checksum—not environment similarity—is the acceptance authority. Use
+  `--verify FILE` to check an already downloaded artifact without converting.
 
 Shim configuration is unchanged: the adapter is a drop-in for the
 `whisperstreambin` slot because it accepts the same
@@ -562,6 +594,15 @@ exclusive-use. While speech9p holds it for playback, no other Inferno
 process can play. For STT under the cmd or local engines, the recording
 binary opens the host's mic *directly* (`ffmpeg` via avfoundation,
 `arecord` via ALSA) — `/dev/audio` is not used on those paths.
+
+`speechshim9p` validates the default device's fixed playback-rate table
+before starting playback. If an audio control endpoint exists, every format
+write must succeed before PCM is opened; a rejected rate or format therefore
+returns an explicit `error:` status instead of playing at a stale/default
+device rate. A namespaced non-default playback file may omit a sibling
+`audioctl`; if it provides one, the same fail-closed configuration rule
+applies. Capture rate selection and helper-side resampling are separate and
+are not restricted to the default playback table.
 
 ## 7. Veltro and lucibridge integration
 

@@ -2454,15 +2454,15 @@ writetofile(path: string, text: string): int
 # "starting" seconds later means voicemode never responded.
 togglevoicemode()
 {
-	path := mountpt_g + "/input-mode";
+	path := mountpt_g + "/voice-control";
 	ctl := sys->sprint("%s/activity/%d/context/ctl", mountpt_g, actid_g);
-	mode := strip(readfile(path));
+	mode := strip(readfile(mountpt_g + "/input-mode"));
 	if(mode == "v") {
-		writetofile(path, "k");
+		writetofile(path, "off source=context-chip");
 		writetofile(ctl, "resource upsert path=/n/speech label=Voice "
 			+ "type=audio status=idle via=voice-mode");
 	} else {
-		writetofile(path, "v");
+		writetofile(path, "on source=context-chip");
 		writetofile(ctl, "resource upsert path=/n/speech label=Voice "
 			+ "type=audio status=starting via=voice-mode");
 	}

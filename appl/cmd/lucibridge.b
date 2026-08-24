@@ -58,6 +58,7 @@ speakgen := 0;
 
 # Persistent input readers and cooperative active-turn control.
 inputc: chan of (int, string);
+approvalc: chan of string;
 turngen := 0;
 turnpaused := 0;
 turnactive := 0;
@@ -310,6 +311,18 @@ appendspeak(l: list of ref Speakreq, r: ref Speakreq): list of ref Speakreq
 	return result;
 }
 
+TTS_JSON_FALLBACK: con "I received a structured reply.";
+
+# Lone JSON objects are not spoken. The conversation pane still shows the
+# raw text; this only changes what is written to /n/speech.
+speakabletext(s: string): string
+{
+	t := agentlib->strip(s);
+	if(len t >= 2 && t[0] == '{' && t[len t - 1] == '}')
+		return TTS_JSON_FALLBACK;
+	return s;
+}
+
 # Speak one queue entry via speech9p. sayq is a per-fid transaction: the
 # read after the write blocks until playback finishes, keeping the resource
 # truthfully active for the whole utterance. Older providers with only /say
@@ -342,7 +355,7 @@ speaktext(r: ref Speakreq)
 		speakdone <-= r.gen;
 		return;
 	}
-	b := array of byte r.text;
+	b := array of byte speakabletext(r.text);
 	if(sys->write(fd, b, len b) < 0) {
 		log("speaktext: write failed");
 		if(r.gen == speakgen)
@@ -446,6 +459,26 @@ inputreader(path: string, isvoice: int, ch: chan of (int, string))
 		ch <-= (isvoice, s);
 		if(s == nil)
 			return;
+	}
+}
+
+# Dedicated spoken approval reader. Unlike normal voiceinput, this channel is
+# valid only while luciuisrv reports the activity blocked at an approval gate.
+approvalreader(path: string, ch: chan of string)
+{
+	for(;;) {
+		fd := sys->open(path, Sys->OREAD);
+		if(fd == nil) {
+			sys->sleep(500);
+			continue;
+		}
+		decision := blockread(fd);
+		fd = nil;
+		if(decision == nil) {
+			sys->sleep(100);
+			continue;
+		}
+		ch <-= decision;
 	}
 }
 
@@ -719,8 +752,9 @@ pretoolapproval(toolname, args: string, gen: int): string
 	log("pretool: awaiting approval for " + toolname);
 	setstatus("blocked");
 	seturgency(2);
-	# Use the already-running shared readers so typed buttons and spoken
-	# Allow/Deny reach the same gate; a second direct reader races them.
+	# Typed buttons stay on the shared keyboard reader. Spoken Allow/Deny use
+	# their own gated server channel so a queued refinement cannot be mistaken
+	# for an approval when status changes working -> blocked.
 	response := "";
 	done := 0;
 	while(!done) {
@@ -728,6 +762,8 @@ pretoolapproval(toolname, args: string, gen: int): string
 		spawn approvaltick(tick);
 		alt {
 		(nil, response) = <-inputc =>
+			done = 1;
+		response = <-approvalc =>
 			done = 1;
 		<-tick =>
 			if(gen != turngen) {
@@ -1575,13 +1611,13 @@ handleslash(cmd: string): int
 		if(vcmd == "mode") {
 			if(varg == "on") {
 				autospeak = 1;
-				writefile("/mnt/ui/input-mode", "v");
+				writefile("/mnt/ui/voice-control", "on source=slash-command");
 				writefile(sys->sprint("/mnt/ui/activity/%d/context/ctl", actid),
 					"resource upsert path=/n/speech label=Voice type=audio status=waiting via=voice-mode");
 				ack = "voice mode: on";
 			} else if(varg == "off") {
 				cancelspeechqueue();
-				writefile("/mnt/ui/input-mode", "k");
+				writefile("/mnt/ui/voice-control", "off source=slash-command");
 				writefile(sys->sprint("/mnt/ui/activity/%d/context/ctl", actid),
 					"resource upsert path=/n/speech label=Voice type=audio status=idle via=voice-mode");
 				ack = "voice mode: off";
@@ -2379,9 +2415,12 @@ init(nil: ref Draw->Context, args: list of string)
 
 	inputpath := sys->sprint("/mnt/ui/activity/%d/conversation/input", actid);
 	voiceinputpath := sys->sprint("/mnt/ui/activity/%d/conversation/voiceinput", actid);
+	approvalpath := sys->sprint("/mnt/ui/activity/%d/conversation/voiceapproval", actid);
 	inputc = chan of (int, string);
+	approvalc = chan of string;
 	spawn inputreader(inputpath, 0, inputc);
 	spawn inputreader(voiceinputpath, 1, inputc);
+	spawn approvalreader(approvalpath, approvalc);
 	spawn controlreader(sys->sprint("/mnt/ui/activity/%d/conversation/control", actid));
 
 	log(sys->sprint("ready — activity %d, session %s, max %d steps, %d existing msgs",

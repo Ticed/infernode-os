@@ -2,13 +2,20 @@
 # mount a remote speech provider, and select it for /n/speech.
 #
 # Usage:
-#   sh /lib/voice/speech-terminal tcp!engine!17019 [audio-port] [provider-mount]
+#   run /lib/voice/speech-terminal tcp!engine!17019 [audio-port] [provider-mount] [mount-attempts] [state-file] [speech-ctl]
+#
+# Use sh's run builtin so the provider mount is installed in the caller's
+# namespace and remains visible to speech9p.
 
 load std
+load expr
 
 engine=$1
 audioport=$2
 provider=$3
+mounttries=$4
+statefile=$5
+ctlfile=$6
 if {~ $#engine 0} {
 	echo 'usage: voice/speech-terminal engine-provider-addr [audio-port] [provider-mount]' >[1=2]
 	exit usage
@@ -19,22 +26,137 @@ if {~ $#audioport 0} {
 if {~ $#provider 0} {
 	provider=/n/remotespeech
 }
+if {~ $#mounttries 0} {
+	mounttries=30
+}
+if {~ $#statefile 0} {
+	statefile=/tmp/speech-terminal.state
+}
+if {~ $#ctlfile 0} {
+	ctlfile=/n/speech/ctl
+}
+listenerstate=$statefile^.listener
+
+fn setstate {
+	rm -f $statefile
+	echo $* > $statefile
+}
+
+fn mountprovider {
+	tries=0
+	result=retry
+	while {~ $result retry} {
+		if {mount -A $engine $provider} {
+			result=mounted
+		} {
+			tries=${expr $tries 1 +}
+			setstate waiting provider $engine attempt $tries^/$mounttries
+			if {~ $tries $mounttries} {
+				result=failed
+			}
+			if {~ $result retry} {
+				sleep 1
+			}
+		}
+	}
+}
+
+# Keep redirection-open errors inside a child shell so an absent or rejected
+# ctl endpoint becomes a normal failure result instead of aborting this script.
+fn writectl {
+	ctlvalue=$1
+	ctlpath=$2
+	sh -c 'echo $ctlvalue > $ctlpath'
+}
+
+fn routeprovider {
+	result=configured
+	if {! writectl 'provider '^$provider $ctlfile} {
+		result=$ctlfile
+	}
+	if {~ $result configured} {
+		if {! writectl 'duplex half' $provider/ctl} {
+			result=$provider/ctl
+		}
+	}
+	if {~ $result configured} {
+		if {! writectl 'duplex half' $ctlfile} {
+			result=$ctlfile
+		}
+	}
+}
+
+fn cleanupterminal {
+	unmount $provider >[2] /dev/null
+	if {ftest -e $listenerstate} {
+		listenerctl=`{cat $listenerstate}
+		if {! ~ $#listenerctl 0} {
+			echo hangup > $listenerctl/ctl >[2] /dev/null
+		}
+		rm -f $listenerstate
+	}
+	if {ftest -e /prog/$terminal_pid} {
+		echo killgrp >/prog/$terminal_pid/ctl
+		# Process-group teardown is asynchronous; do not return control while the
+		# listener can still own its advertised host port.
+		sleep 1
+	}
+}
+
+fn watchprovider {
+	while {~ 1 1} {
+		sleep 1
+		if {! cat $provider/ctl > /dev/null} {
+			setstate disconnected provider $engine
+			unmount $provider >[2] /dev/null
+			mountprovider
+			if {~ $result mounted} {
+				routeprovider
+					if {~ $result configured} {
+						setstate connected provider $engine
+					} {
+						cleanupterminal
+						setstate failed control $result
+						exit ctl
+					}
+				} {
+					cleanupterminal
+					setstate failed provider $engine
+					exit mount
+				}
+		}
+	}
+}
+
+setstate starting provider $engine
 
 # voice/listen owns the devaudio bind, buffer caps, pre-warm, and export loop.
-sh /lib/voice/listen $audioport &
+# Keep the process-group leader alive: listen(1) can replace its shell and leave
+# the original background pid unavailable through /prog, which would make a
+# later group teardown impossible.
+{pctl newpgrp; sh /lib/voice/listen $audioport $listenerstate &; sleep 99999} &
 terminal_pid=$apid
 sleep 1
 
 mkdir -p $provider
-if {! mount -A $engine $provider} {
+mountprovider
+if {! ~ $result mounted} {
 	echo 'voice/speech-terminal: provider mount failed:' $engine >[1=2]
-	if {ftest -e /prog/$terminal_pid} {
-		echo kill >/prog/$terminal_pid/ctl
-	}
+	cleanupterminal
+	setstate failed provider $engine
 	exit mount
 }
 
-echo 'provider '$provider > /n/speech/ctl
-echo 'duplex half' > /n/speech/ctl
+routeprovider
+if {! ~ $result configured} {
+	echo 'voice/speech-terminal: speech routing failed:' $result >[1=2]
+	cleanupterminal
+	setstate failed control $result
+	exit ctl
+}
+setstate connected provider $engine
+watchprovider &
+watch_pid=$apid
 echo 'voice/speech-terminal: audio tcp!*!'$audioport 'provider' $provider
 echo '  listener pid=' $terminal_pid
+echo '  recovery pid=' $watch_pid 'state=' $statefile
