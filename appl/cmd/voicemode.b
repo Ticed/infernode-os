@@ -1,7 +1,7 @@
 implement Voicemode;
 
 #
-# voicemode - bridge /n/speech wake/listen events into Lucia activity input.
+# voicemode - bridge /mnt/speech wake/listen events into Lucia activity input.
 #
 # Phase 1 resident daemon. Pre-spawned at boot in an idle state; it activates
 # when /mnt/ui/input-mode becomes "v" (the Voice chip click or Esc-V in
@@ -15,7 +15,7 @@ implement Voicemode;
 #   WAITING_WAKE -> LISTENING -> PROCESSING/SPEAKING -> WAITING_WAKE
 #
 # Wake is re-armed as soon as a transcript is injected, so a wake event that
-# arrives while the assistant is speaking acts as barge-in: /n/speech/cancel
+# arrives while the assistant is speaking acts as barge-in: /mnt/speech/cancel
 # is written (cutting off TTS) and the machine goes straight to LISTENING.
 #
 # Mode changes are observed through the /mnt/ui/event global stream when it
@@ -28,7 +28,7 @@ implement Voicemode;
 # stack in the GUI without API cost. Finals never reach voiceinput; the
 # transcript is posted to the conversation as a "Heard" dialogue line and
 # the canned phrase (-p), or the transcript itself (-e), is spoken via
-# /n/speech/say. Wake, live partials, chimes, barge-in and control intents
+# /mnt/speech/say. Wake, live partials, chimes, barge-in and control intents
 # behave exactly as in normal mode. tools/speech-test.sh --gui boots this.
 #
 
@@ -50,7 +50,7 @@ Voicemode: module
 stderr: ref Sys->FD;
 debug := 0;
 ui := "/mnt/ui";
-speech := "/n/speech";
+speech := "/mnt/speech";
 
 Listenrec: adt {
 	gen: int;
@@ -88,7 +88,7 @@ silencefinals := array[] of {
 
 usage()
 {
-	sys->fprint(stderr, "Usage: voicemode [-d] [-e] [-p phrase] [-g grace-ms] [-q confidence-permille] [-t ms] [-w ms] [-u /mnt/ui] [-s /n/speech]\n");
+	sys->fprint(stderr, "Usage: voicemode [-d] [-e] [-p phrase] [-g grace-ms] [-q confidence-permille] [-t ms] [-w ms] [-u /mnt/ui] [-s /mnt/speech]\n");
 	raise "fail:usage";
 }
 
@@ -158,7 +158,7 @@ currentactivity(): int
 ctxstatus(actid: int, state: string)
 {
 	path := sys->sprint("%s/activity/%d/context/ctl", ui, actid);
-	writefile(path, "resource upsert path=/n/speech label=Voice type=audio status=" +
+	writefile(path, "resource upsert path=/mnt/speech label=Voice type=audio status=" +
 		state + " via=voice-mode");
 }
 
@@ -168,14 +168,14 @@ ctxqueued(actid: int, full: int)
 	if(full)
 		label = "Voice: busy; one turn queued";
 	path := sys->sprint("%s/activity/%d/context/ctl", ui, actid);
-	writefile(path, "resource upsert path=/n/speech label=" + label +
+	writefile(path, "resource upsert path=/mnt/speech label=" + label +
 		" type=audio status=queued via=voice-mode");
 }
 
 ctxpartial(actid: int)
 {
 	path := sys->sprint("%s/activity/%d/context/ctl", ui, actid);
-	writefile(path, "resource upsert path=/n/speech label=Voice" +
+	writefile(path, "resource upsert path=/mnt/speech label=Voice" +
 		" type=audio status=listening via=voice-mode");
 	draftstatus(actid, "Listening...");
 }
@@ -188,7 +188,7 @@ ctxsending(actid: int, remainms: int)
 {
 	secs := (remainms + 999) / 1000;
 	path := sys->sprint("%s/activity/%d/context/ctl", ui, actid);
-	writefile(path, "resource upsert path=/n/speech label=Voice" +
+	writefile(path, "resource upsert path=/mnt/speech label=Voice" +
 		" type=audio status=sending via=voice-mode");
 	draftstatus(actid, "Sending in " + string secs + "s - say cancel to stop");
 }
@@ -210,7 +210,7 @@ ctxerror(actid: int, reason: string)
 	if(len reason > 48)
 		reason = reason[0:48];
 	path := sys->sprint("%s/activity/%d/context/ctl", ui, actid);
-	writefile(path, "resource upsert path=/n/speech label=Voice: " + reason +
+	writefile(path, "resource upsert path=/mnt/speech label=Voice: " + reason +
 		" type=audio status=error via=voice-mode");
 }
 
@@ -220,7 +220,7 @@ ctxerror(actid: int, reason: string)
 ctxtimeout(actid: int)
 {
 	path := sys->sprint("%s/activity/%d/context/ctl", ui, actid);
-	writefile(path, "resource upsert path=/n/speech label=Voice: no speech heard" +
+	writefile(path, "resource upsert path=/mnt/speech label=Voice: no speech heard" +
 		" type=audio status=waiting via=voice-mode");
 }
 
@@ -537,7 +537,7 @@ agentbusy(actid: int): int
 
 # The say write blocks for the TTS duration on real providers, so test
 # mode runs it spawned; barge-in still works because a wake event writes
-# /n/speech/cancel, which kills the in-flight synthesis.
+# /mnt/speech/cancel, which kills the in-flight synthesis.
 saytts(text: string)
 {
 	writefile(speech + "/say", text);

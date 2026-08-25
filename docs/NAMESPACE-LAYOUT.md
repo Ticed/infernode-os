@@ -94,6 +94,17 @@ special case survives in any topology, local or distributed. One uniform
 `/mnt`-rooted capability surface; consumers reference one path and never probe
 for it.
 
+## Where speech goes: `/mnt/speech`
+
+The `speech9p` projection (`ctl`, `say`, `hear`, `listen`, `wake`, `sayq`,
+`cancel`, `voices`, `level`) is a schema InferNode authors; the provider
+behind it (`speechshim9p`, a parakeet export, or a remote 9P mount) only
+supplies the audio. By the one principle that makes it an application mount
+point, `/mnt/speech`, the same `webfs`/`/mnt/web` case — it is not a `/n`
+import despite the long habit of writing `/n/speech`. The grant is a
+fixed-function capability derived only from the `say` and `hear` tools; a
+generic `caps.paths` grant can never reach it.
+
 ## What stays on `/n`
 
 Genuine foreign imports — a remote peer's *whole* served root or a device tree,

@@ -1,7 +1,7 @@
 implement Leveltrace;
 
 #
-# leveltrace - sample /n/speech/level and report what mode it was in.
+# leveltrace - sample /mnt/speech/level and report what mode it was in.
 #
 # The voice meter's label is chosen from the mode field of that file
 # (luciconv.b drawvoicemeter), so this reports the same signal the label
@@ -63,7 +63,7 @@ init(nil: ref Draw->Context, args: list of string)
 {
 	sys = load Sys Sys->PATH;
 
-	path := "/n/speech/level";
+	path := "/mnt/speech/level";
 	everyms := 50;
 	forms := 20000;
 	tickms := 1000;

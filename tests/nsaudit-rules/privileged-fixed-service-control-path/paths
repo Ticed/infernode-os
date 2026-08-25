@@ -20,3 +20,7 @@
 /mnt/video
 /mnt/video/0/ctl
 /phone
+/mnt/speech
+/mnt/speech/ctl
+/mnt/speechshim
+/mnt/speechshim/ctl

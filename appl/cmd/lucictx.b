@@ -474,14 +474,14 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 				}
 			}
 
-			# Resource row click — /n/speech toggles voice input mode.
+			# Resource row click — /mnt/speech toggles voice input mode.
 			if(!tabclicked) {
 				for(ri := 0; ri < nresourcerects; ri++) {
 					if(resourcerects[ri].contains(clickpt)) {
 						ridx := 0;
 						for(rl := resources; rl != nil; rl = tl rl) {
 							if(ridx == ri) {
-								if((hd rl).path == "/n/speech") {
+								if((hd rl).path == "/mnt/speech") {
 									togglevoicemode();
 									tabclicked = 1;
 								}
@@ -2459,11 +2459,11 @@ togglevoicemode()
 	mode := strip(readfile(mountpt_g + "/input-mode"));
 	if(mode == "v") {
 		writetofile(path, "off source=context-chip");
-		writetofile(ctl, "resource upsert path=/n/speech label=Voice "
+		writetofile(ctl, "resource upsert path=/mnt/speech label=Voice "
 			+ "type=audio status=idle via=voice-mode");
 	} else {
 		writetofile(path, "on source=context-chip");
-		writetofile(ctl, "resource upsert path=/n/speech label=Voice "
+		writetofile(ctl, "resource upsert path=/mnt/speech label=Voice "
 			+ "type=audio status=starting via=voice-mode");
 	}
 }

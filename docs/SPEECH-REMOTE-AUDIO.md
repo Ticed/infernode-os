@@ -101,13 +101,13 @@ do block final Phase 2 acceptance and the overarching voice-feature merge into
 
 ## Current Design
 
-`speech9p` presents the stable speech interface at `/n/speech` and consumes a
-single **provider mount** (default `/n/speechshim`, served by `speechshim9p`)
+`speech9p` presents the stable speech interface at `/mnt/speech` and consumes a
+single **provider mount** (default `/mnt/speechshim`, served by `speechshim9p`)
 for all streaming voice I/O — see the provider contract in
 [SPEECH-ARCHITECTURE.md](SPEECH-ARCHITECTURE.md). Two properties make
 remoting a pure composition exercise:
 
-1. **The provider is a mount.** `echo 'provider /n/x' > /n/speech/ctl`
+1. **The provider is a mount.** `echo 'provider /n/x' > /mnt/speech/ctl`
    points the whole voice pipeline (listen, wake, kokoro say, cancel) at any
    namespace serving the contract — local shim, parakeet export, or a mount
    from another Infernode instance across the network.
@@ -127,7 +127,7 @@ the stack; the topologies below relocate the pieces.
 ### 1. Everything local (default)
 
 What `lib/lucifer/boot.sh` sets up: `speechshim9p` + `speech9p` on the local
-machine, provider `/n/speechshim`, helpers (whisper.cpp stream, Kokoro,
+machine, provider `/mnt/speechshim`, helpers (whisper.cpp stream, Kokoro,
 openWakeWord) installed on the local host, `micmode helper` so the helper
 CLIs grab the local microphone directly. A parakeet export mounted at
 `/n/parakeet` is the same topology with a different provider value.
@@ -144,32 +144,32 @@ Local terminal (mic + speakers)          Remote engine (helpers installed)
 ───────────────────────────────          ─────────────────────────────────
 listen -A 'tcp!*!17010' export /dev ───► mount ... /n/term
                                          speechshim9p &
-                                         listen -A 'tcp!*!17019' export /n/speechshim
+                                         listen -A 'tcp!*!17019' export /mnt/speechshim
 mount -A 'tcp!<remote>!17019' /n/remotespeech ◄──┘
-echo 'provider /n/remotespeech' > /n/speech/ctl
-echo 'audiodev /n/term/audio' > /n/speech/ctl     # resolved in the REMOTE namespace
-echo 'micmode device' > /n/speech/ctl
+echo 'provider /n/remotespeech' > /mnt/speech/ctl
+echo 'audiodev /n/term/audio' > /mnt/speech/ctl     # resolved in the REMOTE namespace
+echo 'micmode device' > /mnt/speech/ctl
 ```
 
 **Local — export the audio device, mount the remote provider:**
 ```sh
 listen -A 'tcp!*!17010' export /dev &
 mount -A 'tcp!<remote-ip>!17019' /n/remotespeech
-echo 'provider /n/remotespeech' > /n/speech/ctl
+echo 'provider /n/remotespeech' > /mnt/speech/ctl
 ```
 
 **Remote — import the terminal's audio, serve the provider:**
 ```sh
 mount -A 'tcp!<local-ip>!17010' /n/term
 speechshim9p &
-listen -A 'tcp!*!17019' export /n/speechshim &
+listen -A 'tcp!*!17019' export /mnt/speechshim &
 ```
 
 **Audio routing (writable from the local side — `speech9p` forwards these
 keys to the provider's `ctl`):**
 ```sh
-echo 'audiodev /n/term/audio' > /n/speech/ctl
-echo 'micmode device' > /n/speech/ctl
+echo 'audiodev /n/term/audio' > /mnt/speech/ctl
+echo 'micmode device' > /mnt/speech/ctl
 ```
 
 Now the remote shim synthesizes and recognizes, but reads its PCM from —
@@ -187,7 +187,7 @@ run /lib/voice/speech-terminal tcp!<remote-ip>!17019
 ```
 
 The terminal script reuses `/lib/voice/listen` (including audio pre-warm and
-buffer caps), mounts the exported provider, selects it in `/n/speech/ctl`, and
+buffer caps), mounts the exported provider, selects it in `/mnt/speech/ctl`, and
 requires both the mounted provider and `speech9p` to accept `duplex half`
 before publishing a connected state. It must be entered with the Inferno
 shell's `run` builtin, not as a child `sh` process, so the provider mount stays
@@ -199,7 +199,7 @@ script's usage header. Initial network mounts retry once per second for 30
 attempts by default (the attempt count is an optional argument). The terminal
 then monitors the provider mount and remounts it after a disconnect. Its
 current state is readable at `/tmp/speech-terminal.state`; an optional sixth
-argument overrides `/n/speech/ctl` for isolated tests or alternate speech
+argument overrides `/mnt/speech/ctl` for isolated tests or alternate speech
 stacks. The engine writes startup and listener state to
 `/tmp/speech-engine.state`. Both paths can be overridden by their documented
 state-file arguments.
@@ -384,8 +384,8 @@ architecture.
 — import the phone's audio and use it for capture only:**
 ```sh
 mount -A 'tcp!<phone-ip>!17010' /n/phone
-echo 'capturedev /n/phone/audio' > /n/speech/ctl
-echo 'micmode device' > /n/speech/ctl
+echo 'capturedev /n/phone/audio' > /mnt/speech/ctl
+echo 'micmode device' > /mnt/speech/ctl
 ```
 
 `capturedev` overrides capture without touching playback: the wake word and
@@ -398,9 +398,9 @@ the phone becomes a headset — microphone *and* speaker — with processing sti
 on the host:
 
 ```sh
-echo 'capturedev /n/phone/audio' > /n/speech/ctl
-echo 'audiodev   /n/phone/audio' > /n/speech/ctl
-echo 'micmode device' > /n/speech/ctl
+echo 'capturedev /n/phone/audio' > /mnt/speech/ctl
+echo 'audiodev   /n/phone/audio' > /mnt/speech/ctl
+echo 'micmode device' > /mnt/speech/ctl
 ```
 
 Nothing in the shim is aware this is one device rather than two; playback opens
@@ -451,8 +451,8 @@ while the reply was still being spoken, and `capturedelay` was the only knob
 big enough to hide it.
 
 ```sh
-echo 'duplex half' > /n/speech/ctl
-echo 'capturedelay 250' > /n/speech/ctl   # phone capture; leave 0 when local
+echo 'duplex half' > /mnt/speech/ctl
+echo 'capturedelay 250' > /mnt/speech/ctl   # phone capture; leave 0 when local
 ```
 
 Raise it if the assistant's own words still appear in a transcript, but treat a
@@ -506,7 +506,7 @@ The capture script uses the same bounded initial retry and background remount
 behaviour. Its state is readable at `/tmp/speech-capture.state` (or the fourth
 argument), so a missing device, a disconnect, and a successful reconnect are
 observable without scraping process output. A fifth argument can override the
-default `/n/speech/ctl` path for isolated tests or alternate speech stacks.
+default `/mnt/speech/ctl` path for isolated tests or alternate speech stacks.
 
 ### Automated Loopback Coverage
 
@@ -586,7 +586,7 @@ The final step — mounting the remote speech service — is **already supported
 catalog `[+]` button (`mountresource()` calls `sys->dial()` + `sys->mount()`). A catalog
 entry with the Jetson's address handles it. The audio routing itself is now plain ctl
 writes (`audiodev`, `capturedev`, `micmode` — no `bind` step remains), so once the
-mounts exist, any shell or agent that can write `/n/speech/ctl` can rewire the audio
+mounts exist, any shell or agent that can write `/mnt/speech/ctl` can rewire the audio
 path.
 
 What is still **not supported** by any GUI or agent pathway is the setup on the other

@@ -121,19 +121,19 @@ mkdir -p /tmp
 
 # Speech stack. speechshim9p adapts external host helper CLIs
 # (whisper-stream, kokoro, openwakeword) to the speech provider contract
-# at /n/speechshim; speech9p serves the stable /n/speech surface and is
+# at /mnt/speechshim; speech9p serves the stable /mnt/speech surface and is
 # pointed at the shim as its provider. Any other provider serving the
 # same contract (a parakeet export, a remote 9P mount) can replace it
 # with one ctl write. Helpers are external installs and every path
 # soft-fails with an error record, so starting both unconditionally is
 # safe. speech9p must come before lucibridge, which registers the speech
-# resource tile only if /n/speech is mounted at its startup.
+# resource tile only if /mnt/speech is mounted at its startup.
 > /tmp/speechshim9p.log
 /dis/veltro/speechshim9p >[2] /tmp/speechshim9p.log
 > /tmp/speech9p.log
 /dis/veltro/speech9p >[2] /tmp/speech9p.log
-echo provider /n/speechshim > /n/speech/ctl
-echo duplex half > /n/speech/ctl
+echo provider /mnt/speechshim > /mnt/speech/ctl
+echo duplex half > /mnt/speech/ctl
 
 # Host speech-helper configuration. The installer writes its chosen stack
 # to $prefix/speech.ctl.sh (Kokoro TTS + Parakeet realtime STT when it
@@ -175,14 +175,14 @@ if {! ~ $#speechctlfile 0} {
 	if {! ~ $#speechhelperbin 0} {
 		# engine kokoro routes speech9p's say through the provider's
 		# Kokoro instead of the robotic host `say` command (engine cmd).
-		echo engine kokoro > /n/speech/ctl
-		echo kokorobin $speechhelperbin/kokoro-cli > /n/speech/ctl
-		echo whisperstreambin $speechhelperbin/whisper-stream-cli > /n/speech/ctl
-		echo wakebin $speechhelperbin/openwakeword-cli > /n/speech/ctl
-		echo whispermodel $speechhelperbin/../models/ggml-base.en.bin > /n/speech/ctl
-		echo voice af_bella > /n/speech/ctl
-		echo 'wakeword hey jarvis' > /n/speech/ctl
-		echo wakethreshold 0.5 > /n/speech/ctl
+		echo engine kokoro > /mnt/speech/ctl
+		echo kokorobin $speechhelperbin/kokoro-cli > /mnt/speech/ctl
+		echo whisperstreambin $speechhelperbin/whisper-stream-cli > /mnt/speech/ctl
+		echo wakebin $speechhelperbin/openwakeword-cli > /mnt/speech/ctl
+		echo whispermodel $speechhelperbin/../models/ggml-base.en.bin > /mnt/speech/ctl
+		echo voice af_bella > /mnt/speech/ctl
+		echo 'wakeword hey jarvis' > /mnt/speech/ctl
+		echo wakethreshold 0.5 > /mnt/speech/ctl
 		echo 'boot: speech helpers configured from' $speechhelperbin
 	}{
 		echo 'boot: no speech helpers found — voice mode will not hear or speak.'
@@ -196,9 +196,9 @@ if {! ~ $#speechctlfile 0} {
 # helper at a command of its own (INF-56). Unconditional: the hole is the same
 # whether or not helpers were found. speech9p forwards the seal to the
 # provider, and the shim is sealed directly in case it is mounted alone.
-echo seal on > /n/speech/ctl
-if {ftest -f /n/speechshim/ctl} {
-	echo seal on > /n/speechshim/ctl
+echo seal on > /mnt/speech/ctl
+if {ftest -f /mnt/speechshim/ctl} {
+	echo seal on > /mnt/speechshim/ctl
 }
 
 > /tmp/lucibridge.log

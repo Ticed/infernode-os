@@ -664,14 +664,14 @@ dovoice(agentout: chan of string)
 	spawn xagentthread(input, agentout);
 }
 
-# Record and transcribe via /n/speech/hear
+# Record and transcribe via /mnt/speech/hear
 voiceinput(): string
 {
-	SPEECH_HEAR: con "/n/speech/hear";
+	SPEECH_HEAR: con "/mnt/speech/hear";
 
 	(ok, nil) := sys->stat(SPEECH_HEAR);
 	if(ok < 0) {
-		sys->print("[voice: /n/speech not mounted]\n");
+		sys->print("[voice: /mnt/speech not mounted]\n");
 		return "";
 	}
 

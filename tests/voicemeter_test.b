@@ -4,7 +4,7 @@ implement VoicemeterTest;
 # Contract for the voice-meter height map in luciconv.b (INF-44).
 # The function here must stay identical to voicemeterlevel() there.
 #
-# Calibrated to /n/speech/level as delivered on the test rig
+# Calibrated to /mnt/speech/level as delivered on the test rig
 # (BlackHole both sides, default system volume): input-rms p50=3
 # p90=11 max=15. Linear h = maxh*rms/1000 draws every value there
 # as 0-1px at maxh≈30; a dB map from 1..25 fills the bank for the

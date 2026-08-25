@@ -691,22 +691,22 @@ write_speech_ctl() {
   {
     echo "# Written by tools/install-speech-helpers.sh — applied by boot.sh."
     echo "# Regenerate by re-running the installer; hand-edits survive until then."
-    echo "echo 'engine kokoro' > /n/speech/ctl"
-    echo "echo 'kokorobin $BIN/kokoro-cli' > /n/speech/ctl"
-    echo "echo 'wakebin $BIN/openwakeword-cli' > /n/speech/ctl"
-    echo "echo 'voice af_bella' > /n/speech/ctl"
-    echo "echo 'wakeword hey jarvis' > /n/speech/ctl"
-    echo "echo 'wakethreshold 0.5' > /n/speech/ctl"
-    echo "echo 'duplex half' > /n/speech/ctl"
+    echo "echo 'engine kokoro' > /mnt/speech/ctl"
+    echo "echo 'kokorobin $BIN/kokoro-cli' > /mnt/speech/ctl"
+    echo "echo 'wakebin $BIN/openwakeword-cli' > /mnt/speech/ctl"
+    echo "echo 'voice af_bella' > /mnt/speech/ctl"
+    echo "echo 'wakeword hey jarvis' > /mnt/speech/ctl"
+    echo "echo 'wakethreshold 0.5' > /mnt/speech/ctl"
+    echo "echo 'duplex half' > /mnt/speech/ctl"
     if [ "$PARAKEET_OK" = 1 ]; then
-      echo "echo 'whisperstreambin $BIN/parakeet-stream' > /n/speech/ctl"
-      echo "echo 'whispermodel $PARAKEET_MODEL_PATH' > /n/speech/ctl"
-      echo "echo 'micmode device' > /n/speech/ctl"
-      echo "echo 'capturerate 16000' > /n/speech/ctl"
+      echo "echo 'whisperstreambin $BIN/parakeet-stream' > /mnt/speech/ctl"
+      echo "echo 'whispermodel $PARAKEET_MODEL_PATH' > /mnt/speech/ctl"
+      echo "echo 'micmode device' > /mnt/speech/ctl"
+      echo "echo 'capturerate 16000' > /mnt/speech/ctl"
     else
-      echo "echo 'whisperstreambin $BIN/whisper-stream-cli' > /n/speech/ctl"
-      echo "echo 'whispermodel $WHISPER_MODEL' > /n/speech/ctl"
-      echo "echo 'micmode helper' > /n/speech/ctl"
+      echo "echo 'whisperstreambin $BIN/whisper-stream-cli' > /mnt/speech/ctl"
+      echo "echo 'whispermodel $WHISPER_MODEL' > /mnt/speech/ctl"
+      echo "echo 'micmode helper' > /mnt/speech/ctl"
     fi
   } > "$ctl"
   log "wrote: $ctl"
@@ -735,9 +735,9 @@ EOF
 If voice mode hears nothing (emu audio capture issue), fall back to the
 whisper stack from inside Inferno:
 
-echo 'whisperstreambin $BIN/whisper-stream-cli' > /n/speech/ctl
-echo 'whispermodel $WHISPER_MODEL' > /n/speech/ctl
-echo 'micmode helper' > /n/speech/ctl
+echo 'whisperstreambin $BIN/whisper-stream-cli' > /mnt/speech/ctl
+echo 'whispermodel $WHISPER_MODEL' > /mnt/speech/ctl
+echo 'micmode helper' > /mnt/speech/ctl
 EOF
   else
     cat <<EOF

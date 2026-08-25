@@ -4,7 +4,7 @@ implement Speechshim9p;
 # speechshim9p - adapt external host speech helper CLIs to the speech
 # provider contract (docs/SPEECH-ARCHITECTURE.md):
 #
-#   /n/speechshim/
+#   /mnt/speechshim/
 #   ├── ctl      (rw)  kokorobin, whisperstreambin, wakebin, wakeword,
 #   │                  wakethreshold, whispermodel, voice, rate,
 #   │                  audiodev, capturedev, micmode, capturerate,
@@ -123,7 +123,7 @@ cancelmode := 0;		# cancel on: feed STT during playback so a spoken cancel cuts 
 
 stderr: ref Sys->FD;
 user: string;
-mountpt := "/n/speechshim";
+mountpt := "/mnt/speechshim";
 cmdbound := 0;
 audiobound := 0;
 cancelreq := 0;

@@ -200,7 +200,6 @@ restrictns(caps: ref Capabilities): string
 	# 4-5. Restrict /n to explicitly granted entries only.
 	# /n is the IMPORT YARD — foreign trees imported intact (docs/NAMESPACE-LAYOUT.md).
 	# All /n/ entries are capability-driven — never auto-exposed by existence:
-	#   /n/speech — "/n/speech" in caps.paths
 	#   /n/git    — fixed git tool
 	#   /n/wallet — "/n/wallet" in caps.paths
 	#   /n/pres-* — caps.xenith != 0
@@ -209,7 +208,8 @@ restrictns(caps: ref Capabilities): string
 	# /n entries — their schemas are ours, so they live at /mnt/llm and /mnt/ui
 	# (docs/NAMESPACE-LAYOUT.md, INFR-254). Both are handled by the uniform /mnt
 	# machinery (step 5b). /n no longer special-cases the agent's services — it
-	# collapses to genuine foreign imports.
+	# collapses to genuine foreign imports. The speech service moved to /mnt/speech
+	# the same way (INF-53).
 	(nok, nil) := sys->stat("/n");
 	if(nok >= 0) {
 		nallow: list of string;
@@ -217,13 +217,6 @@ restrictns(caps: ref Capabilities): string
 		# MCP providers (mc9p, mcp9p adapters) and the LLM (llm9p) mount under
 		# /mnt — they synthesize their own schema (docs/NAMESPACE-LAYOUT.md). All
 		# /mnt grants are handled in step 5b below, not here.
-
-		# /n/speech — only if explicitly granted via caps.paths
-		if(inlist("/n/speech", caps.paths)) {
-			(speechok, nil) := sys->stat("/n/speech");
-			if(speechok >= 0)
-				nallow = "speech" :: nallow;
-		}
 
 		# /n/git — fixed-function git service. The git tool mounts git/fs here
 		# during trusted init; generic path grants cannot expose gitfs ctl/raw
@@ -331,6 +324,16 @@ restrictns(caps: ref Capabilities): string
 		(gpuok, nil) := sys->stat("/mnt/gpu");
 		if(gpuok >= 0 && !inlist("gpu", mntpaths))
 			mntpaths = "gpu" :: mntpaths;
+	}
+	# /mnt/speech — fixed-function speech service (speech9p, mounted at boot and
+	# pointed at its provider by trusted init; migrated from /n/speech per
+	# docs/NAMESPACE-LAYOUT.md, INF-53). Derived only from the say and hear
+	# tools; generic path grants cannot expose the speech ctl/say/hear surface
+	# to unrelated tools.
+	if(inlist("say", caps.tools) || inlist("hear", caps.tools)) {
+		(speechok, nil) := sys->stat("/mnt/speech");
+		if(speechok >= 0 && !inlist("speech", mntpaths))
+			mntpaths = "speech" :: mntpaths;
 	}
 	# /mnt/ui — presentation surface (luciuisrv), granted only to fixed-function
 	# UI tools. Per-invocation caps prevent unrelated tools from inheriting it.
@@ -1056,6 +1059,10 @@ calendarcontrolpath(path: string): int
 fixedservicecontrolpath(path: string): int
 {
 	return path == "/mnt/matrix" || prefix(path, "/mnt/matrix/") ||
+		path == "/mnt/speech" || prefix(path, "/mnt/speech/") ||
+		path == "/n/speech" || prefix(path, "/n/speech/") ||
+		path == "/mnt/speechshim" || prefix(path, "/mnt/speechshim/") ||
+		path == "/n/speechshim" || prefix(path, "/n/speechshim/") ||
 		path == "/n/git" || prefix(path, "/n/git/") ||
 		path == "/mnt/gpu" || prefix(path, "/mnt/gpu/") ||
 		path == "/mnt/web" || prefix(path, "/mnt/web/") ||
@@ -1210,7 +1217,6 @@ emitmanifest(caps: ref Capabilities, mpath: string)
 
 	# /n entries — capability-driven (import yard)
 	nentries := array[] of {
-		("/n/speech", "Speech",           "rw"),
 		("/n/git",    "Git",              "rw"),
 		("/n/wikia",  "Wiki Agent",       "rw"),
 		("/phone",    "Phone Bridge",     "rw"),
@@ -1222,6 +1228,7 @@ emitmanifest(caps: ref Capabilities, mpath: string)
 		("/mnt/mcp",  "MCP Providers",    "rw"),
 		("/mnt/matrix", "Matrix Runtime", "rw"),
 		("/mnt/gpu", "GPU Service", "rw"),
+		("/mnt/speech", "Speech", "rw"),
 		("/mnt/web", "Web Service", "rw"),
 		("/mnt/wiki", "Wiki Store", "rw"),
 		("/mnt/registry", "Registry", "rw"),
