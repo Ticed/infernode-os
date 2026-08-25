@@ -167,6 +167,28 @@ run_internal_tests() {
         return 1
     fi
 
+    # Refuse to run test bytecode that is older than its source. A stale
+    # .dis carries the assertions it was compiled with, so it fails against
+    # code that is correct, and no link typecheck error explains why unless
+    # a .m interface also changed. That reads as "the change is broken" and
+    # invites editing correct code to match a stale test. A merge is the
+    # usual way a tree ends up like this (INF-63).
+    _stale=""
+    for _src in "$ROOT"/tests/*_test.b; do
+        [ -f "$_src" ] || continue
+        _dis="$ROOT/dis/tests/$(basename "$_src" .b).dis"
+        [ -f "$_dis" ] || continue
+        if [ "$_src" -nt "$_dis" ]; then
+            _stale="$_stale $(basename "$_dis")"
+        fi
+    done
+    if [ -n "$_stale" ]; then
+        echo "stale test bytecode, older than its source:"
+        for _s in $_stale; do echo "    dis/tests/$_s"; done
+        echo "Run 'mk install' in tests/ before trusting a result."
+        return 1
+    fi
+
     # Build emu args
     EMU_ARGS="-r$ROOT"
     if [ "$VERBOSE" = "1" ]; then
