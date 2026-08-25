@@ -198,7 +198,7 @@ if {! ~ $#speechctlfile 0} {
 # Close the keys that name the host commands the speech helpers run, and the
 # provider tree they are proxied from. Everything above configures them; from
 # here on they are refused, so an agent holding the speech grant cannot point a
-# helper at a command of its own (INF-56). Unconditional: the hole is the same
+# helper at a command of its own. Unconditional: the hole is the same
 # whether or not helpers were found. speech9p forwards the seal to the
 # provider, and the shim is sealed directly in case it is mounted alone.
 echo seal on > /mnt/speech/ctl

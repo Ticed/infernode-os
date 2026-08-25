@@ -223,7 +223,7 @@ restrictns(caps: ref Capabilities): string
 	# (docs/NAMESPACE-LAYOUT.md, INFR-254). Both are handled by the uniform /mnt
 	# machinery (step 5b). /n no longer special-cases the agent's services — it
 	# collapses to genuine foreign imports. The speech service moved to /mnt/speech
-	# the same way (INF-53).
+	# the same way.
 	(nok, nil) := sys->stat("/n");
 	if(nok >= 0) {
 		nallow: list of string;
@@ -332,7 +332,7 @@ restrictns(caps: ref Capabilities): string
 	}
 	# /mnt/speech — fixed-function speech service (speech9p, mounted at boot and
 	# pointed at its provider by trusted init; migrated from /n/speech per
-	# docs/NAMESPACE-LAYOUT.md, INF-53). Derived only from the say and hear
+	# docs/NAMESPACE-LAYOUT.md). Derived only from the say and hear
 	# tools; generic path grants cannot expose the speech ctl/say/hear surface
 	# to unrelated tools.
 	if(inlist("say", caps.tools) || inlist("hear", caps.tools)) {

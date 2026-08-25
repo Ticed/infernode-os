@@ -451,7 +451,7 @@ readconfig(): string
 # are operator configuration rather than a runtime knob — boot.sh and the
 # installer write them while the system comes up, then boot writes `seal on`.
 # After that they are refused, so an agent holding the speech grant cannot
-# point a helper at a command of its own (INF-56). The keys left writable are
+# point a helper at a command of its own. The keys left writable are
 # the inert ones the tools and voice mode need: voice, lang, rate, mic,
 # listen, cancel and the audio routing.
 sealedkey(key: string): int
@@ -761,7 +761,7 @@ dosay(text: string): string
 # fid, so a write fid that is clunked and a fresh read fid would make the
 # status read return the instant helper stdout closes — before the device
 # has drained. Write, seek, read on the same fid so the provider parks the
-# read until playback actually finishes. INF-45.
+# read until playback actually finishes.
 sayprovider(text: string): string
 {
 	if(providersay == "")

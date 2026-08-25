@@ -81,7 +81,7 @@ ERRTAIL: con 512;
 # Playback format openaudioout writes. drainremaining uses the same
 # numbers: /dev/audioctl has no queued-byte depth to poll (ctlsummary
 # reports configured rate/chans/buf percent only; SDL_GetAudioStreamQueued
-# is used only inside audio_file_close). INF-45.
+# is used only inside audio_file_close).
 OUTCHANS: con 1;
 OUTBITS: con 16;
 
@@ -111,8 +111,8 @@ duplex := "full";		# full | half
 # audio, the room keeps reverberating, and on a remote capture device the
 # samples take a further trip through AAudio, 9P and emu buffering before the
 # pump sees them. Each of those puts our own speech back into the STT stream.
-# Measured on the physical Mac + Android rig: energy persists ~235ms after the
-# sound stops, which is what duplextail covers.
+# Energy persists for a few hundred milliseconds after the sound stops, which
+# is what duplextail covers.
 duplextail := 300;		# ms of suppression after playback has drained
 capturedelay := 0;		# ms of capture-path delay to compensate (0 = local)
 suppressuntil := 0;		# sys->millisec() deadline; see suppressed()
@@ -572,7 +572,7 @@ drainremaining(nbytes: int, since: int): int
 # Hold /dev/audio until the queued tail should have left the device.
 # Closing earlier discards unplayed samples. The wait is a computed
 # duration (see drainremaining); integer division truncates by <1ms,
-# and the 50ms poll step may overshoot by one slice. INF-45.
+# and the 50ms poll step may overshoot by one slice.
 drainwait()
 {
 	while(cancelreq == 0) {
@@ -710,7 +710,7 @@ audiopump()
 			# device as the speaker, and the device may hold our own
 			# TTS for duplextail. Normally that capture is discarded so
 			# the assistant cannot hear and answer itself. `cancel on`
-			# (INF-43) is the narrow, opt-in exception: while a voice
+			# is the narrow, opt-in exception: while a voice
 			# daemon is listening for a spoken cancel, keep feeding the
 			# STT helper during playback so "cancel"/"stop" is heard and
 			# can cut off the reply. The WAKE sink and input level stay
@@ -754,7 +754,7 @@ listencmd(): string
 # transcribed here is the assistant's OWN voice, and a reply segment that
 # transcribes to exactly "no" or "wrong" (a natural phrase in a reply)
 # would self-cancel the reply. So the playback-cut set is limited to the
-# words a user actually says to interrupt (INF-43).
+# words a user actually says to interrupt.
 cancelword(record: string): int
 {
 	r := strip(record);
@@ -838,7 +838,7 @@ readlisten(): string
 			# let only a spoken cancel word through so the assistant's
 			# own reply never surfaces as a normal transcript/turn;
 			# everything else is discarded and we keep reading. This
-			# filter is active only under `cancel on` (INF-43): with the
+			# filter is active only under `cancel on`: with the
 			# default `cancel off` every record passes through unchanged,
 			# so no caller's behaviour changes.
 			if(cancelmode && suppressed() && !cancelword(record))
@@ -985,7 +985,7 @@ dosay(text: string): string
 	# and keep playing set so half-duplex stays shut for the audible
 	# tail; apply duplextail only after that wait ends. Keep the
 	# output level live for the whole drain so the meter is not flat
-	# while the audio is still audible. INF-45, INF-44.
+	# while the audio is still audible.
 	remain := drainremaining(total, playstart);
 	until := sys->millisec() + remain;
 	if(until - playuntil > 0)
@@ -1215,7 +1215,7 @@ resetcapture()
 # argv as one string and runs it through `sh -c`, so writing one is equivalent
 # to running a host command. They are operator configuration: boot.sh and the
 # installer write them while the system comes up, then boot writes `seal on`
-# and they are refused from then on (INF-56). speech9p forwards the same seal,
+# and they are refused from then on. speech9p forwards the same seal,
 # so one write covers both servers; the shim still checks for itself because a
 # grant on its own ctl would otherwise bypass speech9p entirely.
 sealedkey(key: string): int
@@ -1328,8 +1328,8 @@ applyconfig(cmd: string): string
 	"duplextail" =>
 		# How long our own sound keeps reaching the microphone after the
 		# device has drained: room reverberation plus input AGC settling.
-		# Measured at ~235ms on the Mac + Android rig; 0 restores the old
-		# reopen-immediately behaviour.
+		# A few hundred milliseconds on a typical desktop; 0 restores the
+		# old reopen-immediately behaviour.
 		t := int val;
 		if(t < 0 || t > 5000)
 			return "error: duplextail must be 0-5000 ms";
@@ -1338,9 +1338,8 @@ applyconfig(cmd: string): string
 		# Transport delay before captured samples reach the pump. Local
 		# capture is ~0, so that stays the default and local behaviour is
 		# unchanged. A phone exporting /dev/audio over 9P is a different
-		# story: bracketed on the physical rig at roughly 2s (1500 still
-		# leaked our own speech into the next turn, 2500 was clean), which
-		# is far too large to absorb in duplextail.
+		# story: of the order of seconds, which is far too large to absorb
+		# in duplextail.
 		d := int val;
 		if(d < 0 || d > 5000)
 			return "error: capturedelay must be 0-5000 ms";
@@ -1376,7 +1375,7 @@ applyconfig(cmd: string): string
 			return "error: listen must be on or off";
 		}
 	"cancel" =>
-		# Opt-in spoken-cancel path (INF-43): while `cancel on`, the
+		# Opt-in spoken-cancel path: while `cancel on`, the
 		# capture pump keeps feeding the STT helper during half-duplex
 		# playback and readlisten lets only cancel words through, so a
 		# voice daemon can hear (and cut) the in-flight reply. Default
