@@ -162,6 +162,15 @@ restrictns(caps: ref Capabilities): string
 	if(err != nil)
 		return err;
 
+	# hear is a microphone. appl/veltro/SECURITY.md forbids pairing a sensitive
+	# read with egress and asks for a trusted mediator when both are needed, so
+	# the hear grant is confined to an egress-free profile: a child that hears
+	# and hands text back holds nothing it could send the audio out through.
+	# say is an output channel and is not confined this way.
+	err = hearegressfree(caps);
+	if(err != nil)
+		return err;
+
 	# Set up infrastructure directories first (before any restrictdir calls).
 	# These must exist because: (1) restrictdir creates shadow dirs under
 	# SHADOW_BASE, and (2) after bind-replace on /tmp, the MREPL mount
@@ -869,6 +878,33 @@ restrictmcptools(toolsdir: string, deny: list of string): string
 	if(denied == 0)
 		return nil;	# nothing denied here — leave tools/ as-is
 	return restrictdir(toolsdir, allow, 0);
+}
+
+# Tools carrying one of the egress axes nsaudit models — dials_net, sends_llm
+# or spawns_proc — as declared in lib/veltro/nsaudit/authorities/. Kept apart
+# from needsnet deliberately: needsnet decides whether to bind the network
+# stack, this decides whether hear may be granted at all.
+egresstools(): list of string
+{
+	return "browse" :: "charon" :: "exec" :: "git" :: "http" ::
+		"launch" :: "limbo" :: "matrix" :: "payfetch" :: "shell" ::
+		"spawn" :: "task" :: "vision" :: "webfetch" :: "websearch" :: nil;
+}
+
+hearegressfree(caps: ref Capabilities): string
+{
+	if(!inlist("hear", caps.tools))
+		return nil;
+	if(caps.llmconfig != nil)
+		return "hear requires an egress-free profile: this agent has its own LLM";
+	if(caps.mcproviders != nil)
+		return "hear requires an egress-free profile: MCP providers are granted";
+	egress := egresstools();
+	for(tl2 := caps.tools; tl2 != nil; tl2 = tl tl2)
+		if(inlist(hd tl2, egress))
+			return "hear requires an egress-free profile: " + hd tl2 +
+				" can reach off the machine";
+	return nil;
 }
 
 needsnet(tools: list of string): int

@@ -641,6 +641,7 @@ and enumerable. Adding a new axis is a deliberate act, not a derivation:
 | Comms | `sends_llm` | tool manifest, `caps.llmconfig` |
 | Comms | `sends_ui` | `caps.xenith` ∨ `/mnt/ui` in writes_fs |
 | Comms | `receives_input` | `/dev/cons` in reads_fs |
+| Comms | `captures_audio` | tool manifest (hear) |
 | Windows | `reads_windows` | `caps.xenith` |
 | Windows | `modifies_windows` | `caps.xenith` |
 | Memory | `persists_memory` | `caps.memory` |
@@ -657,6 +658,7 @@ under `tests/nsaudit-rules/`. New rules land as (file, test) pairs.
 | `INVALID_PATH_GRANT` | malformed or delimiter-bearing path grant | high |
 | `PRIVILEGED_CONTROL_PATH` | a trusted controller path is granted | high |
 | `EXFIL_RISK_EGRESS` | `reads_fs ∩ (dials_net ∨ sends_llm ∨ spawns_proc)` | high |
+| `EXFIL_RISK_AUDIO_CAPTURE` | `captures_audio ∩ (dials_net ∨ sends_llm ∨ spawns_proc ∨ calls_mcp)` | high |
 | `EXEC_FORCE_MULTIPLIER` | `exec` in tools | info |
 | `UNCONSTRAINED_SHELL` | `exec` in tools ∧ `shellcmds` empty | high |
 | `SPAWN_INHERITANCE` | `spawn` in tools ∧ `writes_fs_durable` | medium |
@@ -669,6 +671,15 @@ under `tests/nsaudit-rules/`. New rules land as (file, test) pairs.
 `SUBAGENT_MISSING_NODEVS` turns the child `pctl(NODEVS)` call from an
 implementation detail into a checked profile property. A child fixture with
 `nodevs=unset` fires the rule and fails CI.
+
+`EXFIL_RISK_AUDIO_CAPTURE` has a runtime counterpart, because an audit that
+only runs in CI does not stop a grant. `nsconstruct->restrictns` refuses any
+capability set that holds `hear` together with an LLM of its own, an MCP
+provider, or a tool on the egress list — so the rule describes a shape the
+runtime already enforces rather than one reviewers are asked to watch for.
+`hear` is grantable only to an egress-free child: it hears, it transcribes, and
+it hands text back to a parent that never had the microphone. That is the
+staged mediator this document asks for above.
 
 ### Lightweight profile invariants
 

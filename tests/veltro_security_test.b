@@ -1213,6 +1213,18 @@ testRestrictNsSpeechToolDerived(t: ref T)
 		spawn speechControlPlaneHiddenWorker(result);
 		r = <-result;
 	}
+	if(r == "") {
+		spawn speechHearEgressRefusedWorker(result);
+		r = <-result;
+	}
+	if(r == "") {
+		spawn speechHearLlmRefusedWorker(result);
+		r = <-result;
+	}
+	if(r == "") {
+		spawn speechSayEgressAllowedWorker(result);
+		r = <-result;
+	}
 
 	for(cf := createdfiles; cf != nil; cf = tl cf)
 		sys->remove(hd cf);
@@ -1249,6 +1261,64 @@ speechToolDerivedWorker(result: chan of string)
 # The say/hear grant must not carry the control plane. ctl is the sharp one:
 # besides the sealed helper commands it carries mic, listen and cancel, so a
 # writable ctl is the microphone regardless of which files are visible.
+# hear is a microphone, and appl/veltro/SECURITY.md forbids pairing a sensitive
+# read with egress. The grant is therefore confined to an egress-free profile:
+# no network tool, no LLM of its own, nothing that spawns a process. That is the
+# trusted-mediator shape the document asks for — a child that hears and hands
+# text back, with nothing to send it out through. say is an output channel and
+# is not confined this way.
+speechHearEgressRefusedWorker(result: chan of string)
+{
+	sys->pctl(Sys->FORKNS, nil);
+	caps := ref NsConstruct->Capabilities(
+		"hear" :: "webfetch" :: nil,
+		nil, nil, nil,
+		0 :: 1 :: 2 :: nil,
+		nil, 0, 0, -1, nil
+	, nil);
+	err := nsconstruct->restrictns(caps);
+	if(err == nil) {
+		result <-= "hear was granted alongside a network tool";
+		return;
+	}
+	result <-= "";
+}
+
+speechHearLlmRefusedWorker(result: chan of string)
+{
+	sys->pctl(Sys->FORKNS, nil);
+	llm := ref NsConstruct->LLMConfig("haiku", 0.0, "", 0);
+	caps := ref NsConstruct->Capabilities(
+		"hear" :: nil,
+		nil, nil, llm,
+		0 :: 1 :: 2 :: nil,
+		nil, 0, 0, -1, nil
+	, nil);
+	err := nsconstruct->restrictns(caps);
+	if(err == nil) {
+		result <-= "hear was granted to an agent holding its own LLM";
+		return;
+	}
+	result <-= "";
+}
+
+speechSayEgressAllowedWorker(result: chan of string)
+{
+	sys->pctl(Sys->FORKNS, nil);
+	caps := ref NsConstruct->Capabilities(
+		"say" :: "webfetch" :: nil,
+		nil, nil, nil,
+		0 :: 1 :: 2 :: nil,
+		nil, 0, 0, -1, nil
+	, nil);
+	err := nsconstruct->restrictns(caps);
+	if(err != nil) {
+		result <-= sys->sprint("say with a network tool was refused: %s", err);
+		return;
+	}
+	result <-= "";
+}
+
 speechControlPlaneHiddenWorker(result: chan of string)
 {
 	sys->pctl(Sys->FORKNS, nil);

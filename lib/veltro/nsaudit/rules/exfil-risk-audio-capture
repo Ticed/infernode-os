@@ -1,0 +1,6 @@
+rule=EXFIL_RISK_AUDIO_CAPTURE
+	severity=high
+	require='captures_audio'
+	andone='dials_net sends_llm spawns_proc calls_mcp'
+	message='The agent can capture microphone audio and reach off the machine. Anything said near the device can leave it. appl/veltro/SECURITY.md forbids pairing a sensitive read with egress.'
+	fix='drop the egress tool, or move hear into an egress-free child that transcribes and returns text to the parent'
