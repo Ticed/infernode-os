@@ -129,6 +129,23 @@ the run before it left (INF-57). Remove the file the wait reads before
 starting whatever writes it; cleaning up at the end does not help,
 because a killed run never reaches its teardown.
 
+**A file left under a mount point silently eats the writes meant for the
+server.** Same cause as the entry above, worse consequence. `/mnt/speech`,
+`/mnt/speechshim`, `/mnt/ui` are host directories under the emulator root,
+so a `ctl` left there by an earlier run is a plain file. A wait for
+`<mount>/ctl` to exist is then satisfied *before* the 9P server mounts, and
+every configuration write that follows lands in the file, returns success,
+and never reaches the server. Nothing reports it. The service comes up on
+its defaults — `wake provider unavailable: /n/parakeet/wake` was how it
+presented — and the failure is self-perpetuating, because the lost write
+recreates the file that loses the next one (INF-61).
+
+Only a mount may create these paths, so remove one before starting the
+server rather than trusting that it exists. `lib/lucifer/boot.sh` writes
+`provider` to `/mnt/speech/ctl` in the same shape immediately after
+starting speech9p; startup latency appears to cover it today, but the
+shape is the same.
+
 **speech9p tests fake the host helpers through ctl** — `wakebin
 /bin/echo ...`, `wakebin /bin/sh -c "sleep 2; echo ..."`. Nested quoting
 through `runcmd`/`devcmd` is mangled but tolerated, because `sh -c`

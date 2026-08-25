@@ -282,6 +282,18 @@ preparemounts()
 	sys->create("/mnt/llm", Sys->OREAD, Sys->DMDIR | 8r755);
 	sys->create("/mnt/speechshim", Sys->OREAD, Sys->DMDIR | 8r755);
 	sys->create("/mnt/speech", Sys->OREAD, Sys->DMDIR | 8r755);
+
+	# These directories live on the host and outlive the emulator, so a
+	# control file left in one by an earlier run is a plain file. waitpath
+	# is then satisfied before the server mounts, and every configuration
+	# write that follows lands in that file and returns success without
+	# reaching the server (INF-61). Only a mount may create these, so
+	# remove any that survived; the failure is otherwise self-perpetuating,
+	# because the lost write recreates the file that loses the next one.
+	sys->remove("/mnt/ui/ctl");
+	sys->remove("/mnt/llm/new");
+	sys->remove("/mnt/speechshim/ctl");
+	sys->remove("/mnt/speech/ctl");
 }
 
 startstack(t: ref T)
