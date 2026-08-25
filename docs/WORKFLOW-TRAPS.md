@@ -97,6 +97,26 @@ treat exit 124 with PASS output as a pass until it is root-caused.
 **Two-server emulator tests must unmount both mounts in teardown**, or
 the emulator never halts.
 
+**A merge leaves test bytecode stale, and a stale test fails as though the
+code were broken.** The `post-merge` hook does not reliably rebuild
+`dis/tests/*.dis`. There is no `link typecheck` error to warn you when no
+`.m` interface changed, because the test's expectations are compiled into
+the bytecode: after the `/n/speech` to `/mnt/speech` migration,
+`voice_scripts_test` failed two assertions that check the scripts name
+`/mnt/speech/ctl` — which they do. The binary still expected `/n/speech/ctl`
+(INF-63). Five test binaries were stale on that merge, including the
+migration's own new `veltro_security_test`. Before believing any test
+failure on a freshly merged tree, compare timestamps:
+
+```sh
+for b in tests/*_test.b; do d=dis/tests/$(basename $b .b).dis
+  [ -f "$d" ] && [ "$b" -nt "$d" ] && echo "STALE $d"; done
+```
+
+The danger is not the lost time. It is that the obvious reading of those
+failures is "the change is broken", which leads to editing correct code so
+it matches a stale test.
+
 **A test fixture under `/tmp` outlives the emulator.** `-r.` roots the
 emulator at the checkout, so an in-emu `/tmp/x` is the host's `tmp/x` and
 is still there on the next run. Where a test waits for a state file to
