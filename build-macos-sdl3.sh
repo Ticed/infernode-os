@@ -47,10 +47,16 @@ echo "Building for: SYSHOST=$SYSHOST OBJTYPE=$OBJTYPE"
 echo "GUI Backend: SDL3"
 echo ""
 
-# Stamp build version (matches CI workflow)
+# Stamp build version (matches CI workflow). Restore on any exit so a
+# failed mk cannot leave the tracked file dirty (INF-39). Match the
+# unstamped form only so a leftover stamp cannot accumulate.
 BUILD_DATE=$(date +%Y%m%d)
 SHORT_SHA=$(git -C "$ROOT" rev-parse --short=8 HEAD 2>/dev/null || echo "local")
-sed -i '' "s|InferNode 0.1|InferNode 0.1 build ${BUILD_DATE}-${SHORT_SHA}|" "$ROOT/include/version.h"
+restore_version_h() {
+    git -C "$ROOT" checkout -- "$ROOT/include/version.h" 2>/dev/null || true
+}
+trap restore_version_h EXIT
+sed -i '' "s|InferNode 0.1 (|InferNode 0.1 build ${BUILD_DATE}-${SHORT_SHA} (|" "$ROOT/include/version.h"
 echo "Version: $(grep VERSION "$ROOT/include/version.h")"
 echo ""
 
@@ -62,9 +68,6 @@ mk clean 2>/dev/null || true
 
 echo "Building SDL3 GUI emulator..."
 mk GUIBACK=sdl3
-
-# Restore version.h so repeated builds don't accumulate stamps
-git -C "$ROOT" checkout -- "$ROOT/include/version.h" 2>/dev/null || true
 
 if [[ -f o.emu ]]; then
     echo ""
