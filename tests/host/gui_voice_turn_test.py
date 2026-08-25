@@ -40,6 +40,7 @@ Anything missing is a skip. See docs/VOICE-TESTING.md.
 import json
 import os
 import re
+import pwd
 import subprocess
 import sys
 import time
@@ -98,28 +99,65 @@ def normalize(text):
 # as "name say parameters text ...". See INF-27.
 TOOL_CALL_JSON = re.compile(r'\{\s*"?(name|tool|function)"?\s*[:=]', re.I)
 
-# Lines the pane draws about itself rather than about the conversation.
-# The live draft header is "username - not sent"; it is the next listen,
-# not a second copy of the turn that was just answered (INF-28).
+# Chrome the pane draws about itself rather than about the conversation:
+# the countdown, the queued state, the live listen state. A reply is one
+# tile's body, bounded by the tiles' heads (below); these catch status
+# text that sits between a tile and the reply.
 STATUS_LINE = re.compile(
-    r"^(queued follow-up|listening|speaking|voice ready|sending in|voice|thinking)|not sent\s*$", re.I)
+    r"^(queued follow-up|listening|speaking|voice ready|sending in|voice|thinking)", re.I)
 
 
+# The pane heads every tile with its speaker's name, so the reply is the
+# body under the agent's head, up to the next tile's head - whatever state
+# that turn is in (INF-59). The two speakers:
+#   * the agent: "veltro" - the role the conversation service stamps on
+#     its turns, and the marker answer_text already searched for;
+#   * the human: /dev/user - which the emulator fills with the host user
+#     that owns it, getpwuid(getuid())->pw_name (emu/MacOSX/os.c), and a
+#     skiplogn boot never replaces it. The same call here, so the test
+#     knows the name the pane will draw;
+#   * "human" - the name luciconv falls back to whenever it cannot read
+#     /dev/user (readdevuser returns it for a failed open, a short read
+#     and an empty result alike), so the head is drawn from it too.
+AGENT = "veltro"
+USER = pwd.getpwuid(os.getuid()).pw_name
+FALLBACK_USER = "human"
 
-def answer_text(screen, seen):
-    """The reply, read out of the conversation under its role marker."""
-    segments = screen.segments
+
+def role_marker(speakers):
+    """A regex for a tile's head: the speaker's name, bare once the turn
+    is sent, or with the " - not sent" suffix a turn still carries while
+    it is a live draft (luciconv.b: rolelabel = username + " - not sent").
+    A segment that heads a new tile ends the reply before it."""
+    return re.compile(
+        r"^(%s)(\s*-\s*not sent)?$"
+        % "|".join(re.escape(s) for s in speakers), re.I)
+
+
+ROLE_MARKER = role_marker((AGENT, USER, FALLBACK_USER))
+
+
+def answer_segments(segments, seen, heads=ROLE_MARKER):
+    """The reply among ``segments``: the body under the agent's head, up
+    to the next tile's head or a segment that was already on screen when
+    the answer began. ``seen`` holds the turn being answered, so the
+    request tile and any earlier turn are never mistaken for the reply."""
     for i, text in enumerate(segments):
-        if text.strip().lower() != "veltro":
+        if text.strip().lower() != AGENT:
             continue
         out = []
         for t in segments[i + 1:]:
-            if t in seen or STATUS_LINE.match(t.strip()):
+            if t in seen or STATUS_LINE.match(t.strip()) or heads.match(t.strip()):
                 break
             out.append(t.strip())
         if out:
             return " ".join(out)
     return ""
+
+
+def answer_text(screen, seen):
+    """The reply, read out of the conversation under its role marker."""
+    return answer_segments(screen.segments, seen)
 
 
 def llm_config():
@@ -293,4 +331,5 @@ def main():
         vs.note("default input and output restored")
 
 
-main()
+if __name__ == "__main__":
+    main()
