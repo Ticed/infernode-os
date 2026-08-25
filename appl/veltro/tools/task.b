@@ -457,14 +457,37 @@ docreate(args: string): string
 	# closed. Remove any stale manifest first (/tmp persists across runs).
 	manifestp := sys->sprint("/tmp/veltro/.ns/manifest.%d", newid);
 	sys->remove(manifestp);
+
+	# Provisioning is now atomic (INFR-405): tools9p validates the request on
+	# this write and refuses it outright rather than dropping the tools and
+	# paths it will not grant. A refusal must not surface as a created
+	# activity — the caller would poll an activity that has no agent behind
+	# it, or worse, assume the narrowing it asked for was applied. Tear the
+	# activity down and report the reason.
+	writefile(sys->sprint("%s/activity/%d/status", UI_MOUNT, newid), "provisioning");
 	perr := writefile("/tool/provision", provcmd[10:]);
-	if(perr != nil)
-		sys->fprint(sys->fildes(2), "task: provision warning: %s\n", perr);
+	if(perr != nil) {
+		writefile(UI_MOUNT + "/ctl", sys->sprint("activity delete %d", newid));
+		return sys->sprint("error: task not created — %s", perr);
+	}
+
+	# The manifest is written only after the child's restrictns completes. Keep
+	# the accepted activity visible if setup outlives this bounded wait: the
+	# provisioner owns its eventual working or explicit failed status.
+	provisioned := 0;
 	for(w := 0; w < 120; w++) {		# bounded ~6s
 		(mok, nil) := sys->stat(manifestp);
-		if(mok >= 0)
+		if(mok >= 0) {
+			provisioned = 1;
 			break;
+		}
 		sys->sleep(50);
+	}
+	if(!provisioned) {
+		pstatus := strip(readfile(sys->sprint("%s/activity/%d/status", UI_MOUNT, newid)));
+		if(hasprefix(pstatus, "failed"))
+			return sys->sprint("created activity %d: %s (%s; read task result %d)", newid, label, pstatus, newid);
+		return sys->sprint("created activity %d: %s (namespace setup pending; poll task status %d)", newid, label, newid);
 	}
 
 	return sys->sprint("created activity %d: %s", newid, label);
@@ -533,8 +556,11 @@ doresult(args: string): string
 		if(role != "human" && role != "" && text != "")
 			last = text;
 	}
-	if(last == "")
+	if(last == "") {
+		if(hasprefix(status, "failed"))
+			return sys->sprint("task %d [%s] result: task failed before producing a reply", id, status);
 		return sys->sprint("task %d [%s]: no result yet — it has not produced a reply. Poll 'task status %d' until it reports done, then read the result.", id, status, id);
+	}
 	return sys->sprint("task %d [%s] result:\n%s", id, status, last);
 }
 

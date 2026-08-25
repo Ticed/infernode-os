@@ -10,28 +10,41 @@ space-separated. Records are one per line. Complex structures
 are decomposed into the directory hierarchy.
 
 
+## Where to mount it
+
+Before the data format comes the mount point, and the rule is
+about schema authorship, not data location:
+
+**A tree your program synthesizes — you author the schema —
+mounts under `/mnt/<app>`, even when the backing data is remote.**
+`webfs` serves remote HTTP yet lives at `/mnt/web`, because *it*
+invents the `ctl`/`uri`/`body` schema. Every example in this
+document is an app-authored tree, so every example mounts under
+`/mnt`.
+
+**A foreign tree imported intact — the schema is theirs — mounts
+under `/n/<source>`, named for its source.** `/n/local` (the host
+filesystem), a remote peer's exported root. A remote LLM does
+*not* belong here: you are not importing a peer's tree to live as
+`/n/<peer>`, you are populating *your* `/mnt/llm` from it.
+Locality is not placement — it is just how the name gets
+populated.
+
+The convention is security work, not cosmetics: `/mnt` is ours to
+subdivide, so a sub-agent can be granted exactly
+`/mnt/<app>/<sub>` and nothing else, while `/n` remains a small,
+vetted import allowlist. A few older trees predate the convention (migrations tracked as INFR-400..403)
+(`/n/wallet`, `/n/git`); do not copy them for new work. The full
+argument, the decision checklist, and the reference tree are in
+[NAMESPACE-LAYOUT.md](NAMESPACE-LAYOUT.md) — read it before
+choosing any mount point.
+
+
 ## Why Not JSON
 
 JSON is the default instinct for structured data. It is wrong
-here. The reasons are architectural, not aesthetic.
-
-**Simplicity.** A line of space-separated fields is the simplest
-possible representation of a record. It requires no grammar, no
-escaping rules, no nesting, no closing delimiters. The cognitive
-load of reading `37.7749 -122.4194 San_Francisco 2025-02-15T14:32:00Z`
-is zero. The cognitive load of reading the equivalent JSON is not
-zero — your eye has to parse braces, colons, quotes, and commas
-to find the four values. Simplicity is not a preference in Plan 9.
-It is a design principle. Every layer of unnecessary syntax is a
-layer of unnecessary complexity in every tool that touches the data.
-
-**Clarity.** Text lines are human-readable at every point in the
-system. `cat /n/sensors/temperature` shows a number. `cat /n/alerts`
-shows one alert per line. There is nothing to decode, no structure
-to navigate, no keys to look up. The data is right there. This
-matters for debugging, for auditing, for understanding what a
-system is doing at 3 AM when something is wrong. JSON forces you
-to visually parse structure before you can see values.
+here. The reasons are architectural, not aesthetic — so the
+architecture comes first.
 
 **Tool composition.** The entire Plan 9 and Inferno tool ecosystem
 assumes text lines. Pipes, `grep`, `awk`, `sed`, `sort`, `wc`,
@@ -40,8 +53,8 @@ server emits one record per line, the full power of this ecosystem
 is immediately available.
 
 ```
-cat /n/sensors/readings | grep temperature | wc -l
-cat /n/fleet/vehicles | awk '{print $1, $4}' | sort
+cat /mnt/sensors/readings | grep temperature | wc -l
+cat /mnt/fleet/vehicles | awk '{print $1, $4}' | sort
 ```
 
 JSON breaks this. A JSON array is not a sequence of lines — it is
@@ -49,6 +62,15 @@ a single structure with internal delimiters. Pipelines cannot
 operate on it without a dedicated parser as an intermediary. The
 tool ecosystem becomes useless, and every consumer must import
 a JSON library instead of calling `tokenize`.
+
+The strong form of the objection is JSON Lines — one object per
+line, which `grep` and `wc` handle fine. Notice that it concedes
+the argument: once the format is one record per line, the braces,
+quotes, and colons are vestigial. The field tools still don't
+apply (`awk '{print $1, $4}'` needs a `jq` this namespace doesn't
+have), and stripping the leftover syntax yields exactly the
+`attr=value` records described below — the same self-description,
+already native here.
 
 **Parseability.** `sys->tokenize(line, " \t")` splits a text line
 into fields in one call. No module to load, no buffer to create,
@@ -68,18 +90,44 @@ your 9P server emits JSON, it is the odd one out. Every consumer
 needs special-case code. Every tool that works on other parts of
 the namespace stops working on yours.
 
-**Agents.** AI agents read and write files. They understand text
-natively — it is their primary medium. An agent reasoning about
-the line `AAPL long 0.85 sentiment` can parse it instantly. An
-agent reasoning about `{"asset":"AAPL","direction":"long",
-"confidence":0.85,"signal_type":"sentiment"}` must first parse
-the JSON structure, then extract the same four values. LLMs are
-measurably worse at extracting values from JSON than from plain
-text — the syntactic overhead (braces, quotes, colons, commas)
-consumes context and introduces extraction errors that do not
-occur with space-separated fields. In a system where agents are
-first-class consumers of the namespace, the data format must be
-optimised for how agents actually process text.
+**Simplicity.** A line of space-separated fields is the simplest
+possible representation of a record. It requires no grammar, no
+escaping rules, no nesting, no closing delimiters. The cognitive
+load of reading `37.7749 -122.4194 San_Francisco 2025-02-15T14:32:00Z`
+is zero. The cognitive load of reading the equivalent JSON is not
+zero — your eye has to parse braces, colons, quotes, and commas
+to find the four values. Simplicity is not a preference in Plan 9.
+It is a design principle. Every layer of unnecessary syntax is a
+layer of unnecessary complexity in every tool that touches the data.
+
+**Clarity.** Text lines are human-readable at every point in the
+system. `cat /mnt/sensors/temperature` shows a number. `cat /mnt/alerts`
+shows one alert per line. There is nothing to decode, no structure
+to navigate, no keys to look up. The data is right there. This
+matters for debugging, for auditing, for understanding what a
+system is doing at 3 AM when something is wrong. JSON forces you
+to visually parse structure before you can see values.
+
+**Agents.** AI agents read and write files, and plain text is
+their cheapest medium: an agent reads `AAPL long 0.85 sentiment`
+directly, while the JSON equivalent spends context tokens on
+braces, quotes, and keys before any value appears. The effect
+sharpens as models shrink. Small models routinely produce correct
+answers wrapped in malformed JSON, and forcing the schema at the
+decoder inverts the problem — the output becomes valid *and
+wrong*: on sub-3B models, hard schema constraints took one
+measured tool-call task from 91% working calls to 48%, every
+failure well-formed (the "constraint tax", arXiv:2605.26128).
+The research advice is "reason free, constrain late" — which is
+this system, built as an operating system: an agent never emits a
+schema at all. It writes `add 5` to a ctl file; the structure
+lives in the namespace, and the server validates the write,
+rejecting a bad one with an error the caller sees. Semantic
+errors surface instead of hiding inside syntactically valid
+output. The smaller the model — and InferNode's on-device
+direction is exactly the small-model regime — the more this
+convention is the difference between an agent that works and one
+that emits well-formed failures.
 
 JSON is appropriate at system boundaries — when talking to
 external HTTP APIs, REST services, or web browsers. Inside the
@@ -100,23 +148,23 @@ optionally followed by a newline.
 
 Sensor network:
 ```
-/n/sensors/temperature     →  22.5
-/n/sensors/humidity        →  0.65
-/n/sensors/status          →  normal
+/mnt/sensors/temperature     →  22.5
+/mnt/sensors/humidity        →  0.65
+/mnt/sensors/status          →  normal
 ```
 
 Fleet tracking:
 ```
-/n/fleet/vehicles/truck-7/lat   →  37.7749
-/n/fleet/vehicles/truck-7/lon   →  -122.4194
-/n/fleet/vehicles/truck-7/speed →  65.2
+/mnt/fleet/vehicles/truck-7/lat   →  37.7749
+/mnt/fleet/vehicles/truck-7/lon   →  -122.4194
+/mnt/fleet/vehicles/truck-7/speed →  65.2
 ```
 
 Trading system:
 ```
-/n/portfolio/cash           →  125000.00
-/n/portfolio/total_value    →  1250000.50
-/n/portfolio/defense/status →  normal
+/mnt/portfolio/cash           →  125000.00
+/mnt/portfolio/total_value    →  1250000.50
+/mnt/portfolio/defense/status →  normal
 ```
 
 This is the most Plan 9 pattern. The directory hierarchy is the
@@ -131,7 +179,7 @@ separated by spaces.
 
 Geospatial observations:
 ```
-/n/observations:
+/mnt/observations:
 sta-001 37.7749 -122.4194 22.5 0.65 clear 2025-02-15T14:32:00Z
 sta-002 34.0522 -118.2437 28.1 0.42 clear 2025-02-15T14:32:00Z
 sta-003 40.7128 -74.0060 -2.3 0.78 snow 2025-02-15T14:32:00Z
@@ -139,7 +187,7 @@ sta-003 40.7128 -74.0060 -2.3 0.78 snow 2025-02-15T14:32:00Z
 
 Network events:
 ```
-/n/firewall/log:
+/mnt/firewall/log:
 a]1e8400 10.0.1.15 10.0.2.30 443 allow 2025-02-15T14:32:00Z
 b72e8401 192.168.1.5 10.0.1.15 22 deny 2025-02-15T14:33:12Z
 c83e8402 10.0.1.20 8.8.8.8 53 allow 2025-02-15T14:33:15Z
@@ -147,7 +195,7 @@ c83e8402 10.0.1.20 8.8.8.8 53 allow 2025-02-15T14:33:15Z
 
 Trading signals:
 ```
-/n/signals:
+/mnt/signals:
 550e8400 AAPL long 0.85 sentiment 2025-02-15T14:32:00Z
 660e8401 TSLA short 0.72 technical 2025-02-15T14:33:00Z
 ```
@@ -156,6 +204,33 @@ The reader uses `sys->tokenize(line, " \t")` to split each line.
 Field order is fixed and documented. There is no header line — the
 format is part of the interface specification, not embedded in
 the data.
+
+### Records with named fields: attr=value
+
+When a record's fields are optional, sparse, or likely to grow,
+name them, `ndb(6)` style: space-separated `attr=value` pairs,
+one record per line.
+
+```
+/mnt/fleet/events:
+time=2026-02-15T14:32:00Z truck=7 event=arrive dock=3
+time=2026-02-15T14:40:11Z truck=9 event=depart
+```
+
+This is the tradition's answer to schema evolution — the one
+honest argument for JSON. Positional fields break every consumer
+the day a field is inserted; named fields are order-independent
+and extend without breaking anyone. The cost is a few bytes per
+field. The records remain one `grep` and one `tokenize` away,
+and `lib/ndb` queries them directly. In-tree precedent: the
+audit log's record fields, `nsaudit -m`'s machine interface,
+and `lib/ndb` itself.
+
+Choose by stability: **positional fields** for stable, dense,
+high-rate records; **attr=value** when fields are optional or
+the schema will evolve; **the directory hierarchy** when the
+structure is an entity's state rather than a stream of records
+(see below).
 
 ### Field ordering
 
@@ -183,20 +258,23 @@ interrupt time).
 
 ### Key-value data: use the directory
 
-Do not put key-value pairs in a single file. Use the directory
-structure. Each key becomes a file (or subdirectory) whose
-content is the value.
+This section is about an *entity's state* — a station, an
+account, a session. (A *stream of records* whose fields need
+names is the attr=value case above; the two are different shapes
+and get different treatment.) Do not put an entity's key-value
+pairs in a single file. Use the directory structure. Each key
+becomes a file (or subdirectory) whose content is the value.
 
 Wrong:
 ```
-/n/sensors/station-1  →  {"temperature": 22.5, "humidity": 0.65, "status": "normal"}
+/mnt/sensors/station-1  →  {"temperature": 22.5, "humidity": 0.65, "status": "normal"}
 ```
 
 Right:
 ```
-/n/sensors/station-1/temperature  →  22.5
-/n/sensors/station-1/humidity     →  0.65
-/n/sensors/station-1/status       →  normal
+/mnt/sensors/station-1/temperature  →  22.5
+/mnt/sensors/station-1/humidity     →  0.65
+/mnt/sensors/station-1/status       →  normal
 ```
 
 If the values are logically grouped, use a subdirectory. The
@@ -208,7 +286,7 @@ Simple lists (identifiers, labels, available resources) are one
 item per line.
 
 ```
-/n/fleet/drivers:
+/mnt/fleet/drivers:
 Alice Chen
 Bob Martinez
 Carol Okafor
@@ -227,9 +305,9 @@ Files that accept commands (not just data) follow the Plan 9
 `ctl` convention. Commands are text strings written to the file.
 
 ```
-echo alarm > /n/sensors/station-1/status
-echo 30 > /n/sensors/station-1/poll_interval
-echo rebalance > /n/portfolio/ctl
+echo alarm > /mnt/sensors/station-1/status
+echo 30 > /mnt/sensors/station-1/poll_interval
+echo rebalance > /mnt/portfolio/ctl
 ```
 
 ### Writable data files
@@ -259,7 +337,8 @@ Prefer option 2. Quoting adds parsing complexity.
 |---------|--------|
 | Single value | Own file, value as text |
 | Multiple records | One per line, space-separated fields |
-| Key-value data | Directory hierarchy |
+| Records with optional/evolving fields | `attr=value` pairs, ndb(6) style |
+| Key-value data (entity state) | Directory hierarchy |
 | Simple list | One item per line |
 | Numbers | Decimal text, appropriate precision |
 | Timestamps | RFC 3339 |

@@ -46,6 +46,31 @@ jobs:
         fi
         echo "Ring-fence OK: no testing-only harness files outside tests/agent-harness/."
 
+    - name: Verify local-only config files are not tracked
+      run: |
+        # lib/ndb/llm holds a developer's LLM endpoints, gateway URLs and
+        # model choices. It is .gitignore'd — but .gitignore does nothing
+        # for a file that is already tracked, which is how a private LAN
+        # host reached the public repo once before. Ship lib/ndb/llm.example
+        # instead; release.yml writes distribution defaults into artifacts.
+        offenders=""
+        for f in lib/ndb/llm lib/ndb/local; do
+          if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+            offenders="$offenders $f"
+          fi
+        done
+        if [ -n "$offenders" ]; then
+          echo "FATAL: local-only config files are tracked:$offenders" >&2
+          echo "" >&2
+          echo "Untrack them (git rm --cached <file>) and keep the tracked" >&2
+          echo "template (<file>.example) as the shipped default." >&2
+          exit 1
+        fi
+        if [ ! -f lib/ndb/llm.example ]; then
+          echo "FATAL: lib/ndb/llm.example is missing — first run has no template to seed from." >&2
+          exit 1
+        fi
+        echo "Config ring-fence OK: local-only config untracked, template present."
   # Replays the committed ElevenLabs corpus through the real streaming model.
   # The API is never called in CI; only the generated PCM and its hashes are
   # committed. Caching keeps the Parakeet source, build, and model reusable.
@@ -192,6 +217,37 @@ jobs:
         ROOT=. bash tests/host/namespace_manifest_invariants_test.sh
         ROOT=. bash tests/host/veltro_namespace_failclosed_test.sh
 
+    - name: Run escape-room evidence checks
+      run: |
+        # Gates audit-bundle verification, canary scanning, the
+        # evidence-privacy invariants (INFR-406) — raw evidence is 0700/0600
+        # and the derived public artifact carries no canary value — and the
+        # attempt-preservation / fail-closed retry rules (INFR-411).
+        chmod +x tests/host/grind_escape_test.sh
+        ROOT=. bash tests/host/grind_escape_test.sh
+
+    - name: Run outer escape-lab evidence checks
+      run: |
+        # INFR-412: the outer lab creates pcap, console, command log and
+        # manifest private, refuses to start over an exposure, and seals
+        # 0700/0600 at the end.
+        chmod +x tests/agent-harness/escape-lab.sh
+        chmod +x tests/host/escape_lab_evidence_test.sh
+        ROOT=. sh tests/host/escape_lab_evidence_test.sh
+
+    - name: Run codex-gate preflight checks
+      run: |
+        # INFR-413: the gateway pins the Codex CLI's plugin, app, MCP, skill,
+        # memory and shell-snapshot surface, refuses an isolated Codex home
+        # that holds unsanctioned configuration, and reports what it pinned.
+        # Mock backend — no CLI, no billing; the pinned feature names are
+        # validated against the installed CLI only when one is present.
+        chmod +x tests/host/codex_gate_test.sh
+        # 77 is the suite's skip status (no aiohttp on the runner).
+        rc=0
+        ROOT=. bash tests/host/codex_gate_test.sh || rc=$?
+        [ "$rc" = 0 ] || [ "$rc" = 77 ] || exit "$rc"
+
     - name: Run llmsrv session capability checks
       run: |
         chmod +x tests/host/llmsrv_session_capability_test.sh
@@ -252,16 +308,24 @@ jobs:
       run: |
         echo "Running host-side integration tests..."
 
-        # wallet9p basic operations
+        # wallet9p policy surface (offline, deterministic — a failure here
+        # means the wallet's budget/approval/signing policy regressed, so
+        # it fails the build; exit 77 = no emu available, skip)
         if [ -f tests/host/wallet9p_test.sh ]; then
           echo "--- wallet9p test ---"
           chmod +x tests/host/wallet9p_test.sh
-          ROOT=. bash tests/host/wallet9p_test.sh > wallet9p-test.txt 2>&1 || true
+          set +e
+          ROOT=. bash tests/host/wallet9p_test.sh > wallet9p-test.txt 2>&1
+          rc=$?
+          set -e
           cat wallet9p-test.txt
-          if grep -q "=== PASS ===" wallet9p-test.txt; then
+          if [ $rc -eq 0 ]; then
             echo "wallet9p test: PASS"
+          elif [ $rc -eq 77 ]; then
+            echo "wallet9p test: SKIP (emu not built)"
           else
-            echo "wallet9p test: SKIP (requires full Inferno namespace)"
+            echo "wallet9p test: FAIL"
+            exit 1
           fi
         fi
 
@@ -585,16 +649,24 @@ jobs:
       run: |
         echo "Running host-side integration tests..."
 
-        # wallet9p basic operations
+        # wallet9p policy surface (offline, deterministic — a failure here
+        # means the wallet's budget/approval/signing policy regressed, so
+        # it fails the build; exit 77 = no emu available, skip)
         if [ -f tests/host/wallet9p_test.sh ]; then
           echo "--- wallet9p test ---"
           chmod +x tests/host/wallet9p_test.sh
-          ROOT=. bash tests/host/wallet9p_test.sh > wallet9p-test.txt 2>&1 || true
+          set +e
+          ROOT=. bash tests/host/wallet9p_test.sh > wallet9p-test.txt 2>&1
+          rc=$?
+          set -e
           cat wallet9p-test.txt
-          if grep -q "=== PASS ===" wallet9p-test.txt; then
+          if [ $rc -eq 0 ]; then
             echo "wallet9p test: PASS"
+          elif [ $rc -eq 77 ]; then
+            echo "wallet9p test: SKIP (emu not built)"
           else
-            echo "wallet9p test: SKIP (requires full Inferno namespace)"
+            echo "wallet9p test: FAIL"
+            exit 1
           fi
         fi
 
@@ -811,16 +883,24 @@ jobs:
       run: |
         echo "Running host-side integration tests..."
 
-        # wallet9p basic operations
+        # wallet9p policy surface (offline, deterministic — a failure here
+        # means the wallet's budget/approval/signing policy regressed, so
+        # it fails the build; exit 77 = no emu available, skip)
         if [ -f tests/host/wallet9p_test.sh ]; then
           echo "--- wallet9p test ---"
           chmod +x tests/host/wallet9p_test.sh
-          ROOT=. bash tests/host/wallet9p_test.sh > wallet9p-test.txt 2>&1 || true
+          set +e
+          ROOT=. bash tests/host/wallet9p_test.sh > wallet9p-test.txt 2>&1
+          rc=$?
+          set -e
           cat wallet9p-test.txt
-          if grep -q "=== PASS ===" wallet9p-test.txt; then
+          if [ $rc -eq 0 ]; then
             echo "wallet9p test: PASS"
+          elif [ $rc -eq 77 ]; then
+            echo "wallet9p test: SKIP (emu not built)"
           else
-            echo "wallet9p test: SKIP (requires full Inferno namespace)"
+            echo "wallet9p test: FAIL"
+            exit 1
           fi
         fi
 
@@ -1009,16 +1089,24 @@ jobs:
       run: |
         echo "Running host-side integration tests..."
 
-        # wallet9p basic operations
+        # wallet9p policy surface (offline, deterministic — a failure here
+        # means the wallet's budget/approval/signing policy regressed, so
+        # it fails the build; exit 77 = no emu available, skip)
         if [ -f tests/host/wallet9p_test.sh ]; then
           echo "--- wallet9p test ---"
           chmod +x tests/host/wallet9p_test.sh
-          ROOT=. bash tests/host/wallet9p_test.sh > wallet9p-test.txt 2>&1 || true
+          set +e
+          ROOT=. bash tests/host/wallet9p_test.sh > wallet9p-test.txt 2>&1
+          rc=$?
+          set -e
           cat wallet9p-test.txt
-          if grep -q "=== PASS ===" wallet9p-test.txt; then
+          if [ $rc -eq 0 ]; then
             echo "wallet9p test: PASS"
+          elif [ $rc -eq 77 ]; then
+            echo "wallet9p test: SKIP (emu not built)"
           else
-            echo "wallet9p test: SKIP (requires full Inferno namespace)"
+            echo "wallet9p test: FAIL"
+            exit 1
           fi
         fi
 
@@ -1264,16 +1352,24 @@ jobs:
       run: |
         echo "Running host-side integration tests..."
 
-        # wallet9p basic operations
+        # wallet9p policy surface (offline, deterministic — a failure here
+        # means the wallet's budget/approval/signing policy regressed, so
+        # it fails the build; exit 77 = no emu available, skip)
         if [ -f tests/host/wallet9p_test.sh ]; then
           echo "--- wallet9p test ---"
           chmod +x tests/host/wallet9p_test.sh
-          ROOT=. bash tests/host/wallet9p_test.sh > wallet9p-test.txt 2>&1 || true
+          set +e
+          ROOT=. bash tests/host/wallet9p_test.sh > wallet9p-test.txt 2>&1
+          rc=$?
+          set -e
           cat wallet9p-test.txt
-          if grep -q "=== PASS ===" wallet9p-test.txt; then
+          if [ $rc -eq 0 ]; then
             echo "wallet9p test: PASS"
+          elif [ $rc -eq 77 ]; then
+            echo "wallet9p test: SKIP (emu not built)"
           else
-            echo "wallet9p test: SKIP (requires full Inferno namespace)"
+            echo "wallet9p test: FAIL"
+            exit 1
           fi
         fi
 

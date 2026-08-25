@@ -919,7 +919,7 @@ drawconversation(zone: Rect)
 	# Reset tile layout
 	tilelayout = array[drawn + 1] of ref TileRect;
 	ntiles = 0;
-	dlgbuttons = array[drawn * 4] of ref DlgButton;  # up to 4 buttons per dialogue
+	dlgbuttons = array[drawn * 8] of ref DlgButton;  # up to 8 buttons per dialogue
 	ndlgbuttons = 0;
 	queuebuttons = array[2] of ref QueueButton;
 	nqueuebuttons = 0;
@@ -1017,7 +1017,8 @@ drawconversation(zone: Rect)
 					for(; mopts != nil; mopts = tl mopts)
 						h += mbtnh + 6;
 				} else
-					h += BTNROW_H + 4;
+					h += dlgbuttonrows(marr[pi].options,
+						tilew - 2 * DLGPAD) * (BTNROW_H + 4);
 			}
 			h += DLGPAD;
 			harr[pi] = h;
@@ -1234,11 +1235,16 @@ drawconversation(zone: Rect)
 						dy += mbtnh + 6;
 					}
 				} else {
+					# Wrap onto further rows rather than dropping the
+					# overflow — dlgbuttonrows() budgeted the height.
 					bx := dx;
 					for(; opts != nil; opts = tl opts) {
 						opt := hd opts;
 						bw := mainfont.width(opt) + 24;
-						if(bx + bw > dx + dw) break;
+						if(bx > dx && bx + bw > dx + dw) {
+							bx = dx;
+							dy += BTNROW_H + 4;
+						}
 						br := Rect((bx, dy), (bx + bw, dy + BTNROW_H));
 						if(br.min.y < msgy && br.max.y > zone.min.y) {
 							drawdlgbutton(br, opt);
@@ -1956,6 +1962,29 @@ humanreplaced(text: string): int
 }
 
 # --- Word wrapping ---
+
+# Rows a dialogue's option buttons need at width w (desktop layout).
+# The height-measurement pass and the draw pass must agree on this, so
+# the arithmetic lives in one place. Buttons wrap: the old single-row
+# layout silently dropped any that didn't fit, which the first-run LLM
+# wizard now trips over (it offers five).
+dlgbuttonrows(options: string, w: int): int
+{
+	(nil, opts) := sys->tokenize(options, ",");
+	if(opts == nil)
+		return 0;
+	rows := 1;
+	bx := 0;
+	for(; opts != nil; opts = tl opts) {
+		bw := mainfont.width(hd opts) + 24;
+		if(bx > 0 && bx + bw > w) {
+			rows++;
+			bx = 0;
+		}
+		bx += bw + 8;
+	}
+	return rows;
+}
 
 wraptext(text: string, maxw: int): list of string
 {

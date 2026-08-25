@@ -1,0 +1,389 @@
+#!/bin/sh
+# tests/host/codex_gate_test.sh — codex-gate mock-mode host tests.
+#
+# Exercises the OpenAI-compatible surface and the prompt-level tool bridge
+# (tool_calls emission → results replayed on the next request) with
+# CODEX_GATE_MOCK=1: deterministic, no codex CLI, no billing.
+# Skips (exit 77) when python3/aiohttp are unavailable.
+#
+# Run from project root: ./tests/host/codex_gate_test.sh
+
+set -eu
+
+ROOT="${ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
+GATE="$ROOT/tools/codex-gate/codex_gate.py"
+PORT=21436
+
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "SKIP: python3 not available"; exit 77
+fi
+if ! python3 -c "import aiohttp" 2>/dev/null; then
+    echo "SKIP: aiohttp not available"; exit 77
+fi
+[ -f "$GATE" ] || { echo "FAIL: $GATE missing" >&2; exit 1; }
+
+echo "=== codex-gate mock-mode tests ==="
+
+fail() { echo "FAIL: $*" >&2; exit 1; }
+pass() { echo "ok: $*"; }
+
+CODEX_GATE_MOCK=1 CODEX_GATE_PORT=$PORT python3 "$GATE" >/dev/null 2>&1 &
+GATE_PID=$!
+trap 'kill $GATE_PID 2>/dev/null || true' EXIT
+
+# Wait for the listener.
+i=0
+while ! curl -sf -m 1 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; do
+    i=$((i+1))
+    [ $i -lt 30 ] || fail "gate did not come up on :$PORT"
+    sleep 0.2
+done
+
+BASE="http://127.0.0.1:$PORT"
+
+# 1. /health reports the mock backend
+out="$(curl -sf "$BASE/health")"
+echo "$out" | grep -q '"backend": "mock"' || fail "health: wrong backend ($out)"
+echo "$out" | grep -q '"held_turns": 0' || fail "health: held_turns missing ($out)"
+pass "health reports mock backend"
+
+# 2. /v1/models lists the aliases llmsrv's model picker shows
+out="$(curl -sf "$BASE/v1/models")"
+echo "$out" | grep -q '"default"' || fail "models: default missing ($out)"
+pass "models lists stable CLI default"
+
+# 3. Plain completion — OpenAI shape llmclient.b parses
+out="$(curl -sf "$BASE/v1/chat/completions" -H 'Content-Type: application/json' -d '{
+    "model":"gpt-5-codex","max_tokens":64,"temperature":0.0,
+    "messages":[{"role":"system","content":"sys"},{"role":"user","content":"hello"}]}')"
+echo "$out" | grep -q '"content": "MOCK_REPLY: hello"' || fail "plain: bad content ($out)"
+echo "$out" | grep -q '"finish_reason": "stop"' || fail "plain: bad finish_reason"
+echo "$out" | grep -q '"total_tokens"' || fail "plain: usage missing"
+pass "plain completion round-trips"
+
+# 4. Tool bridge: tool_calls emission, then results replayed by llmsrv
+r1="$(curl -sf "$BASE/v1/chat/completions" -H 'Content-Type: application/json' -d '{
+    "model":"gpt-5-codex","max_tokens":64,"temperature":0.0,
+    "messages":[{"role":"user","content":"MOCK_TOOL_CALL geo {\"q\":\"Oslo\"}"}],
+    "tools":[{"type":"function","function":{"name":"geo","description":"d",
+        "parameters":{"type":"object","properties":{"q":{"type":"string"}}}}}],
+    "tool_choice":"auto"}')"
+echo "$r1" | grep -q '"finish_reason": "tool_calls"' || fail "bridge: no tool_calls ($r1)"
+echo "$r1" | grep -q '"name": "geo"' || fail "bridge: wrong tool name"
+# arguments must be a JSON *string* (llmclient.b picks String)
+echo "$r1" | grep -q '"arguments": "{' || fail "bridge: arguments not a string"
+tid="$(echo "$r1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["choices"][0]["message"]["tool_calls"][0]["id"])')"
+pass "tool_calls emitted"
+
+# The gate is stateless — nothing is held between the two requests.
+out="$(curl -sf "$BASE/health")"
+echo "$out" | grep -q '"held_turns": 0' || fail "bridge: gate should hold nothing ($out)"
+pass "no turn held (stateless gate)"
+
+r2="$(curl -sf "$BASE/v1/chat/completions" -H 'Content-Type: application/json' -d '{
+    "model":"gpt-5-codex","max_tokens":64,"temperature":0.0,
+    "messages":[{"role":"user","content":"MOCK_TOOL_CALL geo {\"q\":\"Oslo\"}"},
+        {"role":"assistant","content":"","tool_calls":[{"id":"'"$tid"'","type":"function",
+            "function":{"name":"geo","arguments":"{\"q\":\"Oslo\"}"}}]},
+        {"role":"tool","content":"59.91N","tool_call_id":"'"$tid"'"}]}')"
+echo "$r2" | grep -q 'TOOL_RESULT_WAS: 59.91N' || fail "bridge: continuation lost result ($r2)"
+echo "$r2" | grep -q '"finish_reason": "stop"' || fail "bridge: continuation bad finish"
+pass "continuation replays tool results"
+
+# 5. Error results are flagged to the model
+r2="$(curl -sf "$BASE/v1/chat/completions" -H 'Content-Type: application/json' -d '{
+    "model":"gpt-5-codex","max_tokens":64,"temperature":0.0,
+    "messages":[{"role":"user","content":"q"},
+        {"role":"tool","content":"Error: boom","tool_call_id":"call_x"}]}')"
+echo "$r2" | grep -q '(is_error)' || fail "error result not flagged ($r2)"
+pass "tool errors propagate is_error"
+
+# 6. Streaming: single-chunk SSE with delta + [DONE]
+r="$(curl -sf "$BASE/v1/chat/completions" -H 'Content-Type: application/json' -d '{
+    "model":"gpt-5-codex","max_tokens":64,"temperature":0.0,"stream":true,
+    "messages":[{"role":"user","content":"hi"}]}')"
+echo "$r" | grep -q '"content": "MOCK_REPLY: hi"' || fail "stream: delta missing ($r)"
+echo "$r" | grep -q 'data: \[DONE\]' || fail "stream: no [DONE]"
+pass "SSE streaming shape"
+
+# 7. Deterministic Codex failure injection has the same external shape as a
+#    CLI usage-limit failure: CodexError becomes an OpenAI-compatible 502.
+ERROR_PORT=$((PORT+1))
+CODEX_GATE_MOCK=1 \
+CODEX_GATE_MOCK_ERROR='usage limit reached; retry after reset' \
+CODEX_GATE_PORT=$ERROR_PORT python3 "$GATE" >/dev/null 2>&1 &
+ERROR_PID=$!
+ERROR_BODY="$(mktemp "${TMPDIR:-/tmp}/codex-gate-error.XXXXXX")"
+trap 'kill $GATE_PID $ERROR_PID 2>/dev/null || true; rm -f "$ERROR_BODY"' EXIT
+i=0
+while ! curl -sf -m 1 "http://127.0.0.1:$ERROR_PORT/health" >/dev/null 2>&1; do
+    i=$((i+1))
+    [ $i -lt 30 ] || fail "error-injection gate did not come up on :$ERROR_PORT"
+    sleep 0.2
+done
+status="$(curl -s -o "$ERROR_BODY" -w '%{http_code}' \
+    "http://127.0.0.1:$ERROR_PORT/v1/chat/completions" \
+    -H 'Content-Type: application/json' \
+    -d '{"model":"default","messages":[{"role":"user","content":"hello"}]}')"
+[ "$status" = 502 ] || fail "fault injection returned HTTP $status"
+grep -q 'usage limit reached' "$ERROR_BODY" || \
+    fail "fault injection lost the CLI error"
+pass "usage-limit fault injection returns the production error shape"
+
+# 8. The prompt-level tool protocol parses into OpenAI tool_calls
+python3 - "$ROOT" <<'PY' || fail "tool-reply parser"
+import sys, importlib.util
+spec = importlib.util.spec_from_file_location(
+    "codex_gate", sys.argv[1] + "/tools/codex-gate/codex_gate.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+c, calls = m.parse_tool_reply('{"content":"","tool_calls":[{"name":"geo","arguments":"{\\"q\\":\\"Oslo\\"}"}]}')
+assert calls == [("geo", {"q": "Oslo"})], calls
+c, calls = m.parse_tool_reply('```json\n{"content":"hi","tool_calls":[]}\n```')
+assert (c, calls) == ("hi", []), (c, calls)
+c, calls = m.parse_tool_reply('just prose')          # degraded, never fatal
+assert (c, calls) == ("just prose", []), (c, calls)
+PY
+pass "tool-reply parser handles fences and prose"
+
+# 9. codex exec argv: sandboxed, private workdir, prompt on stdin
+python3 - "$ROOT" <<'PY' || fail "argv shape"
+import sys, importlib.util
+spec = importlib.util.spec_from_file_location(
+    "codex_gate", sys.argv[1] + "/tools/codex-gate/codex_gate.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+argv = m.build_argv("gpt-5-codex", "/tmp/s.json", "/tmp/last.txt", "PROMPT")
+assert argv[:2] == ["codex", "exec"], argv
+assert "--sandbox" in argv and argv[argv.index("--sandbox") + 1] == "read-only", argv
+disabled = [argv[i + 1] for i, a in enumerate(argv) if a == "--disable"]
+assert "shell_tool" in disabled, argv
+assert "--strict-config" in argv, argv
+assert any(a.startswith("developer_instructions=") for a in argv), argv
+assert argv[argv.index("--cd") + 1] == m.WORKDIR, argv
+assert argv[argv.index("--output-schema") + 1] == "/tmp/s.json", argv
+assert argv[-1] == "-", argv
+assert "PROMPT" not in argv, argv
+# The advertised default must not become `codex -m default`.
+argv = m.build_argv("default", None, "/tmp/last.txt", "PROMPT")
+assert "-m" not in argv, argv
+# No schema (no tools in the request) ⇒ no --output-schema flag at all.
+argv = m.build_argv("", None, "/tmp/last.txt", "PROMPT")
+assert "--output-schema" not in argv, argv
+assert "-m" not in argv, argv
+PY
+pass "codex exec argv is sandboxed and stdin-fed"
+
+# 10. Subscription guard: the gate serves the host's `codex login`, never an
+#    API key. It refuses to start while OPENAI_API_KEY is set (which the CLI
+#    can prefer over the ChatGPT sign-in), and never passes one to the child.
+out="$(OPENAI_API_KEY=sk-nope python3 "$GATE" 2>&1 || true)"
+echo "$out" | grep -q "OPENAI_API_KEY is set" || fail "gate started with an API key set ($out)"
+pass "gate refuses to start with OPENAI_API_KEY set"
+
+python3 - "$ROOT" <<'PY' || fail "API key reaches the CLI"
+import os, sys, importlib.util
+os.environ["OPENAI_API_KEY"] = "sk-nope"
+os.environ["CODEX_GATE_MOCK"] = "1"          # skip the startup guard, test the plumbing
+spec = importlib.util.spec_from_file_location(
+    "codex_gate", sys.argv[1] + "/tools/codex-gate/codex_gate.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+assert "OPENAI_API_KEY" not in m.child_env(), "API key leaked into the codex child env"
+src = open(sys.argv[1] + "/tools/codex-gate/codex_gate.py").read()
+for bad in ("Authorization", "Bearer"):
+    assert bad not in src, "gate builds an auth header: " + bad
+PY
+pass "no API key reaches the codex CLI, no auth header anywhere"
+
+# 11. A logged-out CLI must prevent readiness rather than serving a static
+# model list that makes llmctl report a healthy but unusable backend.
+python3 - "$ROOT" <<'PY' || fail "login readiness check"
+import sys, importlib.util
+spec = importlib.util.spec_from_file_location(
+    "codex_gate", sys.argv[1] + "/tools/codex-gate/codex_gate.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.MOCK = False
+class Result:
+    stdout = "Logged in using ChatGPT"
+    stderr = ""
+    returncode = 0
+m.subprocess.run = lambda *args, **kwargs: Result()
+m.check_codex_auth()
+Result.returncode = 1
+Result.stderr = "Not logged in"
+try:
+    m.check_codex_auth()
+except SystemExit as e:
+    assert "Not logged in" in str(e), e
+else:
+    raise AssertionError("logged-out CLI accepted")
+Result.returncode = 0
+Result.stderr = ""
+Result.stdout = "Logged in using an API key"
+try:
+    m.check_codex_auth()
+except SystemExit as e:
+    assert "not logged in with ChatGPT" in str(e), e
+else:
+    raise AssertionError("API-key login accepted as ChatGPT OAuth")
+PY
+pass "startup readiness requires a ChatGPT OAuth login"
+
+# 11. The CLI's own plugin/skill/MCP surface is pinned, not inherited.
+#     Codex CLI 0.149.0 filled a fresh CODEX_HOME (auth.json only) with 144
+#     plugin-cache files, 60 system-skill files and a shell snapshot during
+#     the escape-room campaign (INFR-413). None of it was recorded anywhere.
+python3 - "$ROOT" <<'PY' || fail "gateway hardening"
+import importlib.util
+import json
+import os
+import sys
+import tempfile
+
+root = sys.argv[1]
+spec = importlib.util.spec_from_file_location(
+    "codex_gate", root + "/tools/codex-gate/codex_gate.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+# Every hardening flag reaches the child, and none of them is droppable: a
+# CLI that rejects one must fail loudly, exactly as with --sandbox.
+argv = m.build_argv("gpt-5-codex", "/tmp/s.json", "/tmp/last.txt", "PROMPT")
+for flag in ("--ephemeral", "--ignore-user-config", "--ignore-rules"):
+    assert flag in argv, (flag, argv)
+    assert flag not in m.OPTIONAL_FLAGS, flag
+assert "--sandbox" not in m.OPTIONAL_FLAGS
+disabled = [argv[i + 1] for i, a in enumerate(argv) if a == "--disable"]
+for feature in ("plugins", "apps", "skill_search", "memories",
+                "shell_snapshot", "shell_tool", "hooks", "multi_agent"):
+    assert feature in disabled, (feature, disabled)
+assert disabled == list(m.disabled_features()), (disabled, m.disabled_features())
+# The recorded profile is built from the same function as the argv, so a
+# campaign manifest cannot describe flags the gate did not actually pass.
+flags = m.profile_flags()
+assert flags == argv[2:2 + len(flags)], (flags, argv)
+
+# Turning hardening off is deliberate and visible — but the adapter's own
+# security contract (no native shell) is not part of the switch.
+os.environ["CODEX_GATE_HARDEN"] = "0"
+m.HARDEN = False
+assert m.disabled_features() == ("shell_tool",), m.disabled_features()
+assert "--ephemeral" not in m.profile_flags(), m.profile_flags()
+m.HARDEN = True
+del os.environ["CODEX_GATE_HARDEN"]
+
+# An isolated Codex home holds the dedicated login and nothing else.
+with tempfile.TemporaryDirectory() as td:
+    home = os.path.join(td, "codex-home")
+    os.mkdir(home, 0o700)
+    open(os.path.join(home, "auth.json"), "w").write("{}")
+    assert m.codex_home_violations(home, m.home_allowlist()) == []
+
+    for name in ("config.toml", "AGENTS.md", "mcp.json"):
+        path = os.path.join(home, name)
+        open(path, "w").write("x")
+        violations = m.codex_home_violations(home, m.home_allowlist())
+        assert any(name in v for v in violations), (name, violations)
+        os.unlink(path)
+
+    for name in ("plugins", "skills", "rules", "shell_snapshots"):
+        path = os.path.join(home, name)
+        os.mkdir(path)
+        violations = m.codex_home_violations(home, m.home_allowlist())
+        assert any(name in v and "directory" in v for v in violations), \
+            (name, violations)
+        os.rmdir(path)
+
+    # It also holds an OAuth credential, so a readable home is a violation.
+    os.chmod(home, 0o755)
+    violations = m.codex_home_violations(home, m.home_allowlist())
+    assert any("credentials" in v for v in violations), violations
+    os.chmod(home, 0o700)
+
+    # The post-campaign inventory accounts for what the CLI created itself.
+    os.makedirs(os.path.join(home, "plugins", "cache"))
+    open(os.path.join(home, "plugins", "cache", "catalog.json"), "w").write("[]")
+    inventory = m.codex_home_inventory(home)
+    assert inventory["files"] == 2, inventory
+    paths = sorted(e["path"] for e in inventory["entries"])
+    assert paths == ["auth.json", "plugins/cache/catalog.json"], paths
+    assert all(len(e["sha256"]) == 64 for e in inventory["entries"]), inventory
+    before = inventory["sha256"]
+    open(os.path.join(home, "plugins", "cache", "catalog.json"), "w").write("[1]")
+    assert m.codex_home_inventory(home)["sha256"] != before
+
+# `codex features list` output → the effective state the manifest records.
+features = m.parse_features(
+    "plugins                     stable             false\n"
+    "shell_tool                  stable             false\n"
+    "web_search                  stable             true\n")
+assert features == {"plugins": False, "shell_tool": False, "web_search": True}, features
+PY
+pass "hardening flags, home preflight and state inventory"
+
+# 12. The pinned feature names must exist in the installed CLI. This is the
+#     forward-compatibility gate: a renamed flag would otherwise silently stop
+#     disabling anything. Deterministic and offline — `codex features list`
+#     evaluates local configuration and bills nothing.
+if command -v codex >/dev/null 2>&1; then
+    python3 - "$ROOT" <<'PY' || fail "pinned features not known to the installed CLI"
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location(
+    "codex_gate", sys.argv[1] + "/tools/codex-gate/codex_gate.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.MOCK = False
+features, digest = m.effective_features(m.DEFAULT_DISABLED_FEATURES)
+assert len(digest) == 64, digest
+for feature in m.DEFAULT_DISABLED_FEATURES:
+    assert feature in features, "installed CLI does not know " + feature
+    assert features[feature] is False, feature
+try:
+    m.effective_features(("no_such_feature_xyz",))
+except SystemExit as e:
+    assert "rejected" in str(e), e
+else:
+    raise AssertionError("an unknown feature name was accepted silently")
+PY
+    pass "pinned feature names validate against the installed codex CLI"
+else
+    echo "skip: codex CLI not on PATH — pinned feature names not validated"
+fi
+
+# 13. /health carries the pinned profile, so a campaign manifest records the
+#     configuration the trial actually ran under.
+out="$(curl -sf "$BASE/health")"
+echo "$out" | grep -q '"hardened": true' || fail "health: no hardening flag ($out)"
+echo "$out" | grep -q '"disabled_features"' || fail "health: no feature list ($out)"
+echo "$out" | grep -q '"shell_tool"' || fail "health: shell_tool not pinned ($out)"
+echo "$out" | grep -q '"exec_flags"' || fail "health: no exec flags ($out)"
+echo "$out" | grep -q '"adapter_instructions_sha256"' || fail "health: adapter contract unhashed ($out)"
+pass "health reports the pinned CLI profile"
+
+# 14. grind.py's gateway preflight refuses an unpinned gateway.
+python3 - "$ROOT" "$PORT" <<'PY' || fail "grind gateway preflight"
+import importlib.util
+import sys
+
+root, port = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location(
+    "grind", root + "/tests/agent-harness/grind.py")
+grind = importlib.util.module_from_spec(spec); spec.loader.exec_module(grind)
+
+url = "http://127.0.0.1:%s/v1" % port
+# The mock backend is not codex-cli, so the escape-room requirement rejects it
+# before anything else — that guard already existed and must keep working.
+for requirements, expect in (
+        ({"backend": "codex-cli"}, "backend"),
+        ({"hardened": True, "backend": "mock"}, None),
+        ({"disabled_features": ["plugins"], "backend": "mock"}, None),
+        ({"disabled_features": ["no_such_feature"], "backend": "mock"}, "does not disable"),
+        ({"codex_version": "codex-cli 9.9.9", "backend": "mock"}, "pins")):
+    try:
+        grind.gateway_preflight(url, "default", requirements)
+    except RuntimeError as e:
+        assert expect and expect in str(e), (requirements, e)
+    else:
+        assert expect is None, (requirements, "was accepted")
+PY
+pass "grind preflight rejects a gateway that is not pinned as required"
+
+echo "=== codex-gate mock-mode tests: all green ==="

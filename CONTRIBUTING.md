@@ -10,9 +10,38 @@ cryptography. Contributions of all kinds are welcome — from typo fixes to new
 If you're new to the project:
 
 1. Read the [Quick Start Guide](QUICKSTART.md) to build and run InferNode
-2. Browse [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a system overview
-3. Try the [Interactive Tour](RUN_TOUR.md) to explore features hands-on
-4. Look at issues labeled **good first issue** for approachable tasks
+2. Read the [Design Principles](docs/DESIGN-PRINCIPLES.md) — how design works here,
+   and why (this is the one document that will save you the most time)
+3. Browse [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a system overview
+4. Try the [Interactive Tour](RUN_TOUR.md) to explore features hands-on
+5. Look at issues labeled **good first issue** for approachable tasks
+
+## Design Principles
+
+InferNode follows the Plan 9 / Inferno design tradition, taken seriously:
+every capability is a file server, the namespace is both the API schema and
+the security mechanism, and data crossing a 9P interface is plain text.
+Designs that are idiomatic elsewhere — REST endpoints, JSON configs, client
+SDKs, policy middleware — do not compose with this system and will be asked
+to change in review.
+
+To make that painless rather than painful:
+
+- **Read [docs/DESIGN-PRINCIPLES.md](docs/DESIGN-PRINCIPLES.md) before designing
+  anything.** It explains the head-space with concrete wrong/right examples
+  from this codebase, and lists the subsystems (audit, provenance,
+  persistence, factotum, wallet) new work is expected to compose with.
+- **Propose a namespace sketch first.** For a new service or 9P tool, open
+  an issue with the file tree you intend to serve, each file's read/write
+  behavior, and an example shell session — before writing code. A sketch is
+  reviewed in minutes; most design feedback happens there, where changing
+  course is free. Use the "New service / tool proposal" issue template.
+  This is policy, not a suggestion: PRs that introduce a non-trivial file
+  interface without a linked proposal issue will be returned for the
+  sketch first.
+- **New to Limbo?** It's close to Go, by ancestry:
+  [docs/LIMBO-FOR-GO-PROGRAMMERS.md](docs/LIMBO-FOR-GO-PROGRAMMERS.md)
+  maps the concepts and lists the gotchas.
 
 ## What InferNode Needs
 
@@ -50,6 +79,16 @@ Each tool is a Limbo module that serves a synthetic filesystem under `/tool/`.
 An AI agent (or any program) interacts with external services by reading and
 writing files — no new protocol to learn.
 
+**And no required language.** An integration is either a Limbo tool module
+in-tree, or an out-of-tree 9P server in whatever language you like — mature
+9P libraries exist for Go, Python, Rust, C, and others. If it serves 9P,
+InferNode mounts it at a canonical path and every program and agent uses it
+as files; the speech helpers (C++) and the LLM backends behind `llmsrv` are
+existing examples. Limbo is required only for the canonical in-tree core.
+Either way, start with the namespace sketch (["New Service / Tool
+Proposal"](docs/DESIGN-PRINCIPLES.md) issue template) — the file interface
+is the design regardless of implementation language.
+
 **Integrations we'd love to see:**
 
 | Category | Examples |
@@ -83,17 +122,6 @@ Windows support works (headless + SDL3 GUI) but needs polish:
 
 See [docs/WINDOWS-BUILD.md](docs/WINDOWS-BUILD.md) and
 `build-windows-amd64.ps1`.
-
-### GoDis Compiler
-
-The Go-to-Dis compiler (`tools/godis/`) compiles Go source to Dis bytecode.
-It's preliminary — 190+ tests passing — and a great area for compiler
-enthusiasts:
-
-- Expanding Go language feature coverage
-- Improving Dis bytecode generation
-- Adding optimization passes
-- Test coverage for edge cases
 
 ### Platform Testing
 
@@ -140,7 +168,7 @@ See `formal-verification/README.md` and `formal-verification/METHODOLOGY.md`.
 
 ```bash
 # Clone
-git clone https://github.com/NERVsystems/infernode.git
+git clone https://github.com/infernode-os/infernode.git
 cd infernode
 
 # Install the post-merge hook (prevents stale bytecode after pulls)
@@ -251,6 +279,10 @@ vectors for decapsulation to verify round-trip correctness.
 - **Update docs** when changing interfaces or adding features
 - **Run the test suite** before submitting
 - **Describe the motivation** — what problem does this solve?
+- **Follow the [Design Principles](docs/DESIGN-PRINCIPLES.md)** — file interfaces
+  not APIs, text not JSON inside the namespace, namespace shape not policy
+  code. Reviewers will point at specific sections of that document rather
+  than re-arguing each case.
 
 CI will automatically run:
 - Build verification (Linux x86-64, macOS ARM64)
@@ -274,7 +306,6 @@ CI will automatically run:
 | `appl/lib/` | Limbo | Libraries (styx, styxservers, JSON, TLS, etc.) |
 | `module/` | Limbo | Interface definitions (like header files) |
 | `formal-verification/` | TLA+/SPIN/CBMC | Security proofs |
-| `tools/godis/` | Go | Go-to-Dis compiler |
 
 ### The Limbo Language
 
@@ -288,7 +319,9 @@ it up quickly:
 - `alt` statement for selecting across multiple channels
 
 The best way to learn is to read `appl/cmd/` for simple utilities and
-`module/sys.m` for the system call interface.
+`module/sys.m` for the system call interface. If you come from Go, start
+with [docs/LIMBO-FOR-GO-PROGRAMMERS.md](docs/LIMBO-FOR-GO-PROGRAMMERS.md);
+the original language paper is in-tree at `doc/limbo/limbo.ms`.
 
 ### The Inferno Shell
 
@@ -298,11 +331,14 @@ InferNode's shell (`sh`) is rc-style, **not** POSIX:
 - `for` loops: `for i in $list { commands }`
 - Different quoting rules than bash/zsh
 
-This matters when writing scripts that run inside the emulator.
+This matters when writing scripts that run inside the emulator. The
+full dialect reference — the POSIX→Inferno translation table, the
+runtime gotchas that have shipped as real bugs, and the script
+conventions — is [docs/INFERNO-SHELL.md](docs/INFERNO-SHELL.md).
 
 ## Community
 
-- **Issues**: [GitHub Issues](https://github.com/NERVsystems/infernode/issues)
+- **Issues**: [GitHub Issues](https://github.com/infernode-os/infernode/issues)
   for bugs, feature requests, and questions
 - **Security**: Report vulnerabilities privately via our
   [Security Policy](SECURITY.md) — do **not** open public issues

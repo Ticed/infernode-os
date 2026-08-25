@@ -19,6 +19,7 @@ DIRS=\
 TARG=\
 	2fa.dis\
 	auditfs.dis\
+	auditget.dis\
 	auditverify.dis\
 	9660srv.dis\
 	9cpu.dis\
@@ -47,6 +48,7 @@ TARG=\
 	cleanname.dis\
 	cmp.dis\
 	comm.dis\
+	countfs.dis\
 	cp.dis\
 	cprof.dis\
 	cpu.dis\
@@ -127,6 +129,7 @@ TARG=\
 	netstat.dis\
 	newer.dis\
 	ns.dis\
+	newuser.dis\
 	nsaudit.dis\
 	nsbuild.dis\
 	os.dis\
@@ -155,6 +158,7 @@ TARG=\
 	seq.dis\
 	sha1sum.dis\
 	sleep.dis\
+	snapd.dis\
 	sort.dis\
 	stack.dis\
 	stackv.dis\
@@ -186,6 +190,7 @@ TARG=\
 	vacfs.dis\
 	vacget.dis\
 	vacput.dis\
+	ventisrv.dis\
 	vid9p.dis\
 	voicemode.dis\
 	wav2iaf.dis\

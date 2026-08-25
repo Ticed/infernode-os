@@ -60,7 +60,7 @@ and factotum. Then `-c` runs the quoted command string:
 |------|---------|---------|
 | 1 | `wm/logon` | Login screen. Creates secstore account on first run, unlocks and loads keys on subsequent runs. Blocks until the user enters their password. |
 | 2 | `llmsrv &` | LLM 9P file server. Mounts at `/mnt/llm`. Reads config from `lib/ndb/llm` (via profile). The `&` backgrounds it. |
-| 3 | `wallet9p &` | Cryptocurrency wallet 9P server. Experimental. |
+| 3 | `wallet9p &` | Cryptocurrency wallet 9P server. Mounts at `/n/wallet`; enforces budget and approval policy on all payments. |
 | 4 | `luciuisrv` | UI 9P server. Creates the `/mnt/ui` namespace that lucifer, lucipres, luciconv, and lucibridge all communicate through. This is the hub. |
 | 5 | `echo activity create Main > /mnt/ui/ctl` | Creates the default "Main" activity (task/conversation). |
 | 6 | `tools9p -v -m /tool -b ... -p ...` | Veltro tool server. `-b` lists built-in tool modules. `-p` lists tools available to the agent as "passive" (invocable). Mounts at `/tool`. |
@@ -122,9 +122,13 @@ subdirectories over the corresponding paths in the Inferno namespace.
 
 ```
 ~/.infernode/
-  usr/inferno/secstore/     # Encrypted key storage (PAK + factotum files)
-  usr/inferno/tmp/           # Persistent temp files
-  lib/ndb/                   # LLM config (lib/ndb/llm)
+  usr/                       # ALL of /usr — every user home, durable
+    inferno/                 #   default account, seeded from the shipped
+                             #   skeleton on first run (namespace, lib/*,
+                             #   charon/config; secstore/, tmp/, keyring/)
+    <name>/                  #   accounts created later (newuser(8))
+  lib/ndb/                   # LLM config (lib/ndb/llm — git-ignored;
+                             #   tracked template is lib/ndb/llm.example)
   lib/lucifer/theme/         # GUI theme (current)
   lib/veltro/                # Agent state (welcome_shown, tour_offered, meta.txt)
   lib/veltro-agents/         # Task agent prompts
@@ -132,15 +136,19 @@ subdirectories over the corresponding paths in the Inferno namespace.
   tmp/                       # Session temp files
 ```
 
+The audit chain, its venti content store, and snapshots all live under
+`/usr/inferno` and are therefore durable with no special-casing. See
+`docs/PERSISTENCE.md` for the design and its historical grounding.
+
 ### How It Works
 
-The profile (`lib/sh/profile`) uses `bind -bc` to overlay each
-`~/.infernode` subdirectory onto the corresponding Inferno path:
+The profile (`lib/sh/profile`) uses `bind -bc` to overlay `~/.infernode`
+directories onto the corresponding Inferno paths — `/usr` is bound whole:
 
 ```
-bind -bc ~/.infernode/usr/inferno/secstore  /usr/inferno/secstore
-bind -bc ~/.infernode/lib/ndb               /lib/ndb
-bind -bc ~/.infernode/lib/veltro            /lib/veltro
+bind -bc ~/.infernode/usr       /usr
+bind -bc ~/.infernode/lib/ndb   /lib/ndb
+bind -bc ~/.infernode/lib/veltro /lib/veltro
 ...
 ```
 

@@ -1,6 +1,17 @@
-# Infernode - Development Guide for Claude
+# InferNode - Development Guide for Claude
 
-This guide ensures Claude Code works correctly with the Infernode (Inferno® OS) codebase.
+This guide ensures Claude Code works correctly with the InferNode (Inferno® OS) codebase.
+
+## Design Orientation (read before designing anything new)
+
+The design philosophy — namespace-as-capability, file interfaces not APIs,
+text not JSON, mechanism not policy — is in
+[docs/DESIGN-PRINCIPLES.md](docs/DESIGN-PRINCIPLES.md), with wrong/right examples
+from this tree. New services start with a namespace sketch in an issue, not
+with code. Limbo is close to Go:
+[docs/LIMBO-FOR-GO-PROGRAMMERS.md](docs/LIMBO-FOR-GO-PROGRAMMERS.md).
+Task playbooks (compile loop, tests, headless GUI harness, authoring 9P
+servers, emulator C) are project skills under `.claude/skills/`.
 
 ## JIT Compiler Availability
 
@@ -43,9 +54,8 @@ The `dis/` directory (the Inferno runtime tree) **is tracked in git**. This is i
 However, **build artifacts in source directories are not tracked**:
 - `appl/**/*.dis` — intermediate build outputs (`.gitignore`d)
 - `tests/**/*.dis` — compiled tests (`.gitignore`d)
-- `dis/tests/*.dis` — test bytecode in the runtime tree (`.gitignore`d)
 
-This means: the runtime tree ships pre-built, but you never commit `.dis` files from `appl/` or `tests/`.
+This means: the runtime tree ships pre-built — including `dis/tests/`, whose test bytecode is tracked and updated via `mk install` like the rest of `dis/` — but you never commit `.dis` files from the `appl/` or `tests/` source directories.
 
 **The stale bytecode problem:** When a `.m` interface file changes (e.g. `module/widget.m`), every `.dis` compiled against the old interface becomes stale. The Dis VM rejects stale modules at load time with `link typecheck` errors — apps show blank tabs, commands fail to load, and everything looks broken even though the source is fine. This is the most common class of post-pull breakage.
 
@@ -128,9 +138,11 @@ The Inferno® shell is rc-style, not POSIX sh:
 - `for` loops: `for i in $list { commands }` not `for i in $list; do ... done`
 - Different quoting rules
 
+Full dialect reference: [docs/INFERNO-SHELL.md](docs/INFERNO-SHELL.md).
+
 ## Testing System
 
-Infernode uses a custom testing framework (`module/testing.m`) for Limbo unit tests.
+InferNode uses a custom testing framework (`module/testing.m`) for Limbo unit tests.
 
 ### Running Tests
 
@@ -347,6 +359,13 @@ timeoutTask(ch: chan of int, ms: int)
 | `xenith_concurrency_test.b` | Xenith concurrent operations |
 | `xenith_exit_test.b` | Xenith exit handling |
 | `sdl3_test.b` | SDL3 GUI backend |
+| `secp256k1_test.b` | secp256k1 curve, ECDSA, recovery |
+| `ethcrypto_test.b` | RLP, EIP-155 spec vector, address derivation, strict amounts |
+| `ethrpc_conv_test.b` | Arbitrary-precision hex/decimal conversions |
+| `x402_test.b` | x402 parsing, EIP-712 type hashes, authdigest |
+| `publicnet_host_test.b` | Shared URL-host parsing + SSRF blocklist |
+| `wallet_policy_test.b` | wallet9p budgets, approval queue, per-fid isolation |
+| `wallet_capability_test.b` | Wallet agent-namespace narrowing |
 
 Shell tests also exist in `tests/inferno/` (run inside Inferno) and `tests/host/` (run on the host OS).
 

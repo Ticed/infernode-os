@@ -79,8 +79,8 @@ services/httpd/httpd.log
 /*.sbl
 # Debug symbols in runtime dis tree
 /dis/**/*.sbl
-# Compiled test bytecode in dis tree
-/dis/tests/*.dis
+# dis/tests/*.dis is TRACKED (runtime tree ships prebuilt, tests included —
+# maintainer ruling 2026-08-21); only this stray lib-tree test artifact is not.
 /dis/lib/testing_test.dis
 # CI/local test output
 test-output.txt
@@ -90,6 +90,7 @@ test-output.txt
 
 # Claude Code local settings
 .claude/settings.local.json
+.claude/worktrees/
 
 # Veltro API keys (secrets)
 lib/veltro/keys/
@@ -317,3 +318,6 @@ tests/inferno/claude-gate-e2e.sh
 # Python bytecode from the host-side test helpers
 __pycache__/
 *.pyc
+
+# codex-gate runtime scratch (venv is bootstrapped by serve-codex-gate.sh)
+tools/codex-gate/.venv/
