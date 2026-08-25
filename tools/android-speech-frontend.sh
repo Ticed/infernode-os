@@ -84,7 +84,7 @@ ip|usb) ;;
 *) echo "android-speech-frontend: invalid transport: $transport" >&2; exit 2 ;;
 esac
 if [ "$transport" = usb ]; then
-	# USB presents the export at 127.0.0.1 via adb forward (INF-20).
+	# USB presents the export at 127.0.0.1 via adb forward.
 	phone_ip=127.0.0.1
 fi
 

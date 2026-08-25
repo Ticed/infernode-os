@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Bar-strip ink of the voice meters, excluding the two centre peak bars.
 
-INF-44 verification: the defect was 16 RMS-driven bars stuck at 1px while
+Verification: the defect was 16 RMS-driven bars stuck at 1px while
 only the two peak bars (i == nbar/2, nbar/2-1) moved. Whole-pane pixel
 counts cannot see that; this measures the meter bar strip itself and drops
 the centre pair.

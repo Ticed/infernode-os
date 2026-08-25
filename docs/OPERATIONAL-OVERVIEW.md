@@ -44,7 +44,7 @@ When an agent session starts, `nsconstruct` restricts the namespace:
 - `/dis` reduced to `lib/`, `veltro/` (+ `sh.dis` if exec is active)
 - `/dis/veltro/tools/` reduced to only the registered tool `.dis` files
 - `/dev` reduced to `cons`, `null`, `time`
-- `/n` reduced to capability-gated foreign imports; `/mnt/speech` is derived only for the fixed `say`/`hear` tools (migrated from `/n/speech`, INF-53) and `/mnt/git` only for the fixed `git` tool (migrated from `/n/git`, INFR-401)
+- `/n` reduced to capability-gated foreign imports; `/mnt/speech` is derived only for the fixed `say`/`hear` tools (migrated from `/n/speech`) and `/mnt/git` only for the fixed `git` tool (migrated from `/n/git`, INFR-401)
 - `/tmp` writable only at `/tmp/veltro/scratch/`
 
 The agent cannot see files it wasn't granted. Subagents can only narrow further.

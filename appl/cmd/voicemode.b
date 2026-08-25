@@ -307,7 +307,7 @@ listenoff()
 	writefile(speech + "/ctl", "listen off");
 }
 
-# Opt-in spoken-cancel window (INF-43): while a turn's reply is playing
+# Opt-in spoken-cancel window: while a turn's reply is playing
 # (SPEAKING state), `cancel on` makes the provider keep the STT feeding
 # during otherwise-suppressed playback so a spoken "cancel"/"stop" can cut
 # the in-flight reply. Default off; must be balanced by canceloff() when
@@ -505,7 +505,7 @@ gracecancel(text: string): int
 # narrower than gracecancel: the STT is transcribing the assistant's OWN
 # voice, and a reply segment that happened to transcribe to exactly "no"
 # or "wrong" would self-cancel the reply. Only words a user says to
-# interrupt are accepted. Mirrors speechshim9p's cancelword() (INF-43).
+# interrupt are accepted. Mirrors speechshim9p's cancelword().
 playcancel(text: string): int
 {
 	n := normalize(text);
@@ -988,7 +988,7 @@ voiceloop()
 			if(kind == LISTEN_ERROR) {
 				err := strip(rec.text);
 				logerr("listen: " + err);
-				# INF-34: helper start and "listen busy" are transient.
+				# Helper start and "listen busy" are transient.
 				# mic/listen off means the session ended.
 				if(!hasprefix(err, "error: mic off") &&
 				   !hasprefix(err, "error: listen off") &&

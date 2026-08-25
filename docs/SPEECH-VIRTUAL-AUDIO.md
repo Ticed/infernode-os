@@ -4,8 +4,8 @@ Every audio and voice test used to need hardware in the room: a working
 microphone, a quiet enough space, a person willing to talk to it, and a
 capture gain that happened to suit whatever the test assumed. That makes
 audio the least repeatable part of the tree. A failure could mean a
-regression, or a fan, or an input volume someone changed last week
-(INF-25 was the second of those, and it cost a day to prove it).
+regression, or a fan, or an input volume someone changed last week. We have
+lost a day to the third of those.
 
 A **loopback audio device** removes all of it. It is a software audio
 driver that presents one output and one input wired together: whatever

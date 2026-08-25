@@ -32,7 +32,7 @@ them — no loopback driver, no speech helpers, no LLM, no display.
 | `tests/host/virtual_mic_speech_test.sh` | A committed speech fixture played into the device is transcribed by the live stack. The capture path itself: `elevenlabs_speech_e2e_test.py` feeds the same fixtures over stdin, which proves the model and the gate but never touches a device. |
 | `tests/host/virtual_voice_turn_test.sh` | A whole turn on one device — wake word, utterance, spoken reply — plus half-duplex suppression: the reply is on the capture side the instant it plays, so if suppression lapsed the stack would transcribe its own voice and answer itself. |
 | `tests/host/gui_voice_turn_test.sh` | The same turn through the desktop, asserted on the pixels: the Voice tile lighting up, partials in the unsent turn, the "Sending in Ns" countdown counting, the answer drawn — and the spoken answer recorded off the device and required to match the screen **word for word**. |
-| `tests/host/gui_voice_answer_test.sh` | That the GUI test reads the reply and not the tile drawn under it, over a captured turn's segments. The only voice test that needs no rig, so the extraction the GUI test depends on stays provable on a machine that cannot run the desktop (INF-59). |
+| `tests/host/gui_voice_answer_test.sh` | That the GUI test reads the reply and not the tile drawn under it, over a captured turn's segments. The only voice test that needs no rig, so the extraction the GUI test depends on stays provable on a machine that cannot run the desktop. |
 
 ## The tools
 
@@ -51,9 +51,9 @@ Milestone screenshots from the GUI test land in `.omx/tmp/gui-voice/`.
 When it fails, look there first: it captured what the screen actually
 showed at the step that did not happen.
 
-The INF-32 traces in `tools/mac/traces/` are a pair: `inf32-before.tsv`
-was recaptured from `feat/voice-mode-v2` luciconv, `inf32-after.tsv`
-from the fix. `--check` (accent > 1500, blue > 600, dwell 0.30s) over
+The UI-flash traces in `tools/mac/traces/` are a pair:
+`uiflash-before.tsv` was recaptured from `feat/voice-mode-v2` luciconv,
+`uiflash-after.tsv` from the fix. `--check` (accent > 1500, blue > 600, dwell 0.30s) over
 that pair:
 
 | Signature | before | after | Basis |
@@ -150,16 +150,15 @@ capture does not.
 ## Known defects
 
 Open at the time of writing, listed so nobody re-discovers them. All
-were found by driving the desktop. Check the current state in Linear before
-acting on a row — this table is a pointer, not the source of truth, and
-INF-27 was removed from it once fixed.
+were found by driving the desktop. Check whether a row still reproduces
+before acting on it — this table is a pointer, not the source of truth.
 
-| Issue | Symptom |
-| --- | --- |
-| INF-42 | On a fast local answer the spoken reply and the screen disagree — a 0.2s "yeah" blip. |
-| INF-44 | Both meters draw a flat line: the voice meter bars collapse to 1px. |
-| INF-29 | The speaking indicator covers a fraction of the speech (2.3s of a 10.2s answer), flaps through five states in one turn, and its progress bar draws as a broken dashed line. |
-| INF-31 | No progressive view of what is being spoken, mirroring the user's partials. Wish, not a defect. |
+| Symptom |
+| --- |
+| On a fast local answer the spoken reply and the screen disagree — a 0.2s "yeah" blip. |
+| Both meters draw a flat line: the voice meter bars collapse to 1px. |
+| The speaking indicator covers a fraction of the speech (2.3s of a 10.2s answer), flaps through five states in one turn, and its progress bar draws as a broken dashed line. |
+| No progressive view of what is being spoken, mirroring the user's partials. Wish, not a defect. |
 
 ## Prerequisites
 

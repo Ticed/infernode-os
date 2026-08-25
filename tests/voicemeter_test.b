@@ -1,7 +1,7 @@
 implement VoicemeterTest;
 
 #
-# Contract for the voice-meter height map in luciconv.b (INF-44).
+# Contract for the voice-meter height map in luciconv.b.
 # The function here must stay identical to voicemeterlevel() there.
 #
 # Calibrated to /mnt/speech/level as delivered on the test rig

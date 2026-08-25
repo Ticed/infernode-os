@@ -1155,7 +1155,7 @@ gitGenericHiddenWorker(result: chan of string)
 }
 
 # The speech service is a fixed tool-derived /mnt application mount (migrated
-# from /n/speech per docs/NAMESPACE-LAYOUT.md, INF-53). A say/hear-capable
+# from /n/speech per docs/NAMESPACE-LAYOUT.md). A say/hear-capable
 # tool must see /mnt/speech without a raw path grant, while generic tools
 # must not — and a raw caps.paths grant must be rejected outright.
 testRestrictNsSpeechToolDerived(t: ref T)

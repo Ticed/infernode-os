@@ -895,7 +895,7 @@ drawconversation(zone: Rect)
 	hasdraft := (livedraft != nil && livedraft != "") ||
 		(livestatus != nil && livestatus != "");
 	# A live follow-up is depth>0. delivered/cancelled leftovers stay in
-	# voicequeue as status history (INF-28) and must not be drawn again.
+	# voicequeue as status history and must not be drawn again.
 	hasqueue := queuedepth > 0 ||
 		(queuestate == "disconnected" && queuebuf != nil && queuebuf != "");
 	lastasst := -1;
@@ -1412,7 +1412,7 @@ drawconversation(zone: Rect)
 
 # Provider RMS/peak is linear 0..1000 in shifted-sample energy.
 # The feed's speech energy sits far below full scale, so a linear
-# height map draws every bar at 1px. A dB map from 1..25 (INF-44)
+# height map draws every bar at 1px. A dB map from 1..25
 # fits the energy that actually arrives at the meter and leaves
 # the top for louder turns. Sub-floor energy stays 1px.
 MeterFloor: con 1;

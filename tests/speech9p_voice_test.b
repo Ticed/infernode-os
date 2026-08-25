@@ -393,7 +393,7 @@ testHelperKeyValuesValidated(t: ref T)
 			"accepted: " + legit[j]);
 }
 
-# INF-56. These keys choose what code runs: the engine, the host helper
+# These keys choose what code runs: the engine, the host helper
 # commands forwarded to the provider, the .dis module, and the provider tree
 # the say/listen files are proxied from. Writing one is equivalent to running a
 # host command, so they are operator configuration, closed by `seal on` once

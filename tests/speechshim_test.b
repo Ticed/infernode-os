@@ -793,7 +793,7 @@ testHalfDuplexSwallowsWakeDuringSay(t: ref T)
 
 # Closing /dev/audio as soon as the helper exits drops the unplayed tail
 # (SDL drains at most 8s; CoreAudio stops immediately). say completion
-# must wait for the queued duration. INF-45.
+# must wait for the queued duration.
 testSayWaitsForDrain(t: ref T)
 {
 	fd := sys->create(OUTPCM, Sys->OWRITE, 8r644);
@@ -839,7 +839,7 @@ testSayWaitsForDrain(t: ref T)
 }
 
 
-# INF-43. During half-duplex playback the microphone carries the assistant's
+# During half-duplex playback the microphone carries the assistant's
 # own reply. The STT transcribes it, so every record arriving mid-playback is
 # suspect: the reply must never surface as a turn, but a spoken "cancel" must
 # get through or the user cannot interrupt.
@@ -852,7 +852,7 @@ testSayWaitsForDrain(t: ref T)
 # The pump half of the fix - feeding the STT helper through the suppressed
 # window in `micmode device` - has no hermetic seam here: a fake helper's
 # stdin reports EOF rather than blocking when the pump withholds audio, so
-# "was it fed" cannot be told apart from "helper ran early". See INF-50.
+# "was it fed" cannot be told apart from "helper ran early".
 testSpokenCancelDuringPlayback(t: ref T)
 {
 	fd := sys->create(PCMFILE, Sys->OWRITE, 8r644);
@@ -928,7 +928,7 @@ testSpokenCancelDuringPlayback(t: ref T)
 	writefile(MNT + "/ctl", "audiodev /dev/audio");
 }
 
-# INF-56. kokorobin/whisperstreambin/wakebin name the host command a helper
+# kokorobin/whisperstreambin/wakebin name the host command a helper
 # runs — the tests above configure them as whole `sh -c` command lines, which
 # is what they are for. So a value cannot be sanitised into safety: writing one
 # is running a host command. They are operator configuration instead, closed by

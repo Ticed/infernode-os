@@ -2,7 +2,7 @@
 #
 # tests/host/android_speech_preflight_test.sh
 #
-# Hermetic coverage of tools/android-speech-preflight.sh (INF-17): SDK/NDK
+# Hermetic coverage of tools/android-speech-preflight.sh: SDK/NDK
 # discovery on a standard Android Studio layout, combined failure reporting,
 # helper/model/playback/network misses, and local.properties writing.
 

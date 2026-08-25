@@ -28,7 +28,7 @@ wake|listen)
 	consumed=$state/$mode.consumed
 	rm -f "$consumed"
 	# Advertise the waiter before blocking so the test observes arm,
-	# then consume, instead of rewriting the same inode (INF-34).
+	# then consume, instead of rewriting the same inode.
 	echo $$ > "$armed"
 	if [ -f "$state/arm.delay" ]; then
 		delay=$(cat "$state/arm.delay")

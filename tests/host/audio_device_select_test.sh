@@ -6,7 +6,7 @@
 # The last part is the point. A device that opens and returns nothing but
 # zeroes — a virtual input whose application is not running, an OS-muted
 # device, a missing microphone authorization — is indistinguishable from a
-# working microphone in a quiet room at every other layer (INF-23).
+# working microphone in a quiet room at every other layer.
 set -euo pipefail
 
 ROOT=${ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}

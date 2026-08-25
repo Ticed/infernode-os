@@ -12,7 +12,7 @@ NC_LOG="$TMP/nc.log"
 export ADB_LOG NC_LOG
 
 # The launcher now preflights helpers, models, and playback with the SDK
-# checks (INF-17). Give it a complete fake prefix so this test stays hermetic.
+# checks. Give it a complete fake prefix so this test stays hermetic.
 SPEECH_HOME="$TMP/speech"
 mkdir -p "$SPEECH_HOME/bin" "$SPEECH_HOME/models/kokoro" "$SPEECH_HOME/models/parakeet"
 touch "$SPEECH_HOME/bin/kokoro-cli" "$SPEECH_HOME/bin/openwakeword-cli" \

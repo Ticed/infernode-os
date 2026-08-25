@@ -4,7 +4,7 @@
 #
 # A test that is tracked but not in TARG is never built by `mk install`,
 # never installed to dis/tests/, and never discovered by the runner.
-# INF-40 found one such file hiding three live bugs; INF-41 found fifteen
+# One such file was found hiding three live bugs, and a later sweep found fifteen
 # more. This guard is what stops the next one landing dark.
 #
 # Exit codes:
@@ -44,7 +44,7 @@ if [ -n "$orphans" ]; then
 	printf '%s\n' "$orphans" | sed 's/^/  /' >&2
 	echo "" >&2
 	echo "Add each as <name>.dis to the TARG list in tests/mkfile." >&2
-	echo "A test that is not in TARG is never built or run (INF-41)." >&2
+	echo "A test that is not in TARG is never built or run." >&2
 	exit 1
 fi
 

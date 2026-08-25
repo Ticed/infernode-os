@@ -79,8 +79,7 @@ module declaration keeps them apart. Pattern in
 > /dev/audioctl` reports success even when the device rejects the verb;
 only a failure to *open* the redirect surfaces. Never use `$status` after
 an `echo >` to prove a ctl write was accepted — read the value back, or
-the claim is unfalsifiable. This produced a wrong root cause once
-(INF-18).
+the claim is unfalsifiable. This produced a wrong root cause once.
 
 **`dd` inside the emulator reports short reads.** `0+N records in` means
 every read was short, so `bs*count` is **not** the byte count — write to
@@ -104,7 +103,7 @@ code were broken.** The `post-merge` hook does not reliably rebuild
 the bytecode: after the `/n/speech` to `/mnt/speech` migration,
 `voice_scripts_test` failed two assertions that check the scripts name
 `/mnt/speech/ctl` — which they do. The binary still expected `/n/speech/ctl`
-(INF-63). Five test binaries were stale on that merge, including the
+Five test binaries were stale on that merge, including the
 migration's own new `veltro_security_test`. Before believing any test
 failure on a freshly merged tree, compare timestamps:
 
@@ -125,7 +124,7 @@ wait begins — and a poll that reads before it sleeps matches it at once,
 so the test races past the process it meant to wait for. This made
 `remote_speech_topology_test/CaptureWatcherRecovery` alternate
 fail/pass/fail/pass indefinitely, each run's outcome fixed by the record
-the run before it left (INF-57). Remove the file the wait reads before
+the run before it left. Remove the file the wait reads before
 starting whatever writes it; cleaning up at the end does not help,
 because a killed run never reaches its teardown.
 
@@ -138,7 +137,7 @@ every configuration write that follows lands in the file, returns success,
 and never reaches the server. Nothing reports it. The service comes up on
 its defaults — `wake provider unavailable: /n/parakeet/wake` was how it
 presented — and the failure is self-perpetuating, because the lost write
-recreates the file that loses the next one (INF-61).
+recreates the file that loses the next one.
 
 Only a mount may create these paths, so remove one before starting the
 server rather than trusting that it exists. `lib/lucifer/boot.sh` writes
@@ -156,7 +155,7 @@ That is not only a test convenience: it is what those keys *are*.
 so writing one is equivalent to running a host command and no value
 validation can make it safe — an attempt to constrain them to paths
 turned 12 passing tests red. They are closed by `seal on` at the end of
-boot instead (INF-56, `docs/SPEECH-ARCHITECTURE.md` §10.8). Read this
+boot instead (`docs/SPEECH-ARCHITECTURE.md` §10.8). Read this
 entry before hardening anything on the speech ctl.
 
 **Do not run the full suite unless asked.** `./run-tests.sh` takes 30–60+

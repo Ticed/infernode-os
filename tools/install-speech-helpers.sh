@@ -375,7 +375,7 @@ if [ ! -s "$model" ]; then
 fi
 
 # Probe the installed whisper-stream and pass only flags it advertises
-# (INF-38). Unknown arguments print usage and exit 0, which the speech
+#. Unknown arguments print usage and exit 0, which the speech
 # shim reports as a crash and then restarts.
 whisper_help=$("$bin" --help 2>&1 || true)
 whisper_has() {

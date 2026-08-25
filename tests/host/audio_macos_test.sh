@@ -28,10 +28,10 @@ run_inferno() {
 
 # An open that fails while the driver can still see devices is a real
 # regression, not an unusable host: the audio subsystem came up with an
-# empty device list (INF-22). The device-less case stays a skip.
+# empty device list. The device-less case stays a skip.
 assert_devices_or_skip() {
   if grep -q "devices present: yes" "$1"; then
-    echo "FAIL: audio open failed while the driver reports devices (INF-22)"
+    echo "FAIL: audio open failed while the driver reports devices"
     return 1
   fi
   return 0

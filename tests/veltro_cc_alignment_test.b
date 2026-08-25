@@ -426,7 +426,7 @@ testSystemTxtTodoMandate(t: ref T)
 		t.skip("system.txt not readable");
 		return;
 	}
-	# Prompt rework (5ce3fea0, b781e9f5, later INF-41) dropped:
+	# Prompt rework (5ce3fea0, b781e9f5) dropped:
 	#   - "use plan or todo BEFORE acting" (all-caps)
 	#   - a 'non-trivial tasks' threshold in system.txt
 	#   - CC-style todo encouragement in system.txt

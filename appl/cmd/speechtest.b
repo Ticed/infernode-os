@@ -22,7 +22,7 @@ implement Speechtest;
 # mounts a remote 9P export first. See docs/SPEECH-REMOTE-AUDIO.md.
 #
 # Configuration keys that name a host helper command are sealed once
-# lib/lucifer/boot.sh has applied them (INF-56), so -H, -C and -c reconfigure
+# lib/lucifer/boot.sh has applied them, so -H, -C and -c reconfigure
 # only a stack speechtest bootstrapped itself. Against an already-booted
 # system those writes are refused and each one says so; reboot with the
 # configuration you want instead.
@@ -354,7 +354,7 @@ helperctl(bindir: string)
 	if(len bindir > 4 && bindir[len bindir - 4:] == "/bin")
 		modeldir = bindir[:len bindir - 4] + "/models";
 	# Same as boot.sh: without this, /mnt/speech/say uses the host `say`
-	# command and the shim never sees the playback (INF-29).
+	# command and the shim never sees the playback.
 	ctlwrite("engine kokoro");
 	ctlwrite("kokorobin " + bindir + "/kokoro-cli");
 	ctlwrite("whisperstreambin " + bindir + "/whisper-stream-cli");
@@ -475,7 +475,7 @@ init(nil: ref Draw->Context, args: list of string)
 
 	# -H and -C compose: helpers first (engine kokoro + bins), then the
 	# ctl script (leveltrace, extra topology). -C used to replace -H,
-	# which left /mnt/speech/say on the host `say` command (INF-29).
+	# which left /mnt/speech/say on the host `say` command.
 	if(helperbin != "")
 		helperctl(helperbin);
 	if(ctlfile != "") {

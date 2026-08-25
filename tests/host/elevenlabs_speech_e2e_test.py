@@ -126,7 +126,7 @@ def word_error_rate(expected: str, heard: str) -> float:
 # The fixtures carry digital silence between utterances, which no microphone
 # ever produces. Replaying them a second time over a noise floor above the
 # adapter's quiet-room threshold is what proves turns still close when the
-# capture gain or the room puts every block above that level (INF-25).
+# capture gain or the room puts every block above that level.
 #
 # The noisy pass asserts less than the quiet pass on purpose. Added noise also
 # costs the decoder some end-of-utterance events, so the corpus does not

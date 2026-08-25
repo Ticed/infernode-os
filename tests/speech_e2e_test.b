@@ -197,7 +197,7 @@ clearfixtures()
 }
 
 # Create dest as a new directory entry so a waiter that armed against a
-# missing or empty path cannot hold the inode we publish (INF-34).
+# missing or empty path cannot hold the inode we publish.
 publishfixture(path, data: string): int
 {
 	tmp := path + ".tmp";
@@ -220,7 +220,7 @@ publishfixture(path, data: string): int
 
 # Arm is observed, then the fixture is published, then consume is
 # observed. Sending is the voicemode transition; its timeout is only a
-# safety net (INF-34).
+# safety net.
 scriptvoiceturn(t: ref T, listen, why: string)
 {
 	clearfixtures();
@@ -287,7 +287,7 @@ preparemounts()
 	# control file left in one by an earlier run is a plain file. waitpath
 	# is then satisfied before the server mounts, and every configuration
 	# write that follows lands in that file and returns success without
-	# reaching the server (INF-61). Only a mount may create these, so
+	# reaching the server. Only a mount may create these, so
 	# remove any that survived; the failure is otherwise self-perpetuating,
 	# because the lost write recreates the file that loses the next one.
 	sys->remove("/mnt/ui/ctl");

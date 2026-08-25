@@ -19,7 +19,7 @@
 # Output (when gradle runs):
 #   android-app/app/build/outputs/apk/debug/app-debug.apk
 #
-# Prereqs (checked together by tools/android-speech-preflight.sh, INF-17):
+# Prereqs (checked together by tools/android-speech-preflight.sh):
 #   * Android SDK — $ANDROID_HOME, $ANDROID_SDK_ROOT, then the Android
 #     Studio default ~/Library/Android/sdk, then ~/Android/Sdk
 #   * Android NDK r29 under that SDK (or $ANDROID_NDK_HOME)
@@ -45,7 +45,7 @@ set -e
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 
-# INF-17: resolve SDK/NDK/host tools before any cross-compile starts, and
+# Resolve SDK/NDK/host tools before any cross-compile starts, and
 # fail with every miss at once instead of one path after another.
 . "$ROOT/tools/android-speech-preflight.sh"
 
@@ -152,7 +152,7 @@ for abi in $ABIS; do
     # --- Step 2.x: libemu.so for this ABI --------------------------------
     echo "::: ${step}/4  [$abi] Link libemu.so (shared variant for JNI)"
     export ROOT
-    # ANDROID_NDK_HOME was resolved by the INF-17 preflight above so the
+    # ANDROID_NDK_HOME was resolved by the preflight above so the
     # inner NDK/SDL3 scripts see the Studio path, not the stale default.
     # Same host-mk autodetection as build-android-ndk-arm64.sh: Linux CI
     # has Linux/amd64/bin/mk; a Mac dev box has MacOSX/arm64/bin/mk.

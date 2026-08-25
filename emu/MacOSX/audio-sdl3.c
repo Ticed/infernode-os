@@ -68,7 +68,7 @@
 #include "audio-tbls.c"
 
 /*
- * Per-stream queue caps in milliseconds (INFR-194, INF-19). Shared
+ * Per-stream queue caps in milliseconds (INFR-194). Shared
  * by the SDL3 backend and the headless stub so audioctl can report
  * what was written even when there is no queue to cap.
  *

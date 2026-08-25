@@ -18,7 +18,7 @@ init(nil: ref Draw->Context, args: list of string)
 {
 	sys = load Sys Sys->PATH;
 	# Standalone / runner invocation has no driver arg. inferno/msg_inject.sh
-	# passes "msgreader" after setting up /mnt/ui (INF-41).
+	# passes "msgreader" after setting up /mnt/ui.
 	if(args == nil || tl args == nil || hd tl args == "-v")
 		raise "skip:msg inject helper is driven by inferno/msg_inject.sh";
 	fd := sys->open("/mnt/ui/activity/0/conversation/input", Sys->OREAD);

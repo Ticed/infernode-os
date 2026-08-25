@@ -46,7 +46,7 @@ build-android-apk.sh (follow-up driver)
 This keeps mk as the source of truth for the runtime build and Gradle
 strictly responsible for the Android shell.
 
-SDK/NDK discovery (INF-17) does not need exported `ANDROID_HOME` /
+SDK/NDK discovery does not need exported `ANDROID_HOME` /
 `ANDROID_NDK_HOME`. `settings.gradle.kts` and
 `tools/android-speech-preflight.sh` search `~/Library/Android/sdk` (the
 Android Studio default), then `~/Android/Sdk`, and write

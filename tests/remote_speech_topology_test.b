@@ -306,6 +306,15 @@ testCaptureWatcherRecovery(t: ref T)
 	fd := sys->create(CAPTURECTL, Sys->OWRITE, 8r666);
 	t.assert(fd != nil, "create deterministic speech ctl sink");
 	fd = nil;
+	# A previous run leaves "connected capture ..." in the shared state
+	# file.  waitprefix does a prefix match, so the first wait would return
+	# on that stale line before the freshly launched speech-capture has
+	# finished its own install mount; the test would then remove the
+	# exported audio mid-install, speech-capture would fail with a
+	# failed-audio state, and every later state wait would time out.
+	# Start from a clean state so the wait observes this run's own watcher.
+	sys->remove(CAPTURESTATE);
+	sys->remove(CAPTURESTATE + ".watcher");
 	err := sh->system(nil, "sh /lib/voice/speech-capture " + captureaddr + " " +
 		CAPTUREMNT + " 3 " + CAPTURESTATE + " " + CAPTURECTL + " &");
 	t.assert(err == nil, "speech-capture launcher connects to loopback audio");

@@ -684,7 +684,7 @@ Three entry points apply restriction:
 - **Root restriction**: `dirread()` returns entries from ALL union members. Individual bind-overs don't hide entries. Solution: `restrictdir("/", safe)` replaces the entire root union.
 - **9P self-mount deadlock**: `stat("/tool")` in tools9p serveloop deadlocks because `/tool` is the serveloop's own 9P mount. Solution: skip stat for `target == "/"`, create mount points unconditionally.
 - **Double-slash path**: When `target == "/"`, `target + "/" + item` produces `//dev`. Solution: special-case for root target.
-- **Speech preservation**: `/mnt/speech` must survive `/mnt` restriction for the `say` tool. Solution: auto-detect via stat and include in the fixed-function allowlist (INF-53).
+- **Speech preservation**: `/mnt/speech` must survive `/mnt` restriction for the `say` tool. Solution: auto-detect via stat and include in the fixed-function allowlist.
 
 **Subagent architecture**: Children use pre-loaded tool modules directly (not tools9p). The `spawn` tool calls `preloadmodules()` before `spawn runchild()`, loading Tool modules and their dependencies while `/dis` is unrestricted. The child's `subagent->runloop()` calls `mod->exec(args)` on module references already in memory.
 

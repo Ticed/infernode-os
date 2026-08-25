@@ -1,7 +1,7 @@
 implement SayqDrainTest;
 
 #
-# INF-45: the desktop speaks through /mnt/speech/sayq (lucibridge speaktext),
+# The desktop speaks through /mnt/speech/sayq (lucibridge speaktext),
 # not /mnt/speech/say. Both funnel into speech9p's dosay -> sayprovider ->
 # the shim's say, but speech9p.sayprovider opens the shim say TWICE — one
 # fid for the write (clunked immediately) and a fresh fid for the read.
@@ -112,7 +112,7 @@ startserver()
 #
 # With a fake helper that emits 2s of PCM instantly, a completion that
 # returns on helper EOF finishes in <100ms; one that waits for the device
-# to drain takes ~2s. INF-45 is the former.
+# to drain takes ~2s. The defect this covers is the former.
 testSayqCompletionWaitsForDrain(t: ref T)
 {
 	fd := sys->create(OUTPCM, Sys->OWRITE, 8r644);
@@ -132,7 +132,7 @@ testSayqCompletionWaitsForDrain(t: ref T)
 	t.assert(sayfd != nil, "sayq opens for the transaction");
 	if(sayfd == nil)
 		return;
-	b := array of byte "INF-45 sayq drain probe";
+	b := array of byte "sayq drain probe";
 	t0 := sys->millisec();
 	t.assert(sys->write(sayfd, b, len b) > 0, "sayq write accepted");
 	sys->seek(sayfd, big 0, Sys->SEEKSTART);

@@ -8,7 +8,7 @@ pane's segments say on the screen. This test feeds it the segments the
 end-to-end run actually read and asserts the reply does not absorb the
 next tile.
 
-See INF-59: answer_text walked forward from the agent's role marker,
+answer_text walked forward from the agent's role marker,
 collecting every segment until one was already seen or matched a pane
 status line. The next turn's tile is new and its head does not read as a
 status line, so "teodorandius - not sent" joined the reply. The fix stops

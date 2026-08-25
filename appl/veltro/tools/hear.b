@@ -68,7 +68,7 @@ doc(): string
 		"  hear                       Listen for 5 seconds\n" +
 		"  hear 10000                 Listen for 10 seconds\n\n" +
 		"Requires /mnt/speech (run speech9p first).\n" +
-		"The STT engine is chosen at boot and sealed after it (INF-56).";
+		"The STT engine is chosen at boot and sealed after it.";
 }
 
 schema(): string

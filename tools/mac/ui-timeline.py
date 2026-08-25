@@ -7,7 +7,7 @@
 
 Screenshot polling through OCR takes ~0.6s a frame, so it cannot see a
 tile that appears and disappears inside half a second — and several of
-the voice UI's defects are exactly that (INF-32). This records the screen
+the voice UI's defects are exactly that. This records the screen
 as video instead and measures each frame, which puts the resolution at
 the sampling rate rather than at the speed of the reader.
 
@@ -32,7 +32,7 @@ it, pass --window and drive the desktop yourself while it records.
 --keep         keep the recording and extracted frames
 
 The 0.30s dwell is just over the ~0.25s it takes to notice a tile
-without being able to read it. Flashes in the INF-32 recording were
+without being able to read it. Flashes in the recording were
 0.05–0.15s.
 
 The recording covers the whole display, including whatever else is on it,

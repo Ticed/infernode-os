@@ -88,7 +88,7 @@ testWebclientInit(t: ref T)
 testHttpGet(t: ref T)
 {
 	# sys->dial / webclient->request can block forever on a blackholed
-	# or filtered host; CI has no reliable network (INF-41).
+	# or filtered host; CI has no reliable network.
 	t.skip("outbound HTTP to example.com — CI has no reliable network");
 	return;
 
@@ -110,7 +110,7 @@ testHttpGet(t: ref T)
 testHttpsTls(t: ref T)
 {
 	# sys->dial to EXAMPLE_IP:443 does not time out; CI has no
-	# reliable network (INF-41).
+	# reliable network.
 	t.skip("outbound HTTPS/TLS to example.com — CI has no reliable network");
 	return;
 

@@ -15,7 +15,7 @@
 #     feeds the same fixtures to the listen helper over stdin, which
 #     proves the model and the gate but bypasses the device entirely.
 #   - a turn committing from live audio. A file ends; a device does not,
-#     so a final here can only have come from the silence gate (INF-25).
+#     so a final here can only have come from the silence gate.
 #   - repeatability. The room, the capture gain, and whoever is talking
 #     nearby stop being inputs to the result.
 #

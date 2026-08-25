@@ -77,7 +77,7 @@ if ! awk 'previous == "--step" && $0 == "0" { found=1 } { previous=$0 } END { ex
   exit 1
 fi
 
-# INF-38: only forward flags the native binary advertises. A sparse
+# Only forward flags the native binary advertises. A sparse
 # --help must not receive --step/--keep/--vad-thold; those unknown
 # args print usage and exit 0, which the shim treats as a crash.
 (

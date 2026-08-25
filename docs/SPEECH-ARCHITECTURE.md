@@ -59,7 +59,7 @@ flowchart LR
 | `say` tool                      | `appl/veltro/tools/say.b`           | Veltro tool that opens `/mnt/speech/say` and writes text. |
 | `hear` tool                     | `appl/veltro/tools/hear.b`          | Veltro tool that writes `start <ms>` to `/mnt/speech/hear` and reads the transcription back. |
 | `lucibridge` voice output       | `appl/cmd/lucibridge.b`             | GUI-side path: completion-aware FIFO TTS, sentence-boundary streaming, cancellation, and speech timing. Bypasses the agent tool. |
-| `nsconstruct` / `tools9p` glue  | `appl/veltro/nsconstruct.b`, `tools9p.b:992` | Grants `/mnt/speech` as a fixed-function mount derived from the `say`/`hear` tools; generic path grants cannot reach it (INF-53). |
+| `nsconstruct` / `tools9p` glue  | `appl/veltro/nsconstruct.b`, `tools9p.b:992` | Grants `/mnt/speech` as a fixed-function mount derived from the `say`/`hear` tools; generic path grants cannot reach it. |
 | `parakeet-stream` adapter       | `tools/parakeet_stream.cpp`         | Host-side realtime STT helper: stdin s16le PCM → cache-aware streaming Parakeet EOU model → `partial` / `final confidence=…` records. Built by the installer against an upstream clone of [parakeet.cpp](https://github.com/mudler/parakeet.cpp); the **default STT** when it can be built (whisper wrapper is the fallback). See §3.3. |
 
 ## 2. Filesystem
@@ -1097,7 +1097,7 @@ echo seal on > /mnt/speech/ctl
 speech9p forwards the seal to its provider, and boot seals the shim directly in
 case it is mounted alone. After the seal those keys are refused, and the refusal
 fails the write rather than only logging — an agent holding the `/mnt/speech`
-grant cannot point a helper at a command of its own (INF-56). The seal is
+grant cannot point a helper at a command of its own. The seal is
 one-way; there is no unseal.
 
 What stays writable is what the tools and voice mode actually need: `voice`

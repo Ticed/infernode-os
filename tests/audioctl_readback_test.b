@@ -1,7 +1,7 @@
 implement AudioctlReadbackTest;
 
 #
-# audioctl_readback_test — INF-19.
+# audioctl_readback_test
 #
 # audioctl accepted play_buffer_ms / rec_buffer_ms but ctlsummary only
 # printed capability ranges, so a write across a 9P mount could not be

@@ -37,7 +37,7 @@ int main() {
 
     // A room whose noise floor sits above the configured level must still be
     // able to close a turn. Before the floor was tracked, every block here
-    // read as speech and the silence timer never advanced (INF-25).
+    // read as speech and the silence timer never advanced.
     {
         const double floor_rms = 0.0115;  // measured: built-in mic at full gain
         const double speech = 0.045;

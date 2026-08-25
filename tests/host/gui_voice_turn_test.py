@@ -59,7 +59,7 @@ SHOTS = os.path.join(TMP, "gui-voice")
 # ..." is a request to use the say tool, so a turn built on it measures
 # how well the model follows the tool protocol as much as it measures the
 # voice path — and a model that answers it with an unparsed tool call
-# (INF-27) fails here for a reason that has nothing to do with audio.
+# fails here for a reason that has nothing to do with audio.
 # Ordinary conversation is also what voice mode is mostly used for.
 REQUEST = os.environ.get("GUI_VOICE_REQUEST", vs.REQUEST)
 
@@ -96,7 +96,7 @@ def normalize(text):
 
 # A turn whose visible answer is a tool call the agent failed to parse:
 # `{"name": "say", "parameters": {...}}` drawn as prose and read out loud
-# as "name say parameters text ...". See INF-27.
+# as "name say parameters text ...".
 TOOL_CALL_JSON = re.compile(r'\{\s*"?(name|tool|function)"?\s*[:=]', re.I)
 
 # Chrome the pane draws about itself rather than about the conversation:
@@ -109,7 +109,7 @@ STATUS_LINE = re.compile(
 
 # The pane heads every tile with its speaker's name, so the reply is the
 # body under the agent's head, up to the next tile's head - whatever state
-# that turn is in (INF-59). The two speakers:
+# that turn is in. The two speakers:
 #   * the agent: "veltro" - the role the conversation service stamps on
 #     its turns, and the marker answer_text already searched for;
 #   * the human: /dev/user - which the emulator fills with the host user
@@ -269,18 +269,18 @@ def main():
             answer = answer_text(after, seen)
             vs.note("answer on screen: " + answer)
             # One spoken turn is one conversation entry. A leftover
-            # "Queued follow-up — not sent — delivered — 0/1" tile is INF-28.
+            # "Queued follow-up — not sent — delivered — 0/1" tile is a defect.
             if re.search(r"queued follow-up", after.left, re.I):
-                fail("the answered turn is also drawn as a queued follow-up "
-                     "(INF-28): " + after.left)
+                fail("the answered turn is also drawn as a queued follow-up: "
+                     + after.left)
 
 
             # An answer is something a person can be read. A raw tool call
             # is not, and the fact that it was faithfully spoken is not a
             # mitigation — it is the failure.
             if TOOL_CALL_JSON.search(answer) or answer.count('"') > 2:
-                fail("the answer is an unparsed tool call, not something to say aloud "
-                     "(INF-27): " + answer)
+                fail("the answer is an unparsed tool call, not something to say aloud: "
+                     + answer)
 
             # "The speaking has stopped" is the one thing with no state to
             # poll for: wait until the device has been quiet for long
