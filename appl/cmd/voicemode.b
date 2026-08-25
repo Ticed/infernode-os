@@ -66,6 +66,10 @@ startwake: chan of int;
 startlisten: chan of int;
 timerch: chan of int;
 listenseq := 0;
+# Set while a voice session owns the microphone. A read of listen or wake
+# re-arms the microphone (docs/SPEECH-ARCHITECTURE.md), so a start request
+# left queued when the session ended must not turn into one.
+voiceactive := 0;
 
 listentimeout := 10000;
 wakecooldown := 1500;
@@ -665,6 +669,8 @@ speechwatcher(file: string, startch: chan of int, ch: chan of string)
 {
 	for(;;) {
 		<-startch;
+		if(!voiceactive)
+			continue;
 		ch <-= readfile(speech + "/" + file);
 	}
 }
@@ -673,6 +679,8 @@ listenwatcher()
 {
 	for(;;) {
 		gen := <-startlisten;
+		if(!voiceactive)
+			continue;
 		listench <-= ref Listenrec(gen, readfile(speech + "/listen"));
 	}
 }
@@ -788,6 +796,7 @@ voiceloop()
 	cleardraft(actid);
 	ctxstatus(actid, "waiting");
 	chime("on");
+	voiceactive = 1;
 	request(startwake);
 	for(;;) {
 		alt {
@@ -798,6 +807,9 @@ voiceloop()
 				cleardraft(actid);
 				cancelspeech();
 				chime("off");
+				# Before micoff, so a queued start request cannot
+				# become a read that re-arms what micoff releases.
+				voiceactive = 0;
 				micoff();
 				ctxstatus(actid, "idle");
 				log("voice mode off");
