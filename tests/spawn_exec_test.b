@@ -169,6 +169,31 @@ testSpawnRejectsExecWithPaths(t: ref T)
 		"spawn rejects exec with extra paths");
 }
 
+# hear captures the room. Whatever a subagent returns flows into its parent's
+# context, and the parent is a model — SECURITY.md wants the mediator to be
+# trusted code outside the model's namespace, and wants cross-boundary output
+# parsed into an expected result type first. Subagent results are free text,
+# so hear is not delegable at all. It stays with a top-level agent, whose
+# consumer is the operator. Same call the wallet made about `sign`: when
+# narrowing cannot protect it, remove it rather than hide it.
+testSpawnRejectsHear(t: ref T)
+{
+	tool := load Tool "/dis/veltro/tools/spawn.dis";
+	if(tool == nil) {
+		t.fatal(sys->sprint("cannot load spawn tool: %r"));
+		return;
+	}
+	err := tool->init();
+	if(err != nil) {
+		t.fatal(sys->sprint("spawn init failed: %s", err));
+		return;
+	}
+	result := tool->exec("-- tools=hear,read :: listen to the room");
+	t.log(sys->sprint("spawn hear result: %s", result));
+	t.assert(contains(result, "hear cannot be delegated"),
+		"spawn refuses a subagent granted hear");
+}
+
 testSpawnRejectsPrivilegedPaths(t: ref T)
 {
 	tool := load Tool "/dis/veltro/tools/spawn.dis";
@@ -272,6 +297,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("LoadReadTool", testLoadReadTool);
 	run("SpawnExec", testSpawnExec);
 	run("SpawnRejectsExecWithPaths", testSpawnRejectsExecWithPaths);
+	run("SpawnRejectsHear", testSpawnRejectsHear);
 	run("SpawnRejectsPrivilegedPaths", testSpawnRejectsPrivilegedPaths);
 	run("SpawnJsonSingleAgentWithArrayGrants", testSpawnJsonSingleAgentWithArrayGrants);
 	run("SpawnJsonRejectsPrivilegedPaths", testSpawnJsonRejectsPrivilegedPaths);

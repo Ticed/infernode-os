@@ -401,6 +401,17 @@ exec(args: string): string
 		if(spec.paths != nil && (inlist("exec", childtools) || spec.shellcmds != nil)) {
 			return "error: exec/shell subagents cannot receive path grants; use read/list/find/grep for read-only inspection or write/edit with explicit staged write grants";
 		}
+		# hear captures the room, and a subagent's result flows into its
+		# parent's context — a model. SECURITY.md wants the mediator to be
+		# trusted code outside the model's namespace, and wants cross-boundary
+		# output parsed into an expected result type before trusted code uses
+		# it; subagent results are free text. So hear is not delegated at all.
+		# It stays with a top-level agent, whose consumer is the operator.
+		# The wallet made the same call about `sign`: when narrowing cannot
+		# protect it, remove it rather than hide it.
+		if(inlist("hear", childtools)) {
+			return "error: hear cannot be delegated to a subagent; its transcript would flow into the parent model's context";
+		}
 
 		# Provenance (INFR-355): when this install audits, every child gets
 		# the append-only audit sink bound into its namespace. Install
