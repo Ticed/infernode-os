@@ -75,6 +75,55 @@ bolted on as a special case.
 
 ---
 
+### Choosing the local input device: `#A/audiodev`
+
+The emulator opened whatever the host called the default input device. That
+default is not always a microphone: a virtual device installed by another
+application can hold it, and such a device produces no samples unless that
+application is running. Capture then opens, every sample is zero, and no layer
+reports a fault. A silent device and a silent room look identical, and finding
+out which it was meant leaving InferNode for a host tool.
+
+`#A/audiodev` makes both the choice and the verdict visible. Read it to
+enumerate the devices the host offers and see which is selected:
+
+```
+; bind -a '#A' /dev
+; cat /dev/audiodev
+in selected default
+in device 'Built-in Microphone'
+in device 'USB Audio Device'
+out selected default
+out device 'Built-in Output'
+capture idle
+```
+
+Write `in <name>` or `out <name>` to select one. Names are quoted in the
+readback because they contain spaces, and either form is accepted on write, so
+a line from the read can be written straight back. `in default` returns to
+following the host default. An unknown name is refused rather than ignored.
+Selection takes effect at once: a stream that is already open is reopened on
+the new device.
+
+```sh
+echo 'in Built-in Microphone' > /dev/audiodev
+```
+
+The last line is the diagnostic. `capture active` means the device produced at
+least one non-zero sample. `capture silent` means it delivered data and all of
+it was zero. `capture idle` means it delivered nothing. It describes the most
+recent capture rather than only a live one, so it can be read after a recording
+finishes. A capture that stays silent for two seconds also prints a one-time
+warning to stderr.
+
+`capture silent` has more than one cause — a virtual device with nothing behind
+it, or microphone authorization the host has not granted. The file does not say
+which, but it distinguishes all of them from a quiet room, which is what the
+caller could not do before.
+
+Backends without device enumeration report `unsupported`, and the emulator
+follows the host default as it did before.
+
 ## Current GUI / Veltro Limitations (Future Work)
 
 The final step — mounting the remote speech service — is **already supported** by the

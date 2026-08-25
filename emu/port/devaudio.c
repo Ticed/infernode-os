@@ -8,7 +8,25 @@ Dirtab audiotab[] =
 	".",		{Qdir, 0, QTDIR},	0,	0555,
 	"audio",	{Qaudio},	0,	0666,
 	"audioctl",	{Qaudioctl},	0,	0666,
+	"audiodev",	{Qaudiodev},	0,	0666,
 };
+
+static Audiodevops *devops;
+
+void
+audio_devops_register(Audiodevops *ops)
+{
+	devops = ops;
+}
+
+static void (*bufcaps)(int*, int*);
+
+void
+audio_bufcaps_register(void (*get)(int *play_ms, int *rec_ms))
+{
+	bufcaps = get;
+}
+
 
 static void
 audioinit(void)
@@ -45,6 +63,7 @@ audioopen(Chan *c, int omode)
 	switch(c->qid.path) {
 	case Qdir:
 	case Qaudioctl:
+	case Qaudiodev:
 		break;
 	case Qaudio:
 		audio_file_open(c, c->mode);
@@ -65,6 +84,7 @@ audioclose(Chan *c)
 	switch(c->qid.path) {
 	case Qdir:
 	case Qaudioctl:
+	case Qaudiodev:
 		break;
 	case Qaudio:
 		audio_file_close(c);
@@ -98,8 +118,75 @@ audioread(Chan *c, void *va, long count, vlong offset)
 		poperror();
 		free(buf);
 		return count;
+	case Qaudiodev:
+		buf = smalloc(READSTR);
+		if(waserror()){
+			free(buf);
+			nexterror();
+		}
+		if(devops == nil || devops->list == nil)
+			n = snprint(buf, READSTR, "unsupported\n");
+		else
+			n = devops->list(buf, buf + READSTR);
+		count = readstr(offset, va, n, buf);
+		poperror();
+		free(buf);
+		return count;
 	}
 	return 0;
+}
+
+/*
+ * "in <name>" or "out <name>" selects a host device; an empty name, or
+ * the literal "default", follows the system default again. The readback
+ * quotes names because they routinely contain spaces, so accept that
+ * form here too — a line from a read can be written straight back.
+ */
+static long
+audiodevwrite(void *va, long count)
+{
+	char *buf, *name, *p;
+	int isin;
+
+	if(devops == nil || devops->select == nil)
+		error("audiodev: this platform cannot select an audio device");
+	if(count <= 0 || count > 256)
+		error(Ebadarg);
+
+	buf = smalloc(count + 1);
+	if(waserror()){
+		free(buf);
+		nexterror();
+	}
+	memmove(buf, va, count);
+	buf[count] = 0;
+	if((p = strchr(buf, '\n')) != nil)
+		*p = 0;
+
+	if(strncmp(buf, "in ", 3) == 0){
+		isin = 1;
+		name = buf + 3;
+	}else if(strncmp(buf, "out ", 4) == 0){
+		isin = 0;
+		name = buf + 4;
+	}else
+		error("audiodev: write \"in <name>\" or \"out <name>\"");
+
+	while(*name == ' ' || *name == '\t')
+		name++;
+	if(*name == '\''){
+		name++;
+		if((p = strrchr(name, '\'')) != nil)
+			*p = 0;
+	}
+	if(strcmp(name, "default") == 0)
+		*name = 0;
+	if(devops->select(isin, name) < 0)
+		error("audiodev: no device of that name");
+
+	poperror();
+	free(buf);
+	return count;
 }
 
 static long
@@ -110,6 +197,8 @@ audiowrite(Chan *c, void *va, long count, vlong offset)
 		return audio_file_write(c, va, count, offset);
 	case Qaudioctl:
 		return audio_ctl_write(c, va, count, offset);
+	case Qaudiodev:
+		return audiodevwrite(va, count);
 	}
 	return 0;
 }
@@ -327,6 +416,19 @@ ctlsummary(char *buf, int bsize, Audio_t *adev)
 		p = seprint(p, e, "out %d 0 100\n", out->right);
 	p = seprint(p, e, "in buf %d %d %d\n", in->buf, Audio_Min_Val, Audio_Max_Val);
 	p = seprint(p, e, "out buf %d %d %d\n", out->buf, Audio_Min_Val, Audio_Max_Val);
+	p = seprint(p, e, "in rate %lud chans %lud bits %lud\n",
+		in->rate, in->chan, in->bits);
+	p = seprint(p, e, "out rate %lud chans %lud bits %lud\n",
+		out->rate, out->chan, out->bits);
+	if(bufcaps){
+		int play_ms, rec_ms;
+
+		bufcaps(&play_ms, &rec_ms);
+		p = seprint(p, e, "play_buffer_ms %d\n", play_ms);
+		p = seprint(p, e, "rec_buffer_ms %d\n", rec_ms);
+	}
+
+
 
 	return p-buf;
 }
