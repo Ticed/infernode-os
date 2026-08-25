@@ -141,10 +141,16 @@ echo provider /mnt/speechshim > /mnt/speech/ctl
 echo duplex half > /mnt/speech/ctl
 
 # Host speech-helper configuration. The installer writes its chosen stack
-# to $prefix/speech.ctl.sh (Kokoro TTS + Parakeet realtime STT when it
-# could be built, whisper fallback otherwise) and boot replays that file
-# verbatim — the installer is the single source of truth, so new helper
-# stacks need no boot.sh change. When $speechhelperbin is preset by
+# to $prefix/speech.ctl (Kokoro TTS + Parakeet realtime STT when it could
+# be built, whisper fallback otherwise) and boot forwards that file to the
+# ctl — the installer is the single source of truth, so new helper stacks
+# need no boot.sh change.
+#
+# The file is data, not a script. It was speech.ctl.sh, which boot ran with
+# `sh`: a host path that is user-writable, redirectable by an environment
+# variable, and executed before the seal with no signature check. One
+# `key value` record per line closes that. The worst a hostile file can now
+# do is set keys speech9p validates and the seal below closes. When $speechhelperbin is preset by
 # boot-speechtest.sh, prefer the adjacent installer configuration; fake
 # helper bins without that file retain the legacy hardcoded path.
 #
@@ -160,21 +166,28 @@ echo duplex half > /mnt/speech/ctl
 # shipped today (see tools/install-speech-helpers.sh).
 speechctlfile=()
 if {! ~ $#speechhelperbin 0} {
-	if {ftest -f /n/local^$speechhelperbin^/../speech.ctl.sh} {
-		speechctlfile=/n/local^$speechhelperbin^/../speech.ctl.sh
+	if {ftest -f /n/local^$speechhelperbin^/../speech.ctl} {
+		speechctlfile=/n/local^$speechhelperbin^/../speech.ctl
 	}
 }
 if {~ $#speechhelperbin 0} {
 	speechprefix=`{echo 'echo ${INFERNODE_SPEECH_HOME:-$HOME/.local/share/infernode-speech}' | os sh >[2] /dev/null}
-	if {ftest -f /n/local^$speechprefix^/speech.ctl.sh} {
-		speechctlfile=/n/local^$speechprefix^/speech.ctl.sh
+	if {ftest -f /n/local^$speechprefix^/speech.ctl} {
+		speechctlfile=/n/local^$speechprefix^/speech.ctl
 	}
 	if {ftest -d /n/local^$speechprefix^/bin} {
 		speechhelperbin=$speechprefix^/bin
 	}
 }
 if {! ~ $#speechctlfile 0} {
-	sh $speechctlfile
+	load std
+	getlines {
+		if {! ~ $line ''} {
+			if {! ~ $line '#'*} {
+				echo $line > /mnt/speech/ctl
+			}
+		}
+	} < $speechctlfile
 	echo 'boot: speech configured from' $speechctlfile
 }{
 	if {! ~ $#speechhelperbin 0} {

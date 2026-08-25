@@ -1244,6 +1244,70 @@ safename(s: string): int
 	return 1;
 }
 
+# A host path naming an executable or a model file. `..` is allowed as a
+# component: boot writes the model path relative to the helper bin directory.
+# Traversal is a separate concern; what this refuses is a value that stops
+# being a path and becomes a command.
+safepath(s: string): int
+{
+	if(s == nil || s == "")
+		return 0;
+	for(i := 0; i < len s; i++) {
+		c := s[i];
+		if((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		   (c >= '0' && c <= '9') || c == '_' || c == '-' ||
+		   c == '.' || c == '/')
+			continue;
+		return 0;
+	}
+	return 1;
+}
+
+# A spoken phrase. It reaches the helper inside a quoted argument, so a quote
+# or a substitution in it would end the quoting and start a command.
+safewords(s: string): int
+{
+	if(s == nil || s == "")
+		return 0;
+	word := 0;
+	for(i := 0; i < len s; i++) {
+		c := s[i];
+		if(c == ' ')
+			continue;
+		if((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		   (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.') {
+			word = 1;
+			continue;
+		}
+		return 0;
+	}
+	return word;
+}
+
+# A decimal threshold: digits and at most one point.
+safenum(s: string): int
+{
+	if(s == nil || s == "")
+		return 0;
+	digits := 0;
+	dots := 0;
+	for(i := 0; i < len s; i++) {
+		c := s[i];
+		if(c >= '0' && c <= '9') {
+			digits++;
+			continue;
+		}
+		if(c == '.') {
+			dots++;
+			if(dots > 1)
+				return 0;
+			continue;
+		}
+		return 0;
+	}
+	return digits > 0;
+}
+
 applyconfig(cmd: string): string
 {
 	(n, argv) := sys->tokenize(cmd, " \t\n");
@@ -1274,14 +1338,20 @@ applyconfig(cmd: string): string
 		wakeproc = nil;
 		wakebin = val;
 	"wakeword" =>
+		if(!safewords(val))
+			return "error: unsafe wakeword";
 		killproc(wakeproc);
 		wakeproc = nil;
 		wakeword = val;
 	"wakethreshold" =>
+		if(!safenum(val))
+			return "error: unsafe wakethreshold";
 		killproc(wakeproc);
 		wakeproc = nil;
 		wakethreshold = val;
 	"whispermodel" or "sttmodel" =>
+		if(!safepath(val))
+			return "error: unsafe " + key;
 		killproc(listenproc);
 		listenproc = nil;
 		whispermodel = val;

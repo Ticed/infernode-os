@@ -323,9 +323,12 @@ fixed, set `local` via `echo 'engine local' > /mnt/speech/ctl` after launch,
 or rely on the Linux auto-promotion in `initplatform`.
 
 **Boot-time selection is owned by the installer.** `tools/install-speech-helpers.sh`
-writes its chosen stack — one Inferno-sh ctl line per row — to
-`~/.local/share/infernode-speech/speech.ctl.sh`, and `lib/lucifer/boot.sh`
-replays that file verbatim when it exists. The file always includes
+writes its chosen stack — one `key value` record per line — to
+`~/.local/share/infernode-speech/speech.ctl`, and `lib/lucifer/boot.sh`
+forwards each record to the ctl when it exists. The file is data and is never
+executed: it was `speech.ctl.sh`, run with `sh` from a user-writable host path
+before the seal, which made anything that could write that directory a chooser
+of host commands. The file always includes
 `engine kokoro`, so an installed system speaks with Kokoro rather than the
 `engine cmd` default (the robotic host `say`). Without the file, boot falls
 back to hardcoded ctl lines for a legacy helper install (now also including
@@ -1015,15 +1018,15 @@ audio device entirely.
 
 `engine` is sealed once boot has configured speech (§10.8), so this is boot
 configuration, not a runtime switch: put these lines in the installer's
-`speech.ctl.sh`, which `lib/lucifer/boot.sh` replays before sealing. The same
+`speech.ctl`, which `lib/lucifer/boot.sh` forwards to the ctl before sealing. The same
 sequence works as-is against a stack `speechtest` bootstrapped itself, which is
 never sealed.
 
 ```sh
-# in speech.ctl.sh, with secstore unlocked or a key in env
-echo 'engine api' > /mnt/speech/ctl
-echo 'apiurl https://api.openai.com/v1' > /mnt/speech/ctl
-echo 'apikey '$ANTHROPIC_API_KEY > /mnt/speech/ctl   # or factotum-derived
+# in speech.ctl — one record per line, no shell
+engine api
+apiurl https://api.openai.com/v1
+apikey <key>          # or factotum-derived
 echo 'voice nova' > /mnt/speech/ctl
 echo 'Hello from the cloud' > /mnt/speech/say
 ```

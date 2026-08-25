@@ -467,6 +467,30 @@ sealedkey(key: string): int
 	return 0;
 }
 
+# A ctl write may carry more than one record. The file reads back as one
+# `key value` line per setting, so it has to be writable in the same shape:
+# boot hands the installer's speech.ctl straight to the ctl instead of
+# executing it. Blank lines and # comments are skipped, and the first bad
+# record stops the run and is reported.
+applyconfiglines(data: string): string
+{
+	rec := "";
+	for(i := 0; i <= len data; i++) {
+		if(i < len data && data[i] != '\n') {
+			rec[len rec] = data[i];
+			continue;
+		}
+		trimmed := strip(rec);
+		rec = "";
+		if(trimmed == "" || trimmed[0] == '#')
+			continue;
+		err := applyconfig(trimmed);
+		if(hasprefix(err, "error:"))
+			return err;
+	}
+	return nil;
+}
+
 # Parse and apply a configuration command
 applyconfig(cmd: string): string
 {
@@ -549,6 +573,8 @@ applyconfig(cmd: string): string
 	"whisperbin" =>
 		return "error: whisperbin is startup-only";
 	"whispermodel" =>
+		if(!safepath(val))
+			return "error: unsafe whispermodel";
 		whispermodel = val;
 		forwardprovider(key, val);
 	"kokorobin" =>
@@ -577,9 +603,13 @@ applyconfig(cmd: string): string
 		wakebin = val;
 		forwardprovider(key, val);
 	"wakeword" =>
+		if(!safewords(val))
+			return "error: unsafe wakeword";
 		wakeword = val;
 		forwardprovider(key, val);
 	"wakethreshold" =>
+		if(!safenum(val))
+			return "error: unsafe wakethreshold";
 		wakethreshold = val;
 		forwardprovider(key, val);
 	"capturerate" =>
@@ -655,6 +685,70 @@ safename(s: string): int
 		return 0;
 	}
 	return 1;
+}
+
+# A host path naming an executable or a model file. `..` is allowed as a
+# component: boot writes the model path relative to the helper bin directory.
+# Traversal is a separate concern; what this refuses is a value that stops
+# being a path and becomes a command.
+safepath(s: string): int
+{
+	if(s == nil || s == "")
+		return 0;
+	for(i := 0; i < len s; i++) {
+		c := s[i];
+		if((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		   (c >= '0' && c <= '9') || c == '_' || c == '-' ||
+		   c == '.' || c == '/')
+			continue;
+		return 0;
+	}
+	return 1;
+}
+
+# A spoken phrase. It reaches the helper inside a quoted argument, so a quote
+# or a substitution in it would end the quoting and start a command.
+safewords(s: string): int
+{
+	if(s == nil || s == "")
+		return 0;
+	word := 0;
+	for(i := 0; i < len s; i++) {
+		c := s[i];
+		if(c == ' ')
+			continue;
+		if((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		   (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.') {
+			word = 1;
+			continue;
+		}
+		return 0;
+	}
+	return word;
+}
+
+# A decimal threshold: digits and at most one point.
+safenum(s: string): int
+{
+	if(s == nil || s == "")
+		return 0;
+	digits := 0;
+	dots := 0;
+	for(i := 0; i < len s; i++) {
+		c := s[i];
+		if(c >= '0' && c <= '9') {
+			digits++;
+			continue;
+		}
+		if(c == '.') {
+			dots++;
+			if(dots > 1)
+				return 0;
+			continue;
+		}
+		return 0;
+	}
+	return digits > 0;
 }
 
 # List voices for current engine
@@ -2306,7 +2400,7 @@ Serve:
 				# A refused write must fail for the writer, not just log:
 				# a caller that cannot see the refusal carries on believing
 				# the value took effect. Matches speechshim9p.
-				result := applyconfig(string m.data);
+				result := applyconfiglines(string m.data);
 				if(hasprefix(result, "error:")) {
 					sys->fprint(stderr, "speech9p: %s\n", result);
 					srv.reply(ref Rmsg.Error(m.tag, result));

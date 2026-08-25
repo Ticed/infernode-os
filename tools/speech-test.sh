@@ -77,13 +77,13 @@ configtmp=
 if [ "$usehelpers" = 1 ]; then
 	if [ -d "$HELPERS/bin" ]; then
 		helperbin="$HELPERS/bin"
-		if [ -f "$HELPERS/speech.ctl.sh" ]; then
+		if [ -f "$HELPERS/speech.ctl" ]; then
 			# The emulator's -r tree cannot see arbitrary host paths. Stage
-			# the installer-selected ctl script inside that tree instead of
+			# the installer-selected ctl file inside that tree instead of
 			# relying on a non-existent /n/local host-filesystem mount.
 			mkdir -p "$ROOT/tmp"
 			configtmp="$(mktemp "$ROOT/tmp/speech-test-ctl.XXXXXX")"
-			cp "$HELPERS/speech.ctl.sh" "$configtmp"
+			cp "$HELPERS/speech.ctl" "$configtmp"
 			configfile="/tmp/$(basename "$configtmp")"
 		fi
 	else

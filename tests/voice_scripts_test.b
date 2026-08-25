@@ -232,8 +232,8 @@ testSpeechPhoneShape(t: ref T)
 testSpeechTestUsesInstalledCtl(t: ref T)
 {
 	launcher := script_contents(t, "/tools/speech-test.sh");
-	t.assert(contains(launcher, "speech.ctl.sh"),
-		"headless speech test discovers the installer-selected ctl file");
+	t.assert(contains(launcher, "speech.ctl") && !contains(launcher, "speech.ctl.sh"),
+		"headless speech test discovers the installer-selected ctl data file");
 	t.assert(contains(launcher, "speech-test-ctl.XXXXXX") &&
 		contains(launcher, "configfile=\"/tmp/"),
 		"headless speech test stages host ctl inside the emulator root");
@@ -241,8 +241,16 @@ testSpeechTestUsesInstalledCtl(t: ref T)
 		"headless speech test passes the selected ctl file to speechtest");
 
 	boot := script_contents(t, "/lib/lucifer/boot.sh");
-	t.assert(contains(boot, "$speechhelperbin^/../speech.ctl.sh"),
+	t.assert(contains(boot, "$speechhelperbin^/../speech.ctl") &&
+		!contains(boot, "speech.ctl.sh}"),
 		"GUI speech test prefers the ctl file adjacent to its helper bin");
+	# The file is forwarded to the ctl, never executed. Boot ran it with `sh`
+	# from a user-writable host path before the seal; that is the hole this
+	# closes, and nothing should quietly put it back.
+	t.assert(!contains(boot, "sh $speechctlfile"),
+		"boot does not execute the host ctl file");
+	t.assert(contains(boot, "getlines") && contains(boot, "> /mnt/speech/ctl"),
+		"boot forwards each ctl record instead");
 }
 
 testVoiceDraftPresentation(t: ref T)

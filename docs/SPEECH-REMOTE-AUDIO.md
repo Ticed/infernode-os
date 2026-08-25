@@ -482,7 +482,7 @@ tools/speech-test.sh \
   -c 'capturedev /n/phone/audio' -c 'micmode device' -e -n 1
 ```
 
-The wrapper stages the installed `speech.ctl.sh` inside the emulator root, so
+The wrapper stages the installed `speech.ctl` inside the emulator root, so
 the helper configuration does not depend on an ambient `/n/local` host mount.
 
 `-w` additionally watches the provider's `wake` file and prints each detection

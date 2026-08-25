@@ -122,7 +122,7 @@ Phase 1 structure (1.0–1.6) is implemented. The branch now has:
   cache-aware `parakeet_realtime_eou_120m-v1` model, so end-of-utterance is
   detected by the model rather than by energy-VAD silence. The installer
   builds it when possible and writes the chosen stack to
-  `speech.ctl.sh` (applied by boot.sh); the whisper wrapper remains the
+  `speech.ctl` (applied by boot.sh); the whisper wrapper remains the
   fallback. Boot also selects `engine kokoro` so assistant speech uses
   Kokoro instead of the robotic host `say`.
 - One voice affordance: the compose-row button (formerly press-to-dictate

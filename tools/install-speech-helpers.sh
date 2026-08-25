@@ -683,32 +683,43 @@ install_parakeet() {
   log "ok: parakeet realtime STT installed"
 }
 
-# The boot-time speech configuration, one Inferno-sh command per line.
-# lib/lucifer/boot.sh runs this file verbatim when it exists, making the
+# The boot-time speech configuration: one `key value` record per line.
+# lib/lucifer/boot.sh forwards each line to /mnt/speech/ctl, making the
 # installer the single source of truth for which helper stack is active.
+#
+# This is data, never executed. It used to be speech.ctl.sh, a shell script
+# boot ran with `sh` from a user-writable host directory before the seal.
 write_speech_ctl() {
-  local ctl="$PREFIX/speech.ctl.sh"
+  local ctl="$PREFIX/speech.ctl"
   {
     echo "# Written by tools/install-speech-helpers.sh — applied by boot.sh."
     echo "# Regenerate by re-running the installer; hand-edits survive until then."
-    echo "echo 'engine kokoro' > /mnt/speech/ctl"
-    echo "echo 'kokorobin $BIN/kokoro-cli' > /mnt/speech/ctl"
-    echo "echo 'wakebin $BIN/openwakeword-cli' > /mnt/speech/ctl"
-    echo "echo 'voice af_bella' > /mnt/speech/ctl"
-    echo "echo 'wakeword hey jarvis' > /mnt/speech/ctl"
-    echo "echo 'wakethreshold 0.5' > /mnt/speech/ctl"
-    echo "echo 'duplex half' > /mnt/speech/ctl"
+    echo "# One 'key value' record per line. Not a script: boot forwards each"
+    echo "# line to /mnt/speech/ctl and never executes this file."
+    echo "engine kokoro"
+    echo "kokorobin $BIN/kokoro-cli"
+    echo "wakebin $BIN/openwakeword-cli"
+    echo "voice af_bella"
+    echo "wakeword hey jarvis"
+    echo "wakethreshold 0.5"
+    echo "duplex half"
     if [ "$PARAKEET_OK" = 1 ]; then
-      echo "echo 'whisperstreambin $BIN/parakeet-stream' > /mnt/speech/ctl"
-      echo "echo 'whispermodel $PARAKEET_MODEL_PATH' > /mnt/speech/ctl"
-      echo "echo 'micmode device' > /mnt/speech/ctl"
-      echo "echo 'capturerate 16000' > /mnt/speech/ctl"
+      echo "whisperstreambin $BIN/parakeet-stream"
+      echo "whispermodel $PARAKEET_MODEL_PATH"
+      echo "micmode device"
+      echo "capturerate 16000"
     else
-      echo "echo 'whisperstreambin $BIN/whisper-stream-cli' > /mnt/speech/ctl"
-      echo "echo 'whispermodel $WHISPER_MODEL' > /mnt/speech/ctl"
-      echo "echo 'micmode helper' > /mnt/speech/ctl"
+      echo "whisperstreambin $BIN/whisper-stream-cli"
+      echo "whispermodel $WHISPER_MODEL"
+      echo "micmode helper"
     fi
   } > "$ctl"
+  # A stale executable script from an older install would otherwise sit
+  # there being nothing, and looking like it still configures the stack.
+  if [ -f "$PREFIX/speech.ctl.sh" ]; then
+    rm -f "$PREFIX/speech.ctl.sh"
+    log "removed superseded: $PREFIX/speech.ctl.sh"
+  fi
   log "wrote: $ctl"
 }
 
@@ -717,10 +728,10 @@ print_ctl_block() {
 
 InferNode speech helper setup complete.
 
-Boot configuration written to $PREFIX/speech.ctl.sh —
+Boot configuration written to $PREFIX/speech.ctl —
 lib/lucifer/boot.sh applies it automatically on the next start. To apply it
-to a running system, paste its contents into an Inferno shell (or run:
-  sh /n/local$PREFIX/speech.ctl.sh ).
+to a running system, forward it to the ctl from an Inferno shell:
+  cat /n/local$PREFIX/speech.ctl > /mnt/speech/ctl
 
 Active stack:
   TTS   Kokoro (af_bella) via kokoro-onnx

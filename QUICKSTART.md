@@ -116,8 +116,9 @@ tools/install-speech-helpers.sh    # from the repo root, on the host
 ```
 
 then restart InferNode. The installer downloads/builds everything and writes
-its configuration to `~/.local/share/infernode-speech/speech.ctl.sh`, which
-`boot.sh` applies automatically — no manual ctl writes. The default stack is
+its configuration to `~/.local/share/infernode-speech/speech.ctl`, which
+`boot.sh` applies automatically — no manual ctl writes. The file is data, one
+`key value` record per line; boot forwards it to the ctl and never runs it. The default stack is
 the most lightweight high-quality option at each stage:
 
 | Stage | Default | Notes |

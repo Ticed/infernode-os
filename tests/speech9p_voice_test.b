@@ -332,6 +332,67 @@ testCancel(t: ref T)
 		"cancel state should be readable");
 }
 
+# The seal closes these keys once boot has configured them — but boot writes
+# them first, replaying a file it found on the host, so the values themselves
+# have to be safe. Each one is spliced into an `exec /bin/sh -c \'...\'` line
+# when the helper starts, which makes a value with a `;` in it a host command.
+# This runs before the seal, where the seal cannot help.
+# boot hands the installer's speech.ctl to the ctl as one write rather than
+# executing it, so a write carrying several records has to apply all of them.
+# Blank lines and # comments are skipped; the first bad record stops the run.
+testMultiRecordCtlWrite(t: ref T)
+{
+	block := "# written by the installer\n" +
+		"\n" +
+		"voice af_heart\n" +
+		"rate 22050\n";
+	t.assert(writefile(MNT + "/ctl", block) > 0, "multi-record write accepted");
+	ctl := readfile(MNT + "/ctl");
+	t.assert(hassubstr(ctl, "voice af_heart"), "first record applied");
+	t.assert(hassubstr(ctl, "rate 22050"), "second record applied");
+
+	bad := "voice af_bella\nwakethreshold $(echo 1)\n";
+	t.assert(writefile(MNT + "/ctl", bad) < 0, "a bad record fails the write");
+	t.assert(hassubstr(readfile(MNT + "/ctl"), "voice af_bella"),
+		"records before the bad one still applied");
+
+	writefile(MNT + "/ctl", "rate 16000");
+}
+
+testHelperKeyValuesValidated(t: ref T)
+{
+	# kokorobin, whisperstreambin and wakebin are excluded on purpose: those
+	# three hold a command line, arguments and all, and the suite configures
+	# fake helpers as `/bin/sh -c "..."`. They stay closed by the seal instead.
+	# These three are not commands — a model path, a phrase and a number — so
+	# they can be checked.
+	hostile := array[] of {
+		"whispermodel /tmp/m.bin; echo INJECTED",
+		"whispermodel /tmp/m.bin`echo INJECTED`",
+		"wakeword hey \"; echo INJECTED; \"",
+		"wakeword $(echo hey)",
+		"wakethreshold 0.5; echo INJECTED",
+		"wakethreshold $(echo 1)",
+	};
+	for(i := 0; i < len hostile; i++)
+		t.assert(writefile(MNT + "/ctl", hostile[i]) < 0,
+			"refused before the seal: " + hostile[i]);
+
+	t.assert(!hassubstr(readfile(MNT + "/ctl"), "INJECTED"),
+		"no part of a refused value reaches the config");
+
+	# What boot.sh itself writes has to keep working, including the ..
+	# component in the model path.
+	legit := array[] of {
+		"whispermodel /opt/speech/bin/../models/ggml-base.en.bin",
+		"wakeword hey jarvis",
+		"wakethreshold 0.5",
+	};
+	for(j := 0; j < len legit; j++)
+		t.assert(writefile(MNT + "/ctl", legit[j]) > 0,
+			"accepted: " + legit[j]);
+}
+
 # INF-56. These keys choose what code runs: the engine, the host helper
 # commands forwarded to the provider, the .dis module, and the provider tree
 # the say/listen files are proxied from. Writing one is equivalent to running a
@@ -405,6 +466,8 @@ init(nil: ref Draw->Context, args: list of string)
 	run("SayqCompletion", testSayqCompletion);
 	run("DisEngineModule", testDisEngineModule);
 	run("Cancel", testCancel);
+	run("MultiRecordCtlWrite", testMultiRecordCtlWrite);
+	run("HelperKeyValuesValidated", testHelperKeyValuesValidated);
 	run("SealedKeysRefused", testSealedKeysRefused);
 
 	teardown();

@@ -44,8 +44,6 @@ include "arg.m";
 include "string.m";
 	str: String;
 
-include "sh.m";
-
 Speechtest: module
 {
 	PATH: con "/dis/speechtest.dis";
@@ -314,6 +312,39 @@ ctlwrite(line: string)
 		log("ctl: " + line);
 }
 
+# Apply a ctl file: one `key value` record per line, forwarded to the ctl.
+# It is data, never executed. This used to be sh->run over the same file,
+# which turned a developer's config file into a host-command path — the same
+# hole lib/lucifer/boot.sh had.
+ctlfileapply(path: string)
+{
+	fd := sys->open(path, Sys->OREAD);
+	if(fd == nil)
+		fatal(sys->sprint("cannot open %s: %r", path));
+	data := "";
+	buf := array[8192] of byte;
+	for(;;) {
+		n := sys->read(fd, buf, len buf);
+		if(n < 0)
+			fatal(sys->sprint("cannot read %s: %r", path));
+		if(n == 0)
+			break;
+		data += string buf[:n];
+	}
+	rec := "";
+	for(i := 0; i <= len data; i++) {
+		if(i < len data && data[i] != '\n') {
+			rec[len rec] = data[i];
+			continue;
+		}
+		line := strip(rec);
+		rec = "";
+		if(line == "" || line[0] == '#')
+			continue;
+		ctlwrite(line);
+	}
+}
+
 # The standard host-helper configuration, mirroring the ctl block that
 # tools/install-speech-helpers.sh prints (listen + TTS only; wake is not
 # used here). bindir is a HOST path — helpers run through devcmd.
@@ -448,12 +479,7 @@ init(nil: ref Draw->Context, args: list of string)
 	if(helperbin != "")
 		helperctl(helperbin);
 	if(ctlfile != "") {
-		sh := load Sh Sh->PATH;
-		if(sh == nil)
-			fatal(sys->sprint("cannot load sh for %s: %r", ctlfile));
-		err := sh->run(nil, "sh" :: ctlfile :: nil);
-		if(err != nil)
-			fatal(sys->sprint("speech ctl file failed: %s: %s", ctlfile, err));
+		ctlfileapply(ctlfile);
 		log("ctl file: " + ctlfile);
 	}
 	for(; ctllines != nil; ctllines = tl ctllines)
