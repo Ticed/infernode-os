@@ -48,7 +48,7 @@ echo "GUI Backend: SDL3"
 echo ""
 
 # Stamp build version (matches CI workflow). Restore on any exit so a
-# failed mk cannot leave the tracked file dirty (INF-39). Match the
+# failed mk cannot leave the tracked file dirty. Match the
 # unstamped form only so a leftover stamp cannot accumulate.
 BUILD_DATE=$(date +%Y%m%d)
 SHORT_SHA=$(git -C "$ROOT" rev-parse --short=8 HEAD 2>/dev/null || echo "local")

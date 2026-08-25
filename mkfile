@@ -56,14 +56,14 @@ nukedist:V: nuke
 	rm -f $ROOT/$OBJDIR/lib/lib*.a
 	
 &-Posix:QV:
-	# INF-37: appl nuke deletes the tracked dis/ runtime tree.
+	# appl nuke deletes the tracked dis/ runtime tree.
 	if [ "$stem" = nuke ]
 	then
 		if git -C $ROOT ls-files --error-unmatch dis/emuinit.dis >/dev/null 2>&1
 		then
 			if [ -z "$NUKE_DIS" ]
 			then
-				echo 'refusing mk nuke: would delete tracked dis/ (INF-37)' >&2
+				echo 'refusing mk nuke: would delete tracked dis/' >&2
 				echo 'use:  mk emunuke            # emulator-only clean' >&2
 				echo '      NUKE_DIS=1 mk nuke    # really delete dis/' >&2
 				exit 1

@@ -172,7 +172,7 @@ run_internal_tests() {
     # code that is correct, and no link typecheck error explains why unless
     # a .m interface also changed. That reads as "the change is broken" and
     # invites editing correct code to match a stale test. A merge is the
-    # usual way a tree ends up like this (INF-63).
+    # usual way a tree ends up like this.
     _stale=""
     for _src in "$ROOT"/tests/*_test.b; do
         [ -f "$_src" ] || continue
