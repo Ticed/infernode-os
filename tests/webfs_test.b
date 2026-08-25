@@ -87,11 +87,6 @@ testWebclientInit(t: ref T)
 # Test 2: HTTP GET proves TCP + HTTP response parsing work
 testHttpGet(t: ref T)
 {
-	# sys->dial / webclient->request can block forever on a blackholed
-	# or filtered host; CI has no reliable network.
-	t.skip("outbound HTTP to example.com — CI has no reliable network");
-	return;
-
 	hdrs := Header("Host", "example.com") :: nil;
 	(resp, err) := webclient->request("GET", "http://" + EXAMPLE_IP + "/", hdrs, nil);
 	if(err != nil) {
@@ -107,13 +102,9 @@ testHttpGet(t: ref T)
 	t.log(sys->sprint("body: %d bytes", len resp.body));
 }
 
+# Test 3: HTTPS via direct TLS (same approach as tls_live_test)
 testHttpsTls(t: ref T)
 {
-	# sys->dial to EXAMPLE_IP:443 does not time out; CI has no
-	# reliable network.
-	t.skip("outbound HTTPS/TLS to example.com — CI has no reliable network");
-	return;
-
 	# Load TLS module directly (like tls_live_test does)
 	if(tlsmod == nil) {
 		t.skip("TLS module not loaded");

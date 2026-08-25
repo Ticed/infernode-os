@@ -259,6 +259,13 @@ dis/mermaid_test.dis
 # Runtime overlay root — populated by emu at boot, never tracked
 n/local/
 
+# 9P mount points. A service mounted here leaves an empty file behind when it
+# exits, and a committed one makes a test believe the service is running:
+# a tracked n/web/clone was enough to fail webfs_test.
+n/*/
+llm/
+phone/
+
 # Phase 1c (INFR-110) APK build artefacts. The Inferno-side mkfile
 # chain stages these into the Android-app tree at build time; they
 # are produced fresh by ./build-android-apk.sh on every invocation.
