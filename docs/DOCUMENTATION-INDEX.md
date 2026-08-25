@@ -133,3 +133,10 @@ Pool quanta must be 127 for 64-bit (not 31 as for 32-bit). This single change in
 - [inferno64](https://github.com/caerwynj/inferno64) - Reference 64-bit port
 - [Inferno Shell paper](https://www.vitanuova.com/inferno/papers/sh.html)
 - [EMU manual](https://vitanuova.com/inferno/man/1/emu.html)
+
+## Testing and Workflow
+
+| Document | Description |
+|----------|-------------|
+| [WORKFLOW-TRAPS.md](WORKFLOW-TRAPS.md) | Non-obvious ways this repository wastes an afternoon: root `mk nuke`, veltro build collateral, unlisted tests, and stale test bytecode |
+
