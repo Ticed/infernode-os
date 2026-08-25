@@ -97,6 +97,18 @@ treat exit 124 with PASS output as a pass until it is root-caused.
 **Two-server emulator tests must unmount both mounts in teardown**, or
 the emulator never halts.
 
+**A test fixture under `/tmp` outlives the emulator.** `-r.` roots the
+emulator at the checkout, so an in-emu `/tmp/x` is the host's `tmp/x` and
+is still there on the next run. Where a test waits for a state file to
+reach a value, the previous run's record is already in place when the
+wait begins — and a poll that reads before it sleeps matches it at once,
+so the test races past the process it meant to wait for. This made
+`remote_speech_topology_test/CaptureWatcherRecovery` alternate
+fail/pass/fail/pass indefinitely, each run's outcome fixed by the record
+the run before it left (INF-57). Remove the file the wait reads before
+starting whatever writes it; cleaning up at the end does not help,
+because a killed run never reaches its teardown.
+
 **speech9p tests fake the host helpers through ctl** — `wakebin
 /bin/echo ...`, `wakebin /bin/sh -c "sleep 2; echo ..."`. Nested quoting
 through `runcmd`/`devcmd` is mangled but tolerated, because `sh -c`

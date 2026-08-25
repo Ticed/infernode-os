@@ -293,6 +293,16 @@ testRemoteRoutingAndReconnect(t: ref T)
 # rewrite speech ctl, and publish the recovered connected state.
 testCaptureWatcherRecovery(t: ref T)
 {
+	# The launcher writes its first record only once it is running, and
+	# waitprefix reads before it sleeps. A state file still holding the
+	# previous run's "connected capture" would satisfy the first wait below
+	# instantly, and the test would then remove the audio endpoint while the
+	# launcher was still starting - which its own startup check reports as
+	# "failed audio", leaving no watcher for the rest of the test. Start
+	# from no record, so every wait can only match one this run wrote.
+	sys->remove(CAPTURESTATE);
+	sys->remove(CAPTURESTATE + ".watcher");
+
 	fd := sys->create(CAPTURECTL, Sys->OWRITE, 8r666);
 	t.assert(fd != nil, "create deterministic speech ctl sink");
 	fd = nil;
