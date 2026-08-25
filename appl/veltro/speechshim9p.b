@@ -324,10 +324,89 @@ openaudioout(rate: int): (ref Sys->FD, string)
 	return (fd, nil);
 }
 
+# Split a configured helper command into argv words, honouring quotes so an
+# operator can still write `/bin/sh -c "..."` and mean it — arg0 is then the
+# shell, chosen deliberately. What this stops is the other case: a `;` in an
+# unquoted value stays a character inside one word, because after execvp
+# nothing parses these again.
+splitargv(s: string): list of string
+{
+	words: list of string;
+	w := "";
+	inword := 0;
+	q := 0;
+	for(i := 0; i < len s; i++) {
+		c := s[i];
+		if(q != 0) {
+			if(c == q)
+				q = 0;
+			else
+				w[len w] = c;
+			continue;
+		}
+		case c {
+		'"' or '\'' =>
+			q = c;
+			inword = 1;
+		' ' or '\t' =>
+			if(inword)
+				words = w :: words;
+			w = "";
+			inword = 0;
+		* =>
+			w[len w] = c;
+			inword = 1;
+		}
+	}
+	if(inword)
+		words = w :: words;
+	r: list of string;
+	for(; words != nil; words = tl words)
+		r = hd words :: r;
+	return r;
+}
+
+# Quote one argv word for devcmd's tokenizer (lib9/tokenize.c): a quoted
+# section is delimited by single quotes and a literal quote is doubled.
+quotearg(s: string): string
+{
+	q := "'";
+	for(i := 0; i < len s; i++) {
+		if(s[i] == '\'')
+			q[len q] = '\'';
+		q[len q] = s[i];
+	}
+	q[len q] = '\'';
+	return q;
+}
+
+# argv built from a configured command plus the flags this server chooses.
+helperargv(cmd: string, args: list of string): list of string
+{
+	head := splitargv(cmd);
+	r: list of string;
+	for(l := head; l != nil; l = tl l)
+		r = hd l :: r;
+	for(l = args; l != nil; l = tl l)
+		r = hd l :: r;
+	out: list of string;
+	for(; r != nil; r = tl r)
+		out = hd r :: out;
+	return out;
+}
+
 # Start a host command; the process dies with the shim (killonclose) or on
 # killproc(). Returns (proc, nil) or (nil, error string).
-startproc(cmd: string): (ref Hostproc, string)
+#
+# argv is passed to devcmd as separate fields and reaches execvp as a real
+# argument vector. There is no shell: this used to wrap the whole thing in
+# `/bin/sh -c '...'`, which made every punctuation mark in a configured
+# helper value live. execvp still searches PATH, so a bare command name
+# resolves exactly as it did.
+startproc(argv: list of string): (ref Hostproc, string)
 {
+	if(argv == nil)
+		return (nil, "error: empty helper command");
 	bindcmd();
 
 	cfd := sys->open("/cmd/clone", Sys->ORDWR);
@@ -341,8 +420,14 @@ startproc(cmd: string): (ref Hostproc, string)
 	dir := "/cmd/" + string buf[0:n];
 
 	sys->fprint(cfd, "killonclose");
-	if(sys->fprint(cfd, "exec /bin/sh -c '%s'", cmd) < 0)
-		return (nil, sys->sprint("error: exec failed: %r"));
+	execcmd := "exec";
+	for(a := argv; a != nil; a = tl a)
+		execcmd += " " + quotearg(hd a);
+	# Name the helper. The shell used to do this for us on its stderr
+	# ("sh: <name>: not found"); execvp reports only the errno, so the
+	# binary that could not start has to come from here.
+	if(sys->fprint(cfd, "%s", execcmd) < 0)
+		return (nil, sys->sprint("error: helper %s: %r", hd argv));
 
 	datafd := sys->open(dir + "/data", Sys->OREAD);
 	if(datafd == nil)
@@ -455,7 +540,7 @@ closeproc(p: ref Hostproc)
 }
 
 # One-shot host command, full stdout.
-runcmd(cmd: string): string
+runcmd(cmd: list of string): string
 {
 	(p, err) := startproc(cmd);
 	if(p == nil)
@@ -735,13 +820,15 @@ audiopump()
 
 # === Streaming reads (listen / wake) ===
 
-listencmd(): string
+listencmd(): list of string
 {
 	if(micmode == "device")
-		return whisperstreambin + " --stdin --model " + whispermodel +
-			" --rate " + string capturerate + " --chans 1";
-	return whisperstreambin + " --model " + whispermodel +
-		" --rate 16000 --chans 1";
+		return helperargv(whisperstreambin,
+			"--stdin" :: "--model" :: whispermodel ::
+			"--rate" :: string capturerate :: "--chans" :: "1" :: nil);
+	return helperargv(whisperstreambin,
+		"--model" :: whispermodel ::
+		"--rate" :: "16000" :: "--chans" :: "1" :: nil);
 }
 
 # True when a listen transcript is a spoken control word that should cut
@@ -789,16 +876,18 @@ cancelword(record: string): int
 		n == "never mind" || n == "nevermind" || n == "scratch that";
 }
 
-wakecmd(): string
+# The wake phrase is one argv element, however many words it has. It used to
+# need hand-rolled double quotes to survive the outer `sh -c`; with argv there
+# is no outer string to survive.
+wakecmd(): list of string
 {
 	if(micmode == "device")
-		return wakebin + " --stdin --word \"" + wakeword + "\" --threshold " +
-			wakethreshold + " --rate " + string capturerate;
-	# startproc wraps the complete host command in single quotes for #C.
-	# Use double quotes here so a multiword phrase remains one host-shell arg
-	# without terminating that outer command string.
-	return wakebin + " --word \"" + wakeword + "\" --threshold " +
-		wakethreshold;
+		return helperargv(wakebin,
+			"--stdin" :: "--word" :: wakeword ::
+			"--threshold" :: wakethreshold ::
+			"--rate" :: string capturerate :: nil);
+	return helperargv(wakebin,
+		"--word" :: wakeword :: "--threshold" :: wakethreshold :: nil);
 }
 
 # Read the next chunk of newline records from a streaming helper, starting
@@ -925,7 +1014,9 @@ dosay(text: string): string
 		return "error: no speakable text";
 	cancelreq = 0;
 
-	cmd := kokorobin + " --voice " + voice + " --format pcm --rate " + string audrate;
+	cmd := helperargv(kokorobin,
+		"--voice" :: voice :: "--format" :: "pcm" ::
+		"--rate" :: string audrate :: nil);
 	(p, err) := startproc(cmd);
 	if(p == nil)
 		return err;
@@ -1470,7 +1561,9 @@ listvoices(): string
 {
 	if(kokorobin == "")
 		return "(kokoro helper not configured)\n";
-	result := runcmd(kokorobin + " --list-voices 2>/dev/null");
+	# 2>/dev/null was here for the shell; startproc already gives stderr its
+	# own fd and drains it, so stdout was never mixed to begin with.
+	result := runcmd(helperargv(kokorobin, "--list-voices" :: nil));
 	if(result == "" || hasprefix(result, "error:"))
 		return "af_bella\n(default; helper unavailable or does not list voices)\n";
 	return result;

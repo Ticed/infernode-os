@@ -657,6 +657,24 @@ testListenOffStopsListenHelper(t: ref T)
 # with its reason on stderr. That reason must reach the client: a bare
 # "wake helper exited" gives the user nothing to act on, which is exactly how
 # a misconfigured install came to look like "the button does nothing".
+# A `;` in a configured helper value is a character inside an argv word, not
+# a command separator. Helpers are exec'd directly, so there is no shell left
+# to parse it. Under the old `exec /bin/sh -c '...'` the value below ran a
+# second command; here arg0 is the literal "/bin/true;" and simply does not
+# exist.
+testHelperValueCannotChainCommands(t: ref T)
+{
+	t.assert(writefile(MNT + "/ctl",
+		"wakebin /bin/true; echo wake injected 0.9") > 0,
+		"a semicolon-bearing helper value is accepted as data");
+	err := readfile(MNT + "/wake");
+	t.assert(hassubstr(err, "error:"), "the spliced helper does not start");
+	t.assert(hassubstr(err, "/bin/true;"),
+		"the semicolon stayed inside argv[0] rather than separating commands");
+	t.assert(!hassubstr(err, "injected"),
+		"the spliced command produced no wake event");
+}
+
 testHelperErrorNamesCause(t: ref T)
 {
 	t.assert(writefile(MNT + "/ctl",
@@ -664,8 +682,14 @@ testHelperErrorNamesCause(t: ref T)
 		"configure a wake helper that does not exist");
 	err := readfile(MNT + "/wake");
 	t.assert(hassubstr(err, "error:"), "missing wake helper reports an error");
-	t.assert(hassubstr(err, "not found"),
-		"error carries the helper's stderr, not just 'helper exited'");
+	t.assert(hassubstr(err, "infernode-no-such-helper-xyz"),
+		"error names the helper that could not start");
+	# The shell used to supply this on its stderr ("sh: ...: not found").
+	# Helpers are exec'd directly now, so the reason is the exec errno and
+	# the name comes from startproc. A helper that starts and then fails is
+	# still reported from its drained stderr.
+	t.assert(hassubstr(err, "No such file or directory"),
+		"error carries the reason, not just 'helper exited'");
 }
 
 # Cancel must kill the helper process: with a fake synthesizer that would
@@ -1000,6 +1024,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("HalfDuplexSwallowsWakeDuringSay", testHalfDuplexSwallowsWakeDuringSay);
 	run("SayWaitsForDrain", testSayWaitsForDrain);
 	run("SpokenCancelDuringPlayback", testSpokenCancelDuringPlayback);
+	run("HelperValueCannotChainCommands", testHelperValueCannotChainCommands);
 	run("HelperErrorNamesCause", testHelperErrorNamesCause);
 	run("SealedKeysRefused", testSealedKeysRefused);
 
