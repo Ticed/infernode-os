@@ -312,7 +312,7 @@ ls /mnt/llm
 cat /mnt/llm/model
 
 # Speech interface
-ls /n/speech
+ls /mnt/speech
 
 # Xenith filesystem
 ls /mnt/xenith
@@ -372,8 +372,8 @@ cd appl/xenith && mk install
 # Build a Veltro tool
 cd appl/veltro/tools && limbo -I$ROOT/module -I$ROOT/appl/veltro -gw -o $ROOT/dis/veltro/tools/toolname.dis toolname.b
 
-# Clean rebuild
-mk nuke && mk install
+# Clean rebuild (emulator only; root mk nuke deletes tracked dis/)
+mk emunuke && mk emuinstall
 
 # IMPORTANT: use native tools (MacOSX/arm64/bin/), not hosted limbo
 

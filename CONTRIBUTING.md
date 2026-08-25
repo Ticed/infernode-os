@@ -242,7 +242,7 @@ InferNode uses Plan 9's `mk` (not GNU make). Important points:
 - Build from your host OS terminal, not inside the Inferno emulator
 - `mkfile` in each directory defines build rules
 - `mk install` compiles and copies output to `dis/`
-- `mk nuke` cleans build artifacts
+- `mk emunuke` cleans emulator build artifacts. Root `mk nuke` would delete tracked `dis/`; see `docs/WORKFLOW-TRAPS.md`.
 - Don't use `&&` to chain commands in mkfiles — use `;` or separate rules
 
 ### Code Style
