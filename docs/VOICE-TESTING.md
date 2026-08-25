@@ -32,6 +32,7 @@ them — no loopback driver, no speech helpers, no LLM, no display.
 | `tests/host/virtual_mic_speech_test.sh` | A committed speech fixture played into the device is transcribed by the live stack. The capture path itself: `elevenlabs_speech_e2e_test.py` feeds the same fixtures over stdin, which proves the model and the gate but never touches a device. |
 | `tests/host/virtual_voice_turn_test.sh` | A whole turn on one device — wake word, utterance, spoken reply — plus half-duplex suppression: the reply is on the capture side the instant it plays, so if suppression lapsed the stack would transcribe its own voice and answer itself. |
 | `tests/host/gui_voice_turn_test.sh` | The same turn through the desktop, asserted on the pixels: the Voice tile lighting up, partials in the unsent turn, the "Sending in Ns" countdown counting, the answer drawn — and the spoken answer recorded off the device and required to match the screen **word for word**. |
+| `tests/host/gui_voice_answer_test.sh` | That the GUI test reads the reply and not the tile drawn under it, over a captured turn's segments. The only voice test that needs no rig, so the extraction the GUI test depends on stays provable on a machine that cannot run the desktop (INF-59). |
 
 ## The tools
 
