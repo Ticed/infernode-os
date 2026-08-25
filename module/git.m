@@ -137,6 +137,7 @@ Git: module
 	splitfirst:   fn(s: string, sep: int): (string, string);
 	findgitdir:   fn(dir: string): string;
 	getremoteurl: fn(gitdir, remote: string): string;
+	readcredentials: fn(gitdir: string): string;
 	writeref:     fn(gitdir, name: string, h: Hash);
 	writesymref:  fn(gitdir, name, target: string);
 	mkdirp:       fn(filepath: string);

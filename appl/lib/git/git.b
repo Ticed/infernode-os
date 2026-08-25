@@ -1860,6 +1860,24 @@ findgitdir(dir: string): string
 	return nil;
 }
 
+# Read the push credentials for a repository. The file holds one
+# "user:token" line, which sendpack encodes as HTTP Basic. Returns nil when
+# it is absent or empty, which push reports as "no credentials found".
+readcredentials(gitdir: string): string
+{
+	fd := sys->open(gitdir + "/credentials", Sys->OREAD);
+	if(fd == nil)
+		return nil;
+	buf := array [1024] of byte;
+	n := sys->read(fd, buf, len buf);
+	if(n <= 0)
+		return nil;
+	creds := strtrim(string buf[:n]);
+	if(len creds == 0)
+		return nil;
+	return creds;
+}
+
 getremoteurl(gitdir, remote: string): string
 {
 	fd := sys->open(gitdir + "/config", Sys->OREAD);
