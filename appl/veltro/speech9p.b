@@ -62,7 +62,8 @@ Speech9p: module {
 };
 
 # Qid layout for synthetic files
-Qroot, Qctl, Qsay, Qhear, Qvoices, Qlisten, Qwake, Qsayq, Qcancel, Qchime, Qlevel: con iota;
+Qroot, Qctl, Qsay, Qhear, Qvoices, Qlisten, Qwake, Qsayq, Qcancel, Qchime, Qlevel,
+	Qvoice: con iota;
 
 # Per-fid state for say and hear operations
 FidState: adt {
@@ -873,6 +874,60 @@ listkokorovoices(): string
 # speech9p only reads its stream file. Records are newline-delimited
 # "partial ..." / "final ..." lines (see module/speech.m Partial); speech9p
 # does not interpret them — voicemode consumes the stream.
+# A bounded capture on a provider-backed engine.
+#
+# dolisten() taps the provider's continuous transcript stream, which is what
+# /mnt/speech/listen is for: it never starts or stops anything, and a reader
+# takes whatever the always-running helper produces next. `hear` must not mean
+# that. An agent granted `hear` is granted one utterance, not a standing tap on
+# the room, and the difference has to be in what the file does — a namespace
+# can hide a file but cannot change what reading one means.
+#
+# So: arm the helper, read on our own descriptor until it reports a complete
+# utterance, then disarm. Records arrive as "partial|final [confidence=N] text"
+# (see module/speech.m); only a final closes the capture. The descriptor is
+# separate from providerlistenfd so a concurrent /mnt/speech/listen reader and
+# a hear caller do not consume each other's records.
+hearprovider(): string
+{
+	if(providerlisten == "")
+		return "error: listen provider not configured";
+
+	fd := sys->open(providerlisten, Sys->OREAD);
+	if(fd == nil)
+		return "error: listen provider unavailable: " + providerlisten;
+
+	forwardprovider("listen", "on");
+	deadline := sys->millisec() + hearduration;
+	result := "";
+	for(;;) {
+		if(sys->millisec() >= deadline) {
+			result = "error: no utterance within " + string hearduration + " ms";
+			break;
+		}
+		rec := readmountedfd(fd);
+		if(rec == nil) {
+			result = "error: listen provider unavailable: " + providerlisten;
+			break;
+		}
+		rec = strip(rec);
+		if(rec == "")
+			continue;
+		if(hasprefix(rec, "error:")) {
+			result = rec;
+			break;
+		}
+		# Only a final closes the capture; partials are interim revisions.
+		if(hasprefix(rec, "final ")) {
+			result = rec;
+			break;
+		}
+	}
+	forwardprovider("listen", "off");
+	fd = nil;
+	return result;
+}
+
 dolisten(): string
 {
 	if(providerlisten == "")
@@ -945,7 +1000,7 @@ dohear(): string
 	ENGINE_LOCAL =>
 		return hearlocal();
 	ENGINE_KOKORO =>
-		return dolisten();
+		return hearprovider();
 	ENGINE_MODULE =>
 		if(engineplugin == nil || !(engineplugin->caps() & Speech->CAPSTT))
 			return "error: loaded module has no STT capability";
@@ -2043,6 +2098,9 @@ walkto(n: ref Navop.Walk)
 		"level" =>
 			n.path = big Qlevel;
 			n.reply <-= dirgen(int n.path);
+		"voice" =>
+			n.path = big Qvoice;
+			n.reply <-= dirgen(int n.path);
 		* =>
 			n.reply <-= (nil, Enotfound);
 		}
@@ -2095,6 +2153,9 @@ dirgen(path: int): (ref Sys->Dir, string)
 	Qlevel =>
 		d.name = "level";
 		d.mode = 8r444;
+	Qvoice =>
+		d.name = "voice";
+		d.mode = 8r666;
 	* =>
 		return (nil, Enotfound);
 	}
@@ -2107,7 +2168,8 @@ readdir(n: ref Navop.Readdir, path: int)
 {
 	case path {
 	Qroot =>
-		entries := array[] of {Qctl, Qsay, Qhear, Qvoices, Qlisten, Qwake, Qsayq, Qcancel, Qchime, Qlevel};
+		entries := array[] of {Qctl, Qsay, Qhear, Qvoices, Qlisten, Qwake, Qsayq, Qcancel, Qchime, Qlevel,
+			Qvoice};
 		for(i := 0; i < len entries; i++) {
 			if(i >= n.offset) {
 				(d, err) := dirgen(entries[i]);
@@ -2225,6 +2287,8 @@ Serve:
 				srv.reply(ref Rmsg.Error(m.tag, Eperm));
 			Qlevel =>
 				srv.reply(styxservers->readstr(m, readlevel()));
+			Qvoice =>
+				srv.reply(styxservers->readstr(m, voice + "\n"));
 			* =>
 				srv.default(gm);
 			}
@@ -2270,6 +2334,17 @@ Serve:
 				cancelreq = 0;
 				srv.reply(ref Rmsg.Write(m.tag, len m.data));
 				spawn asyncsay(fs.saydone, strip(text));
+			Qvoice =>
+				# The one setting an agent may change. It lives in its
+				# own file so a grant can reach it without reaching ctl,
+				# which also carries the microphone and helper controls.
+				v := strip(string m.data);
+				if(!safename(v)) {
+					srv.reply(ref Rmsg.Error(m.tag, "error: unsafe voice"));
+					continue;
+				}
+				voice = v;
+				srv.reply(ref Rmsg.Write(m.tag, len m.data));
 			Qcancel =>
 				cancelreq = 1;
 				cancelprovider();

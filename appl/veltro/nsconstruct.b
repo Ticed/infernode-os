@@ -410,6 +410,22 @@ restrictns(caps: ref Capabilities): string
 				if(merr != nil)
 					return sys->sprint("restrict /mnt/msg: %s", merr);
 			}
+			# /mnt/speech sub-restriction: the say and hear tools need three
+			# files. ctl is never exposed — besides the sealed helper commands
+			# it carries mic, listen and cancel, so a writable ctl is the
+			# microphone and the STT helper regardless of which files are
+			# visible. voice is its own file for exactly that reason. listen,
+			# wake, level, cancel and chime are control-plane and stay unbound.
+			if(inlist("speech", mntpaths)) {
+				spallow: list of string;
+				if(inlist("say", caps.tools))
+					spallow = "say" :: "voice" :: spallow;
+				if(inlist("hear", caps.tools))
+					spallow = "hear" :: spallow;
+				sperr := restrictdir("/mnt/speech", spallow, 1);
+				if(sperr != nil)
+					return sys->sprint("restrict /mnt/speech: %s", sperr);
+			}
 		}
 	}
 

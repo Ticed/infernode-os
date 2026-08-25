@@ -1184,6 +1184,23 @@ testRestrictNsSpeechToolDerived(t: ref T)
 		fd = nil;
 		createdspeech = 1;
 	}
+	# The restriction hides directory entries, so the entries have to exist
+	# for the check to mean anything: without them a "not reachable" result
+	# would be true of an empty directory too.
+	fixture := "ctl" :: "say" :: "hear" :: "voice" :: "voices" :: "listen" ::
+		"wake" :: "sayq" :: "cancel" :: "chime" :: "level" :: nil;
+	createdfiles: list of string;
+	for(ff := fixture; ff != nil; ff = tl ff) {
+		p := "/mnt/speech/" + hd ff;
+		(fok, nil) := sys->stat(p);
+		if(fok < 0) {
+			ffd := sys->create(p, Sys->OWRITE, 8r666);
+			if(ffd != nil) {
+				ffd = nil;
+				createdfiles = p :: createdfiles;
+			}
+		}
+	}
 
 	result := chan of string;
 	spawn speechToolDerivedWorker(result);
@@ -1192,7 +1209,13 @@ testRestrictNsSpeechToolDerived(t: ref T)
 		spawn speechGenericHiddenWorker(result);
 		r = <-result;
 	}
+	if(r == "") {
+		spawn speechControlPlaneHiddenWorker(result);
+		r = <-result;
+	}
 
+	for(cf := createdfiles; cf != nil; cf = tl cf)
+		sys->remove(hd cf);
 	if(createdspeech)
 		sys->remove("/mnt/speech");
 	if(createdmnt)
@@ -1219,6 +1242,42 @@ speechToolDerivedWorker(result: chan of string)
 	if(speechok < 0) {
 		result <-= "/mnt/speech missing for say/hear tool without raw path grant";
 		return;
+	}
+	result <-= "";
+}
+
+# The say/hear grant must not carry the control plane. ctl is the sharp one:
+# besides the sealed helper commands it carries mic, listen and cancel, so a
+# writable ctl is the microphone regardless of which files are visible.
+speechControlPlaneHiddenWorker(result: chan of string)
+{
+	sys->pctl(Sys->FORKNS, nil);
+	caps := ref NsConstruct->Capabilities(
+		"say" :: "hear" :: nil,
+		nil, nil, nil,
+		0 :: 1 :: 2 :: nil,
+		nil, 0, 0, -1, nil
+	, nil);
+	err := nsconstruct->restrictns(caps);
+	if(err != nil) {
+		result <-= sys->sprint("restrictns (speech control plane) failed: %s", err);
+		return;
+	}
+	for(l := "ctl" :: "listen" :: "wake" :: "level" :: "cancel" :: "chime" :: nil;
+	    l != nil; l = tl l) {
+		(ok, nil) := sys->stat("/mnt/speech/" + hd l);
+		if(ok >= 0) {
+			result <-= "/mnt/speech/" + hd l + " reachable by a say/hear grant";
+			return;
+		}
+	}
+	# and the three the tools do need
+	for(k := "say" :: "hear" :: "voice" :: nil; k != nil; k = tl k) {
+		(ok, nil) := sys->stat("/mnt/speech/" + hd k);
+		if(ok < 0) {
+			result <-= "/mnt/speech/" + hd k + " missing for a say/hear grant";
+			return;
+		}
 	}
 	result <-= "";
 }
