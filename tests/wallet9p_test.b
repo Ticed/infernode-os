@@ -23,7 +23,10 @@ include "testing.m";
 Wallet9pTest: module
 {
 	init: fn(nil: ref Draw->Context, args: list of string);
+	_marker: fn();
 };
+
+_marker() {}
 
 passed := 0;
 failed := 0;
