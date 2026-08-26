@@ -2,6 +2,7 @@
 
 DIRS=\
 	convcs\
+	ftree\
 	crypt\
 	ecmascript\
 	encoding\
@@ -12,6 +13,8 @@ DIRS=\
 
 TARG=\
 	aadraw.dis\
+	popup.dis\
+	scoretable.dis\
 	acmewin.dis\
 	arg.dis\
 	audit.dis\
@@ -160,6 +163,10 @@ TARG=\
 	writegif.dis\
 	x402.dis\
 	xml.dis\
+	bioauth.dis\
+	keyringinst.dis\
+	softkbd.dis\
+	viewport.dis\
 
 
 MODULES=

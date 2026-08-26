@@ -152,6 +152,12 @@ TARG=\
 	bioauth_test.dis\
 	softkbd_test.dis\
 	voice_scripts_test.dis\
+	gpu_bench.dis\
+	gpu_smoke.dis\
+	llmclient_sse_fallback_test.dis\
+	tlsclient.dis\
+	veltro_cc_alignment_test.dis\
+	webfs_test.dis\
 
 MODULES=
 

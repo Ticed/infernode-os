@@ -9,6 +9,7 @@ TARG=\
 	wikipedia.dis\
 	oeis.dis\
 	pg.dis\
+	adict.dis\
 
 MODULES=\
 	dictm.m\
