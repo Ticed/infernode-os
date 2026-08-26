@@ -53,9 +53,14 @@ fi
 # them; they are listed explicitly rather than left to be rediscovered.
 DIRS="appl appl/mpeg appl/veltro tests"
 
+# Three trees hold tracked bytecode, not one: dis/ is the runtime,
+# acme/dis/ and xenith/dis/ are the editors' own command directories.
+# All three are built by mkfiles under appl/ and all three can drift.
+TREES="dis acme/dis xenith/dis"
+
 echo "verify-dis-reproducible: regenerating dis/ from source"
 
-git ls-files dis | grep '\.dis$' > "$ROOT/.dis-tracked.tmp"
+git ls-files $TREES | grep '\.dis$' > "$ROOT/.dis-tracked.tmp"
 while read -r f; do rm -f "$f"; done < "$ROOT/.dis-tracked.tmp"
 rm -f "$ROOT/.dis-tracked.tmp"
 find appl tests -name '*.dis' -exec rm -f {} +
@@ -72,12 +77,12 @@ for d in $DIRS; do
 done
 [ "$rc" = 0 ] || exit "$rc"
 
-drift=$(git status --porcelain dis | wc -l)
+drift=$(git status --porcelain $TREES | wc -l)
 if [ "$drift" -ne 0 ]; then
 	echo "" >&2
 	echo "dis/ does not match what the source compiles to:" >&2
 	echo "" >&2
-	git status --porcelain dis | sed 's/^/    /' >&2
+	git status --porcelain $TREES | sed 's/^/    /' >&2
 	echo "" >&2
 	echo "  ' M path'  bytecode differs from its source — commit the rebuild" >&2
 	echo "  ' D path'  nothing builds this — the source is missing, or the" >&2
@@ -88,4 +93,4 @@ if [ "$drift" -ne 0 ]; then
 	exit 1
 fi
 
-echo "OK: all $(git ls-files dis | grep -c '\.dis$') tracked .dis regenerate byte-identically from source"
+echo "OK: all $(git ls-files $TREES | grep -c '\.dis$') tracked .dis regenerate byte-identically from source"
