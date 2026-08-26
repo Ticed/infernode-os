@@ -33,6 +33,13 @@
 #
 set -e
 
+# comm(1) requires both inputs in the same collation order, and sort(1)
+# collates differently by locale -- a manifest generated under en_GB and
+# compared under the C locale on a CI runner fails with
+# "comm: file 1 is not in sorted order".  Pin both ends to C.
+LC_ALL=C
+export LC_ALL
+
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 export ROOT
 cd "$ROOT"
@@ -73,11 +80,15 @@ done
 # never tracked and is not staged into releases, so it is not the manifest's
 # business -- including it would only add two dozen permanent "extra" lines.
 built="$ROOT/.dis-built-$$.txt"
+want="$ROOT/.dis-want-$$.txt"
 find dis acme/dis -name '*.dis' -type f 2>/dev/null | sed 's|^\./||' | sort > "$built"
+# Sort the manifest here too rather than trusting its committed order: a line
+# added in the wrong place should be a harmless diff, not a CI failure.
+sort "$MANIFEST" > "$want"
 
-missing=$(comm -23 "$MANIFEST" "$built")
-extra=$(comm -13 "$MANIFEST" "$built")
-rm -f "$built"
+missing=$(comm -23 "$want" "$built")
+extra=$(comm -13 "$want" "$built")
+rm -f "$built" "$want"
 
 rc=0
 if [ -n "$missing" ]; then
