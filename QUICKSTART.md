@@ -71,7 +71,11 @@ This hook runs automatically after every `git pull` or `git merge`. It detects w
 
 ### Why are `.dis` files in git?
 
-Inferno is a self-hosting OS — the `dis/` directory is its runtime, like `/usr/bin` on Unix. Without pre-built `.dis` files, a fresh clone has no shell, no `cat`, no `ls`. The runtime tree (`dis/`) is tracked so the system boots immediately after clone.
+Inferno is a self-hosting OS — the `dis/` directory is its runtime, like `/usr/bin` on Unix. The runtime tree (`dis/`) is tracked so that a downloaded release runs without building anything, and so a checkout is runnable the moment the emulator is built.
+
+It is not a bootstrap requirement: `mk` and `limbo` are C programs, and `emu/*/o.emu` is not tracked at all, so a fresh clone must build the toolchain and the emulator regardless. Rebuilding the whole runtime tree from source afterwards takes about 20 seconds. What tracking buys is the release, not the clone.
+
+Because it is tracked, `dis/` can drift from the source that produced it. CI rebuilds the tree on every pull request and requires the result to be byte-identical to what is committed (`tools/verify-dis-reproducible.sh`) — so if you change a `.b`, commit the rebuilt `.dis` with it.
 
 Build artifacts in source directories (`appl/**/*.dis`, `tests/**/*.dis`) are **not** tracked — only the runtime tree.
 

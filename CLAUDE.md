@@ -49,7 +49,11 @@ The native tools are built to:
 
 ### Dis Files: What's Tracked and What's Not
 
-The `dis/` directory (the Inferno runtime tree) **is tracked in git**. This is intentional — Inferno is a self-hosting OS, and `dis/` is its `/usr/bin`. Without pre-built `.dis` files, a fresh clone can't boot: no shell, no `cat`, no `ls`. Upstream Inferno OS tracks them for the same reason.
+The `dis/` directory (the Inferno runtime tree) **is tracked in git**. This is intentional, but not for the reason this file used to give. It is tracked so a downloaded release runs without the user building anything, and because upstream Inferno tracked it (commit `46439007c`, the 2006 Fourth Edition drop, is still in this history).
+
+It is *not* a bootstrap requirement. `mk` and `limbo` are C programs, and `emu/*/o.emu` is gitignored, so a fresh clone can run nothing until you build the toolchain and emulator anyway. Rebuilding all ~940 `.dis` from source after that takes about 20 seconds.
+
+**The tracked tree must equal what the source compiles to.** `tools/verify-dis-reproducible.sh` rebuilds it and requires a byte-identical result; CI runs it on every PR and every release. limbo output is deterministic and records source paths relative to `$ROOT`, so this holds across machines and architectures — provided you build from the repository root. If you change a `.b`, commit the rebuilt `.dis` with it.
 
 However, **build artifacts in source directories are not tracked**:
 - `appl/**/*.dis` — intermediate build outputs (`.gitignore`d)
