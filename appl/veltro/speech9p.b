@@ -447,18 +447,19 @@ readconfig(): string
 }
 
 # Ctl keys that choose what code runs: which engine, which host helper
-# command, which module, and which provider tree the say/listen files are
-# proxied from. Writing one is equivalent to running a host command, so they
-# are operator configuration rather than a runtime knob — boot.sh and the
-# installer write them while the system comes up, then boot writes `seal on`.
-# After that they are refused, so an agent holding the speech grant cannot
-# point a helper at a command of its own. The keys left writable are
+# command, and which provider tree the say/listen files are proxied from.
+# Writing one is equivalent to running a host command, so they are operator
+# configuration rather than a runtime knob — boot.sh and the installer write
+# them while the system comes up, then boot writes `seal on`. The module key
+# is startup-only and is rejected separately below. After that the sealed keys
+# are refused, so an agent holding the speech grant cannot point a helper at a
+# command of its own. The keys left writable are
 # the inert ones the tools and voice mode need: voice, lang, rate, mic,
 # listen, cancel and the audio routing.
 sealedkey(key: string): int
 {
 	case key {
-	"engine" or "module" or "ttsengine" or "listenengine" or
+	"engine" or "ttsengine" or "listenengine" or
 	"kokorobin" or "whisperstreambin" or "wakebin" or "whispermodel" or
 	"wakeword" or "wakethreshold" or
 	"provider" or "parakeetmount" or "parakeetlisten" or "pipersay" =>
@@ -509,6 +510,8 @@ applyconfig(cmd: string): string
 		val += hd argv;
 	}
 
+	if(key == "module")
+		return "error: module is startup-only";
 	if(sealed && sealedkey(key))
 		return "error: " + key + " is sealed";
 
