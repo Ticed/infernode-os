@@ -103,7 +103,8 @@ read /mnt/speech/ctl  →  engine cmd
 ```
 write /mnt/speech/ctl <- engine api
 write /mnt/speech/ctl <- voice nova
-write /mnt/speech/ctl <- apikey sk-...
+key proto=pass service=openai user=apikey !password=<operator-provisioned-key>
+# speech9p consumes this factotum entry for the api engine; it has no apikey ctl value
 write /mnt/speech/ctl <- pipermodel /opt/piper/models/en_US-lessac-medium.onnx
 ```
 
@@ -119,7 +120,8 @@ write /mnt/speech/ctl <- pipermodel /opt/piper/models/en_US-lessac-medium.onnx
 | `cmdtts`       | shell command for TTS                            | `cmd` engine only. |
 | `cmdstt`       | shell command for STT                            | `cmd` engine only. |
 | `apiurl`       | base URL                                         | `api` engine. |
-| `apikey`       | bearer token                                     | `api` engine. **Stored in process memory in clear.** |
+| `apikey`       | bearer token                                     | `api` engine. Read from factotum (`proto=pass service=openai`) per request; never accepted on argv or ctl. |
+
 | `piperbin` / `pipermodel`     | binary path / `.onnx` voice model | `local` engine. |
 | `whisperbin` / `whispermodel` | binary path / `.bin` GGML model    | `local` engine. |
 | `ttsengine` | `engine` or `piper` | Selects whether `/mnt/speech/say` uses the configured speech9p TTS engine or delegates to the provider's `say` file. |
@@ -131,6 +133,11 @@ write /mnt/speech/ctl <- pipermodel /opt/piper/models/en_US-lessac-medium.onnx
 | `mic` | `on` or `off` | Forwarded to the provider's `ctl`. In `speechshim9p`, `off` kills the mic-side helpers (and the capture pump's device fd) and fails pending `listen`/`wake` reads with `error: mic off` instead of restarting them; the next read re-arms the microphone. `voicemode` writes `mic off` on voice-mode exit, so the mic is only open during a voice session. |
 | `listen` | `on` or `off` | Forwarded to the provider's `ctl`. In `speechshim9p`, `off` kills only the STT helper and fails a pending `listen` read with `error: listen off` instead of restarting it; wake stays armed, and the next `listen` read restarts STT. `voicemode` writes `listen off` at the end of every voice turn (final, error, or timeout), so speech between turns — ambient talk, the assistant's own TTS — cannot queue as stale records that replay into the next turn. |
 | `parakeetmount` / `parakeetlisten` / `pipersay` | provider root, STT stream file, and TTS say file | Compatibility aliases for `provider` and its derived `listen`/`say` paths. |
+
+The legacy `-k` option is intentionally removed, rather than retained with a
+warning: even a compatibility path would receive the secret in `argv` before
+it could warn. An API engine with no matching factotum key keeps its existing
+failure behavior and reports that the key is not configured.
 
 `/mnt/speech/listen` is the stable Infernode-facing interface.
 
@@ -725,7 +732,7 @@ flowchart LR
     subgraph risk["Risks"]
         ctlrce["ctl write →<br/>RCE on host"]
         hostshell["sh -c with<br/>config strings"]
-        api_leak["apikey held<br/>in process memory<br/>+ on the wire"]
+        api_leak["factotum key<br/>only in request path<br/>+ on the wire"]
         mic_priv["microphone access<br/>via host bins"]
         dev_audio["/dev/audio<br/>exclusive-use"]
     end
@@ -748,7 +755,7 @@ flowchart LR
 | Surface                | Risk                                                                                       | Mitigation today                                                                 |
 |------------------------|---------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------|
 | `/mnt/speech/ctl` write  | `cmdtts`/`cmdstt`/`piperbin`/`whisperbin` are concatenated into `sh -c` strings → RCE on host. | Trust `/mnt/speech/ctl` to trusted writers only. **Do not expose ctl to agents** — currently nothing strips it from the auto-granted namespace. |
-| `apikey` in memory     | Stored in cleartext as a Limbo string; any compromise of the emu reveals it.               | Same posture as factotum keys. Do not run untrusted code in the same emu.        |
+| `apikey` in memory     | The request path briefly handles the factotum secret while constructing and sending one API request. | No daemon/global/argv/ctl copy; speech9p fetches `proto=pass service=openai` per API request. |
 | `apikey` on the wire   | API requests go over plain HTTPS (`sslconnect`) but no certificate pinning.                 | Pin at the network layer if needed; trust your TLS stack.                        |
 | Microphone access      | Any STT engine path activates the host mic. The agent can request `hear` and listen to the room. | Disable `hear` via tools9p config when the user isn't expecting an STT prompt.   |
 | `/dev/audio` collision | Exclusive-use. If something else holds it, TTS playback fails silently.                    | Coordinate audio clients; the macOS `say` path doesn't touch `/dev/audio`.        |
@@ -1026,7 +1033,8 @@ never sealed.
 # in speech.ctl — one record per line, no shell
 engine api
 apiurl https://api.openai.com/v1
-apikey <key>          # or factotum-derived
+# Provision `key proto=pass service=openai user=apikey !password=...` in factotum;
+# speech9p fetches it per API request (there is no `apikey` ctl setting).
 echo 'voice nova' > /mnt/speech/ctl
 echo 'Hello from the cloud' > /mnt/speech/say
 ```

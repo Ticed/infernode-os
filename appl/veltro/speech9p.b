@@ -19,7 +19,7 @@ implement Speech9p;
 #   speech9p -m /mnt/speech          # Custom mount point
 #   speech9p -e cmd                # Use host command engine
 #   speech9p -e api                # Use HTTP API engine
-#   speech9p -e api -k <key>       # API engine with key
+#   speech9p -e api                # API engine with the openai factotum key
 #
 # Examples:
 #   echo 'Hello world' > /mnt/speech/say         # Speak text
@@ -55,6 +55,9 @@ include "styxservers.m";
 include "string.m";
 	str: String;
 
+include "factotum.m";
+	factotum: Factotum;
+
 include "speech.m";
 
 Speech9p: module {
@@ -87,7 +90,6 @@ engineexplicit := 0;
 voice := "";
 lang := "en";
 apiurl := "";
-apikey := "";
 audrate := 22050;
 capturerate := 16000;
 audchans := 1;
@@ -167,12 +169,11 @@ nomod(s: string)
 
 usage()
 {
-	sys->fprint(stderr, "Usage: speech9p [-D] [-m mountpoint] [-e engine] [-E module.dis] [-k apikey]\n");
+	sys->fprint(stderr, "Usage: speech9p [-D] [-m mountpoint] [-e engine] [-E module.dis]\n");
 	sys->fprint(stderr, "  -D            Enable 9P debug tracing\n");
 	sys->fprint(stderr, "  -m mountpoint Mount point (default: /mnt/speech)\n");
 	sys->fprint(stderr, "  -e engine     Engine: cmd (default), api, local, kokoro\n");
 	sys->fprint(stderr, "  -E module.dis Load a SpeechEngine module and select it\n");
-	sys->fprint(stderr, "  -k key        API key (for api engine)\n");
 	sys->fprint(stderr, "  -u url        API base URL\n");
 	sys->fprint(stderr, "  -v voice      Default voice\n");
 	sys->fprint(stderr, "  -l lang       Language code (default: en)\n");
@@ -199,6 +200,10 @@ init(nil: ref Draw->Context, args: list of string)
 	if(str == nil)
 		nomod(String->PATH);
 
+	factotum = load Factotum Factotum->PATH;
+	if(factotum != nil)
+		factotum->init();
+
 	arg := load Arg Arg->PATH;
 	if(arg == nil)
 		nomod(Arg->PATH);
@@ -221,7 +226,6 @@ init(nil: ref Draw->Context, args: list of string)
 			}
 			engineexplicit = 1;
 		'E' =>	enginepath = arg->earg();
-		'k' =>	apikey = arg->earg();
 		'u' =>	apiurl = arg->earg();
 		'v' =>
 			v := arg->earg();
@@ -354,7 +358,9 @@ speechconfig(): ref Speech->Config
 {
 	infmt := ref Speech->AudioFmt(audrate, audchans, audbits, "pcm");
 	outfmt := ref Speech->AudioFmt(audrate, audchans, audbits, "pcm");
-	return ref Speech->Config("module", voice, lang, apiurl, apikey,
+	# API credentials are deliberately not part of shared engine config. The
+	# API backend obtains the openai key from factotum for each request.
+	return ref Speech->Config("module", voice, lang, apiurl, "",
 		cmdtts, cmdstt, providermount, infmt, outfmt);
 }
 
@@ -418,8 +424,8 @@ readconfig(): string
 
 	if(engine == ENGINE_API) {
 		result += "apiurl " + apiurl + "\n";
-		if(apikey != "")
-			result += "apikey (set)\n";
+		if(apikeyconfigured())
+			result += "apikey (set in factotum)\n";
 		else
 			result += "apikey (not set)\n";
 	}
@@ -565,7 +571,7 @@ applyconfig(cmd: string): string
 	"apiurl" =>
 		return "error: apiurl is startup-only";
 	"apikey" =>
-		return "error: apikey is startup-only";
+		return "error: apikey is factotum-only (service=openai)";
 	"piperbin" =>
 		return "error: piperbin is startup-only";
 	"pipermodel" =>
@@ -928,11 +934,10 @@ saycmd_windows(nil: string): string
 	return "error: Windows TTS not yet implemented";
 }
 
-# TTS via HTTP API (OpenAI-compatible)
+# TTS via HTTP API (OpenAI-compatible). The bearer token is fetched by
+# apipost only for the duration of this HTTP request; it is not daemon state.
 sayapi(text: string): string
 {
-	if(apikey == "")
-		return "error: API key not set (use: echo 'apikey <key>' > /mnt/speech/ctl)";
 
 	# Build JSON request body
 	apivoice := voice;
@@ -945,7 +950,9 @@ sayapi(text: string): string
 
 	# Make HTTP POST to TTS endpoint
 	url := apiurl + "/audio/speech";
-	audiodata := apipost(url, body, "application/json");
+	(audiodata, err) := apipost(url, body, "application/json");
+	if(err != nil)
+		return "error: " + err;
 	if(audiodata == nil)
 		return "error: API request failed";
 
@@ -1200,9 +1207,6 @@ hearcmd_linux(): string
 # STT via HTTP API (OpenAI Whisper-compatible)
 hearapi(): string
 {
-	if(apikey == "")
-		return "error: API key not set";
-
 	tmpfile := "/tmp/speech_stt.wav";
 
 	# Record audio
@@ -1591,12 +1595,17 @@ runcmd_stdin(cmd, input: string): string
 
 # === HTTP API helpers ===
 
-# POST JSON to an API endpoint, return response bytes
-apipost(url, body, contenttype: string): array of byte
+# POST JSON to an API endpoint, return response bytes. Fetching the key here
+# keeps it scoped to the request path instead of the speech server lifetime.
+apipost(url, body, contenttype: string): (array of byte, string)
 {
+	apikey := getapikey();
+	if(apikey == "")
+		return (nil, "API key not set (factotum proto=pass service=openai)");
+
 	(scheme, host, port, path, err) := parseurl(url);
 	if(err != nil)
-		return nil;
+		return (nil, err);
 
 	addr := sys->sprint("tcp!%s!%s", host, port);
 
@@ -1604,12 +1613,12 @@ apipost(url, body, contenttype: string): array of byte
 	if(scheme == "https") {
 		(sfd, serr) := sslconnect(host, port);
 		if(serr != nil)
-			return nil;
+			return (nil, serr);
 		fd = sfd;
 	} else {
 		(ok, conn) := sys->dial(addr, nil);
 		if(ok < 0)
-			return nil;
+			return (nil, sys->sprint("cannot connect: %r"));
 		fd = conn.dfd;
 	}
 
@@ -1625,7 +1634,7 @@ apipost(url, body, contenttype: string): array of byte
 
 	reqbytes := array of byte request;
 	if(sys->write(fd, reqbytes, len reqbytes) < 0)
-		return nil;
+		return (nil, sys->sprint("API request failed: %r"));
 
 	# Read response
 	result: list of array of byte;
@@ -1654,15 +1663,20 @@ apipost(url, body, contenttype: string): array of byte
 	for(i := 0; i < len resp - 3; i++) {
 		if(resp[i] == byte '\r' && resp[i+1] == byte '\n' &&
 		   resp[i+2] == byte '\r' && resp[i+3] == byte '\n')
-			return resp[i+4:];
+			return (resp[i+4:], nil);
 	}
 
-	return resp;
+	return (resp, nil);
 }
 
-# POST audio for transcription (multipart form)
+# POST audio for transcription (multipart form). The key is fetched only while
+# constructing and sending this request.
 apitranscribe(url: string, audiodata: array of byte): string
 {
+	apikey := getapikey();
+	if(apikey == "")
+		return "error: API key not set (factotum proto=pass service=openai)";
+
 	(scheme, host, port, path, err) := parseurl(url);
 	if(err != nil)
 		return "error: " + err;
@@ -1733,6 +1747,27 @@ apitranscribe(url: string, audiodata: array of byte): string
 	# Parse JSON response to extract text
 	# Simple extraction: look for "text" field
 	return extractjsontext(rbody);
+}
+
+# Read the speech API key from factotum. This is intentionally called by each
+# API operation rather than during daemon startup, so no credential is retained
+# in package state and no key is accepted on argv or ctl.
+getapikey(): string
+{
+	if(factotum == nil)
+		return nil;
+	(nil, password) := factotum->getuserpasswd("proto=pass service=openai");
+	return password;
+}
+
+# Preserve ctl's set/not-set status without storing the returned secret. This
+# is a factotum lookup, not a second credential source.
+apikeyconfigured(): int
+{
+	if(factotum == nil)
+		return 0;
+	(nil, password) := factotum->getuserpasswd("proto=pass service=openai");
+	return password != nil && password != "";
 }
 
 # SSL connection
