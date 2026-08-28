@@ -5,6 +5,8 @@ include "sys.m";
 
 include "draw.m";
 
+include "speech.m";
+
 include "testing.m";
 	testing: Testing;
 	T: import testing;
@@ -308,6 +310,13 @@ testSayqCompletion(t: ref T)
 
 testModuleRuntimeRefused(t: ref T)
 {
+	# Constructing Partial exercises the public listen record shape, including
+	# the optional confidence value.
+	partial := ref Speech->Partial("module transcript", 0, 950);
+	t.assertseq(partial.text, "module transcript", "Partial text shape");
+	t.asserteq(partial.isfinal, 0, "Partial hypothesis shape");
+	t.asserteq(partial.confidence, 950, "Partial confidence shape");
+
 	before := readfile(MNT + "/ctl");
 	t.assert(writefile(MNT + "/ctl",
 		"module /dis/veltro/speechprovider.dis") < 0,
