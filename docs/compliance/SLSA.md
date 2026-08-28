@@ -46,8 +46,8 @@ flagged for review.
 
 **SBOM scope note (honest):** InferNode's core is first-party C and Limbo with no
 package-manager manifests, so the generated SPDX SBOM principally captures the
-third-party components that *do* carry external provenance (e.g. the Go modules under
-`tools/godis`, Android/Gradle deps) plus detected binaries — which is the set an SBOM
+third-party components that *do* carry external provenance (e.g. Android/Gradle
+deps) plus detected binaries — which is the set an SBOM
 exists to track for vulnerability management. The validation step fails CI if generation
 yields zero packages, so an empty/broken SBOM is caught.
 
