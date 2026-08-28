@@ -235,10 +235,16 @@ testIdleUntilVoiceMode(t: ref T)
 
 testActivatesOnVoiceMode(t: ref T)
 {
+	# Hold wake until the entry pre-warm request has been observed; the plain
+	# mock file otherwise delivers wake and overwrites ctl immediately.
+	createfile(MOCKSPEECH + "/wake", "");
 	createfile(MOCKUI + "/input-mode", "v");
 	t.assert(waitfor(MOCKUI + "/activity/0/context/ctl", "via=voice-mode", 5000),
 		"daemon activates and reports voice status after input-mode v");
-	# Wake fires (mock is always ready) which must cut any active TTS.
+	t.assert(waitfor(MOCKSPEECH + "/ctl", "warm on", 3000),
+		"voice-mode entry requests a TTS model pre-warm");
+	createfile(MOCKSPEECH + "/wake", "wake hey_lucia 0.9\n");
+	# Wake fires (mock is now ready) which must cut any active TTS.
 	t.assert(waitfor(MOCKSPEECH + "/cancel", "cancel", 3000),
 		"wake event writes speech cancel (barge-in path)");
 }

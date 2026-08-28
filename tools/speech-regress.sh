@@ -193,6 +193,7 @@ run_host_test speech_installer_download_test.sh
 # The helper test returns 77 when no helper install exists. Its deterministic
 # stdin-PCM coverage still runs without microphone permission when installed.
 run_host_test speech_helpers_test.sh
+run_host_test kokoro_server_test.sh
 
 # CoreAudio coverage is meaningful only on macOS. It reports partial skips
 # when the current session lacks an audio device or TCC microphone permission.

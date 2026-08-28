@@ -183,6 +183,16 @@ Path to a whisper.cpp
 GGML model file (for the
 .B local
 engine).
+.TP
+.BI kokororesident " on|off"
+Select the resident Kokoro server protocol. The installed helper setup
+writes
+.B on
+so its model stays loaded between utterances.
+.TP
+.B warm on
+Start the resident Kokoro helper and wait for its model-ready marker.
+Voice mode requests this when it is entered.
 .SS Platform Support
 The
 .B cmd

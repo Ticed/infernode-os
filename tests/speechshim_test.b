@@ -692,6 +692,77 @@ testHelperErrorNamesCause(t: ref T)
 		"error carries the reason, not just 'helper exited'");
 }
 
+# The resident protocol must keep one helper across writes, refuse overlap,
+# and accept a cancel without forcing the next write through a fresh process.
+testResidentSay(t: ref T)
+{
+	t.assert(writefile(MNT + "/ctl", "kokororesident on") > 0,
+		"resident Kokoro mode accepted");
+	t.assert(writefile(MNT + "/ctl", "audiodev " + OUTPCM) > 0,
+		"resident playback sink accepted");
+	t.assert(writefile(MNT + "/ctl",
+		"kokorobin /bin/sh -c \"printf 'READY\\n'; " +
+		"while IFS= read -r h; do case $h in synth*) n=${h##* }; " +
+		"dd bs=1 count=$n of=/dev/null 2>/dev/null; printf '\\000\\175\\000\\000'; " +
+		"dd if=/dev/zero bs=32000 count=1 2>/dev/null;; cancel*) :;; esac; done\"") > 0,
+		"configure resident frame helper");
+
+	first := sys->open(MNT + "/say", Sys->ORDWR);
+	t.assert(first != nil, "resident first say opens");
+	if(first == nil)
+		return;
+	b := array of byte "first resident utterance";
+	t.assert(sys->write(first, b, len b) > 0, "resident first say accepted");
+	sys->sleep(300);
+
+	second := sys->open(MNT + "/say", Sys->ORDWR);
+	t.assert(second != nil, "overlapping resident say opens");
+	if(second != nil) {
+		b = array of byte "overlapping resident utterance";
+		t.assert(sys->write(second, b, len b) > 0, "overlapping say write acknowledged");
+		sys->seek(second, big 0, Sys->SEEKSTART);
+		buf := array[512] of byte;
+		n := sys->read(second, buf, len buf);
+		status := "";
+		if(n > 0)
+			status = string buf[0:n];
+		t.assert(hassubstr(status, "error: say busy"),
+			"overlapping resident say reads back say busy");
+		second = nil;
+	}
+
+	t.assert(writefile(MNT + "/cancel", "cancel") > 0,
+		"resident cancel write served while draining");
+	sys->seek(first, big 0, Sys->SEEKSTART);
+	buf := array[512] of byte;
+	n := sys->read(first, buf, len buf);
+	status := "";
+	if(n > 0)
+		status = string buf[0:n];
+	t.assert(hassubstr(status, "error: speech canceled"),
+		"resident cancel stops the current utterance");
+
+	third := sys->open(MNT + "/say", Sys->ORDWR);
+	t.assert(third != nil, "post-cancel resident say opens");
+	if(third != nil) {
+		b = array of byte "post cancel utterance";
+		t.assert(sys->write(third, b, len b) > 0,
+			"post-cancel resident say is accepted");
+		sys->seek(third, big 0, Sys->SEEKSTART);
+		buf = array[512] of byte;
+		n = sys->read(third, buf, len buf);
+		status = "";
+		if(n > 0)
+			status = string buf[0:n];
+		t.assert(hassubstr(status, "ok: played"),
+			"post-cancel resident say completes");
+		third = nil;
+	}
+	writefile(MNT + "/ctl", "kokororesident off");
+	writefile(MNT + "/ctl", "kokorobin /bin/echo");
+	writefile(MNT + "/ctl", "audiodev /dev/audio");
+}
+
 # Cancel must kill the helper process: with a fake synthesizer that would
 # block for 8 seconds, the pending say read has to complete within a couple
 # of seconds of the cancel write.
@@ -957,6 +1028,7 @@ testSealedKeysRefused(t: ref T)
 	closed := array[] of {
 		"whisperstreambin /usr/bin/true; echo final INF56INJECTED",
 		"kokorobin /bin/sh -c \"echo INF56INJECTED\"",
+		"kokororesident off",
 		"wakebin /bin/echo INF56INJECTED",
 		"whispermodel /tmp/m.bin`echo INF56INJECTED`",
 		"wakeword hey \"; echo INF56INJECTED; \"",
@@ -1020,6 +1092,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("ListenOffStopsListenHelper", testListenOffStopsListenHelper);
 	run("DeviceCapture", testDeviceCapture);
 	run("LevelTelemetry", testLevelTelemetry);
+	run("ResidentSay", testResidentSay);
 	run("CancelKillsSay", testCancelKillsSay);
 	run("HalfDuplexSwallowsWakeDuringSay", testHalfDuplexSwallowsWakeDuringSay);
 	run("SayWaitsForDrain", testSayWaitsForDrain);

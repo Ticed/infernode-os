@@ -322,6 +322,13 @@ canceloff()
 	writefile(speech + "/ctl", "cancel off");
 }
 
+# Ask a resident provider to load its model while the voice session is
+# entering, before the first utterance needs it.
+warmtts()
+{
+	writefile(speech + "/ctl", "warm on");
+}
+
 chime(kind: string)
 {
 	writefile(speech + "/chime", kind);
@@ -541,7 +548,7 @@ agentbusy(actid: int): int
 
 # The say write blocks for the TTS duration on real providers, so test
 # mode runs it spawned; barge-in still works because a wake event writes
-# /mnt/speech/cancel, which kills the in-flight synthesis.
+# /mnt/speech/cancel, which cancels the in-flight synthesis.
 saytts(text: string)
 {
 	writefile(speech + "/say", text);
@@ -798,6 +805,7 @@ voiceloop()
 	chime("on");
 	voiceactive = 1;
 	request(startwake);
+	warmtts();
 	for(;;) {
 		alt {
 		ev := <-evch =>

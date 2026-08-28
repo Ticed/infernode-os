@@ -126,6 +126,7 @@ providerwakefd: ref Sys->FD;
 # Helper configuration retained for introspection and forwarded to the
 # provider's ctl when one is mounted (speechshim9p consumes these keys).
 kokorobin := "kokoro-cli";
+kokororesident := 0;
 ttsengine := "engine";
 listenengine := "whisper";
 whisperstreambin := "whisper-stream";
@@ -158,6 +159,7 @@ asyncpending: list of (int, int);   # (tag, fid) of reads awaiting a helper
 listenbusy := 0;
 wakebusy := 0;
 hearbusy := 0;
+saybusy := 0;
 
 nomod(s: string)
 {
@@ -432,6 +434,10 @@ readconfig(): string
 	}
 
 	result += "kokorobin " + kokorobin + "\n";
+	if(kokororesident)
+		result += "kokororesident on\n";
+	else
+		result += "kokororesident off\n";
 	result += "ttsengine " + ttsengine + "\n";
 	result += "listenengine " + listenengine + "\n";
 	result += "whisperstreambin " + whisperstreambin + "\n";
@@ -459,7 +465,7 @@ sealedkey(key: string): int
 {
 	case key {
 	"engine" or "module" or "ttsengine" or "listenengine" or
-	"kokorobin" or "whisperstreambin" or "wakebin" or "whispermodel" or
+	"kokorobin" or "kokororesident" or "whisperstreambin" or "wakebin" or "whispermodel" or
 	"wakeword" or "wakethreshold" or
 	"provider" or "parakeetmount" or "parakeetlisten" or "pipersay" =>
 		return 1;
@@ -579,6 +585,15 @@ applyconfig(cmd: string): string
 		forwardprovider(key, val);
 	"kokorobin" =>
 		kokorobin = val;
+		forwardprovider(key, val);
+	"kokororesident" =>
+		if(val != "on" && val != "off")
+			return "error: kokororesident must be on or off";
+		kokororesident = val == "on";
+		forwardprovider(key, val);
+	"warm" =>
+		if(val != "on")
+			return "error: warm must be on";
 		forwardprovider(key, val);
 	"ttsengine" =>
 		case val {
@@ -812,10 +827,12 @@ listlocalvoices(): string
 
 # Async wrapper for TTS — runs in spawned thread so serveloop stays responsive.
 # Sends result on completion channel instead of writing to shared state directly.
-asyncsay(donech: chan of array of byte, text: string)
+# The nil-read completion also clears saybusy when no status read is parked.
+asyncsay(donech: chan of array of byte, kind, fid: int, text: string)
 {
-	result := dosay(text);
-	donech <-= array of byte result;
+	result := array of byte dosay(text);
+	helperc <-= ref Helperdone(kind, fid, nil, result);
+	donech <-= result;
 }
 
 # Synthesize text and play through /dev/audio
@@ -2091,7 +2108,10 @@ asyncdone(srv: ref Styxserver, h: ref Helperdone)
 	Qlisten =>	listenbusy = 0;
 	Qwake =>	wakebusy = 0;
 	Qhear =>	hearbusy = 0;
+	Qsay =>		saybusy = 0;
 	}
+	if(h.m == nil)
+		return;
 	if(!isasync(h.m.tag))
 		return;
 	cancelasynctag(h.m.tag);
@@ -2410,15 +2430,22 @@ Serve:
 				text := string m.data;
 				fs := getfidstate(m.fid);
 				fs.sayreq = text;
-				fs.sayresp = nil;
-				# Create a new completion channel for this operation
-				fs.saydone = chan of array of byte;
 				# Reply immediately, run TTS in background.
 				# dosay() blocks for the full duration of audio playback
 				# (e.g. 10-15s for macOS 'say'). Running it inline freezes
 				# the serveloop, blocking all other 9P traffic.
+				# A second writer is acknowledged, then reads back the
+				# same refusal used by listen/wake/hear.
 				srv.reply(ref Rmsg.Write(m.tag, len m.data));
-				spawn asyncsay(fs.saydone, strip(text));
+				if(saybusy) {
+					fs.sayresp = array of byte "error: say busy";
+					fs.saydone = nil;
+				} else {
+					saybusy = 1;
+					fs.sayresp = nil;
+					fs.saydone = chan of array of byte;
+					spawn asyncsay(fs.saydone, Qsay, m.fid, strip(text));
+				}
 			Qsayq =>
 				text := string m.data;
 				fs := getfidstate(m.fid);
@@ -2427,7 +2454,7 @@ Serve:
 				fs.saydone = chan of array of byte;
 				cancelreq = 0;
 				srv.reply(ref Rmsg.Write(m.tag, len m.data));
-				spawn asyncsay(fs.saydone, strip(text));
+				spawn asyncsay(fs.saydone, Qsayq, m.fid, strip(text));
 			Qvoice =>
 				# The one setting an agent may change. It lives in its
 				# own file so a grant can reach it without reaching ctl,

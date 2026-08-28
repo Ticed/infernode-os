@@ -5,17 +5,17 @@ implement Speechshim9p;
 # provider contract (docs/SPEECH-ARCHITECTURE.md):
 #
 #   /mnt/speechshim/
-#   ├── ctl      (rw)  kokorobin, whisperstreambin, wakebin, wakeword,
-#   │                  wakethreshold, whispermodel, voice, rate,
+#   ├── ctl      (rw)  kokorobin, kokororesident, whisperstreambin, wakebin,
+#   │                  wakeword, wakethreshold, whispermodel, voice, rate,
 #   │                  audiodev, capturedev, micmode, capturerate,
-#   │                  mic on|off, cancel on|off
+#   │                  mic on|off, cancel on|off, warm on
 #   ├── listen   (r)   newline records from the streaming STT helper:
 #   │                  "partial [confidence=N] <text>" /
 #   │                  "final [confidence=N] <text>" / "error: <reason>"
 #   ├── wake     (r)   blocks until the wake-word helper emits an event line
 #   ├── say      (rw)  write text: Kokoro synthesizes PCM, played through
 #   │                  /dev/audio in chunks; read returns the status
-#   ├── cancel   (w)   kills the active TTS helper process and stops playback
+#   ├── cancel   (w)   stops active TTS and leaves a resident helper warm
 #   ├── chime    (w)   local earcons: wake, done, on, off
 #   └── voices   (r)   helper voice list
 #
@@ -30,10 +30,11 @@ implement Speechshim9p;
 # killonclose is armed so they die with the shim. The microphone is thus
 # only open while a client is actually reading: nothing runs at boot, and
 # `mic off` on ctl tears the mic-side helpers down again (voicemode writes
-# it when the user leaves voice mode) — the next read re-arms them. TTS is
-# killed on cancel via the devcmd ctl "kill" command, and playback checks
-# the cancel flag between chunks, so barge-in silence is bounded by one
-# audio chunk rather than the remaining utterance.
+# it when the user leaves voice mode) — the next read re-arms them. When
+# resident TTS is enabled, cancel is an input control record and the loaded
+# model survives; one-shot helpers still use the devcmd ctl "kill" command.
+# Playback checks the cancel flag between chunks, so barge-in silence is
+# bounded by one audio chunk rather than the remaining utterance.
 #
 # Audio routing (docs/SPEECH-REMOTE-AUDIO.md): playback always goes through
 # the namespace (`audiodev`, default /dev/audio), so binding an imported
@@ -89,6 +90,7 @@ OUTBITS: con 16;
 # Configuration
 sealed := 0;			# Set by `seal on`; see sealedkey()
 kokorobin := "kokoro-cli";
+kokororesident := 0;
 whisperstreambin := "whisper-stream";
 wakebin := "openwakeword-cli";
 wakeword := "hey lucia";
@@ -138,7 +140,8 @@ outputpeak := 0;
 # killonclose is armed on it); writing "kill" to it terminates the process.
 Hostproc: adt {
 	ctlfd:  ref Sys->FD;
-	datafd: ref Sys->FD;
+	datafd:  ref Sys->FD;
+	inputfd: ref Sys->FD;
 	dir:    string;
 	# Tail of the helper's stderr, kept by a drain proc. A helper that fails
 	# to start (missing binary, bad model path) exits immediately and the only
@@ -176,6 +179,7 @@ helperc: chan of ref Helperdone;
 asyncpending: list of (int, int);   # (tag, fid)
 listenbusy := 0;
 wakebusy := 0;
+saybusy := 0;
 
 # Capture pump (micmode device): one proc owns the capture device and the
 # helper stdin sinks; registration and reset arrive over pumpc so there is
@@ -433,7 +437,7 @@ startproc(argv: list of string): (ref Hostproc, string)
 	if(datafd == nil)
 		return (nil, sys->sprint("error: cannot open %s/data: %r", dir));
 
-	p := ref Hostproc(cfd, datafd, dir, "", chan[1] of string, "");
+	p := ref Hostproc(cfd, datafd, nil, dir, "", chan[1] of string, "");
 	errfd := sys->open(dir + "/stderr", Sys->OREAD);
 	if(errfd != nil)
 		spawn drainstderr(p, errfd);
@@ -501,6 +505,7 @@ exitreason(p: ref Hostproc, dflt: string): string
 	# for the drainer's completion signal, but never let diagnostics wedge the
 	# voice daemon if a helper closes stdout while retaining stderr.
 	p.datafd = nil;
+	p.inputfd = nil;
 	p.ctlfd = nil;	# killonclose also lets /stderr reach EOF
 	if(p.errdone != nil) {
 		timeoutc := chan[1] of int;
@@ -536,7 +541,110 @@ closeproc(p: ref Hostproc)
 	if(p == nil)
 		return;
 	p.datafd = nil;
+	p.inputfd = nil;
 	p.ctlfd = nil;
+}
+
+stopproc(p: ref Hostproc)
+{
+	if(p == nil)
+		return;
+	killproc(p);
+	closeproc(p);
+}
+
+# Read exactly want bytes from a helper stream. Resident Kokoro frames use
+# this instead of record-oriented reads because PCM may contain any byte.
+readn(p: ref Hostproc, buf: array of byte, want: int): int
+{
+	got := 0;
+	while(got < want) {
+		n := sys->read(p.datafd, buf[got:want], want - got);
+		if(n <= 0)
+			return got;
+		got += n;
+	}
+	return got;
+}
+
+# Resident Kokoro writes a little-endian PCM byte count before each response.
+# Keep the bound finite so a broken helper cannot make the shim allocate or
+# wait for an unbounded frame.
+RESIDENT_MAX_FRAME: con 16 * 1024 * 1024;
+readframe(p: ref Hostproc): int
+{
+	header := array[4] of byte;
+	if(readn(p, header, len header) != len header)
+		return -1;
+	n := (int header[0] & 16rff) |
+		((int header[1] & 16rff) << 8) |
+		((int header[2] & 16rff) << 16) |
+		((int header[3] & 16rff) << 24);
+	if(n < 0 || n > RESIDENT_MAX_FRAME)
+		return -1;
+	return n;
+}
+
+# Start the Kokoro server mode and consume its readiness record. The model is
+# loaded before READY, so a warm invocation starts at synthesis rather than
+# paying model initialization in the say request.
+startresident(warm: int): (ref Hostproc, string)
+{
+	serverargs := "--server" :: nil;
+	if(warm)
+		serverargs = "--server" :: "--warm" :: nil;
+	(p, err) := startproc(helperargv(kokorobin, serverargs));
+	if(p == nil)
+		return (nil, err);
+	p.inputfd = sys->open(p.dir + "/data", Sys->OWRITE);
+	if(p.inputfd == nil) {
+		stopproc(p);
+		return (nil, "error: cannot open resident kokoro input");
+	}
+	ready := array[6] of byte;
+	if(readn(p, ready, len ready) != len ready || string ready != "READY\n") {
+		reason := exitreason(p, "error: resident kokoro helper not ready");
+		stopproc(p);
+		return (nil, reason);
+	}
+	return (p, nil);
+}
+
+warmresident()
+{
+	if(!kokororesident || sayproc != nil)
+		return;
+	(p, err) := startresident(1);
+	if(p == nil) {
+		if(err != nil && err != "")
+			sys->fprint(stderr, "speechshim9p: %s\n", err);
+		return;
+	}
+	sayproc = p;
+}
+
+# A request carries the current voice and rate in its header, so changing
+# either setting does not require restarting the resident model process.
+sendresident(p: ref Hostproc, text: string): int
+{
+	if(p == nil || p.inputfd == nil)
+		return -1;
+	b := array of byte text;
+	header := sys->sprint("synth %d %s %d\n", audrate, voice, len b);
+	if(sys->fprint(p.inputfd, "%s", header) < 0)
+		return -1;
+	if(len b > 0 && sys->write(p.inputfd, b, len b) != len b)
+		return -1;
+	return 1;
+}
+
+# Resident cancellation is a control record on the helper's input. It stops
+# the current response while leaving the model-owning process available for
+# the next utterance; the hard kill remains for one-shot helpers and failures.
+cancelresident(p: ref Hostproc)
+{
+	if(p != nil && p.inputfd != nil)
+		sys->fprint(p.inputfd, "cancel\n");
 }
 
 # One-shot host command, full stdout.
@@ -1005,6 +1113,8 @@ readwake(): string
 
 # Kokoro contract: text on stdin, s16le mono PCM at the requested rate on
 # stdout. Playback is chunked so a cancel takes effect within one chunk.
+# Resident mode uses a READY record followed by length-prefixed PCM frames;
+# one-shot mode retains the original EOF-delimited helper contract.
 dosay(text: string): string
 {
 	if(kokorobin == "")
@@ -1014,63 +1124,134 @@ dosay(text: string): string
 		return "error: no speakable text";
 	cancelreq = 0;
 
-	cmd := helperargv(kokorobin,
-		"--voice" :: voice :: "--format" :: "pcm" ::
-		"--rate" :: string audrate :: nil);
-	(p, err) := startproc(cmd);
-	if(p == nil)
-		return err;
-	sayproc = p;
+	resident := kokororesident;
+	p: ref Hostproc;
+	if(resident) {
+		p = sayproc;
+		if(p == nil) {
+			(np, err) := startresident(0);
+			if(np == nil)
+				return err;
+			p = np;
+			sayproc = p;
+		}
+	} else {
+		cmd := helperargv(kokorobin,
+			"--voice" :: voice :: "--format" :: "pcm" ::
+			"--rate" :: string audrate :: nil);
+		(np, err) := startproc(cmd);
+		if(np == nil)
+			return err;
+		p = np;
+		sayproc = p;
 
-	# Feed text on stdin, close to signal EOF.
-	tofd := sys->open(p.dir + "/data", Sys->OWRITE);
-	if(tofd == nil) {
-		killproc(p);
-		closeproc(p);
-		sayproc = nil;
-		return sys->sprint("error: cannot open %s/data for write: %r", p.dir);
+		# Feed text on stdin, close to signal EOF.
+		tofd := sys->open(p.dir + "/data", Sys->OWRITE);
+		if(tofd == nil) {
+			stopproc(p);
+			sayproc = nil;
+			return sys->sprint("error: cannot open %s/data for write: %r", p.dir);
+		}
+		b := array of byte (text + "\n");
+		sys->write(tofd, b, len b);
+		tofd = nil;
 	}
-	b := array of byte (text + "\n");
-	sys->write(tofd, b, len b);
-	tofd = nil;
+
+	status := "";
+	requestok := 1;
+	if(resident) {
+		if(cancelreq) {
+			status = "error: speech canceled";
+			requestok = 0;
+		} else if(sendresident(p, text) < 0) {
+			status = "error: resident kokoro helper unavailable";
+			requestok = 0;
+			stopproc(p);
+			sayproc = nil;
+		}
+	}
+	if(!requestok)
+		return status;
 
 	(afd, audioerr) := openaudioout(audrate);
 	if(afd == nil) {
-		killproc(p);
-		closeproc(p);
+		# There is no reader to consume this request's frame. Restarting
+		# on the next say is safer than leaving bytes in the resident stream.
+		stopproc(p);
 		sayproc = nil;
 		return audioerr;
 	}
 
 	total := 0;
 	buf := array[8192] of byte;
-	status := "";
+	residentfailed := 0;
 	# playing is armed on the first sample, not here: synthesis can
 	# take seconds, and the meter should not say "output" before any
 	# PCM has reached the device.
 	playstart := 0;
 	clearinputlevel();
 	clearoutputlevel();
-	for(;;) {
-		n := sys->read(p.datafd, buf, len buf);
-		if(n <= 0)
-			break;
-		if(cancelreq) {
-			killproc(p);
-			status = "error: speech canceled";
-			break;
+	if(resident) {
+		frame := readframe(p);
+		if(frame < 0) {
+			if(cancelreq)
+				status = "error: speech canceled";
+			else
+				status = exitreason(p, "error: resident kokoro helper exited");
+			residentfailed = 1;
+		} else {
+			left := frame;
+			while(left > 0) {
+				want := left;
+				if(want > len buf)
+					want = len buf;
+				n := readn(p, buf, want);
+				if(n != want) {
+					status = exitreason(p, "error: resident kokoro helper exited");
+					residentfailed = 1;
+					break;
+				}
+				left -= n;
+				if(cancelreq) {
+					status = "error: speech canceled";
+					continue;
+				}
+				setoutputlevel(buf, n);
+				if(total == 0) {
+					playstart = sys->millisec();
+					playing = 1;
+				}
+				if(sys->write(afd, buf[0:n], n) < 0) {
+					status = sys->sprint("error: audio write failed: %r");
+					cancelreq = 1;
+					cancelresident(p);
+					continue;
+				}
+				total += n;
+			}
 		}
-		setoutputlevel(buf, n);
-		if(total == 0) {
-			playstart = sys->millisec();
-			playing = 1;
+	} else {
+		for(;;) {
+			n := sys->read(p.datafd, buf, len buf);
+			if(n <= 0)
+				break;
+			if(cancelreq) {
+				killproc(p);
+				status = "error: speech canceled";
+				break;
+			}
+			setoutputlevel(buf, n);
+			if(total == 0) {
+				playstart = sys->millisec();
+				playing = 1;
+			}
+			if(sys->write(afd, buf[0:n], n) < 0) {
+				status = sys->sprint("error: audio write failed: %r");
+				killproc(p);
+				break;
+			}
+			total += n;
 		}
-		if(sys->write(afd, buf[0:n], n) < 0) {
-			status = sys->sprint("error: audio write failed: %r");
-			killproc(p);
-			break;
-		}
-		total += n;
 	}
 	# Writes returning is not the speaker going quiet. Hold the fd
 	# and keep playing set so half-duplex stays shut for the audible
@@ -1082,11 +1263,20 @@ dosay(text: string): string
 	if(until - playuntil > 0)
 		playuntil = until;
 	drainwait();
+	if(cancelreq && status == "")
+		status = "error: speech canceled";
 	clearoutputlevel();
 	playing = 0;
 	holdsuppression(0);
-	closeproc(p);
-	sayproc = nil;
+	if(resident) {
+		if(residentfailed) {
+			stopproc(p);
+			sayproc = nil;
+		}
+	} else {
+		closeproc(p);
+		sayproc = nil;
+	}
 	if(status != "")
 		return status;
 	if(total == 0) {
@@ -1164,9 +1354,13 @@ startchime(kind: string)
 	}
 }
 
-asyncsay(donech: chan of array of byte, text: string)
+asyncsay(donech: chan of array of byte, fid: int, text: string)
 {
-	donech <-= array of byte dosay(text);
+	result := array of byte dosay(text);
+	# The nil-read completion clears saybusy even when the caller never
+	# parks a status read or clunks the fid early.
+	helperc <-= ref Helperdone(Qsay, fid, nil, result);
+	donech <-= result;
 }
 
 # === Async read completion (same pattern as speech9p) ===
@@ -1228,7 +1422,10 @@ asyncdone(srv: ref Styxserver, h: ref Helperdone)
 	case h.kind {
 	Qlisten =>	listenbusy = 0;
 	Qwake =>	wakebusy = 0;
+	Qsay =>		saybusy = 0;
 	}
+	if(h.m == nil)
+		return;
 	if(!isasync(h.m.tag))
 		return;
 	cancelasynctag(h.m.tag);
@@ -1257,6 +1454,10 @@ clampcount(m: ref Tmsg.Read, data: array of byte): array of byte
 readconfig(): string
 {
 	result := "kokorobin " + kokorobin + "\n";
+	if(kokororesident)
+		result += "kokororesident on\n";
+	else
+		result += "kokororesident off\n";
 	result += "whisperstreambin " + whisperstreambin + "\n";
 	result += "wakebin " + wakebin + "\n";
 	result += "wakeword " + wakeword + "\n";
@@ -1312,7 +1513,7 @@ resetcapture()
 sealedkey(key: string): int
 {
 	case key {
-	"kokorobin" or "whisperstreambin" or "wakebin" or
+	"kokorobin" or "kokororesident" or "whisperstreambin" or "wakebin" or
 	"whispermodel" or "sttmodel" or "wakeword" or "wakethreshold" =>
 		return 1;
 	}
@@ -1418,7 +1619,21 @@ applyconfig(cmd: string): string
 
 	case key {
 	"kokorobin" =>
+		stopproc(sayproc);
+		sayproc = nil;
 		kokorobin = val;
+	"kokororesident" =>
+		if(val != "on" && val != "off")
+			return "error: kokororesident must be on or off";
+		if(val == "off") {
+			stopproc(sayproc);
+			sayproc = nil;
+		}
+		kokororesident = val == "on";
+	"warm" =>
+		if(val != "on")
+			return "error: warm must be on";
+		warmresident();
 	"whisperstreambin" =>
 		# Restart the stream with the new helper on next read.
 		killproc(listenproc);
@@ -1803,16 +2018,25 @@ Serve:
 					srv.reply(ref Rmsg.Write(m.tag, len m.data));
 			Qsay =>
 				fs := getfidstate(m.fid);
-				fs.sayresp = nil;
-				fs.saydone = chan of array of byte;
 				srv.reply(ref Rmsg.Write(m.tag, len m.data));
-				spawn asyncsay(fs.saydone, string m.data);
+				if(saybusy) {
+					fs.sayresp = array of byte "error: say busy";
+					fs.saydone = nil;
+				} else {
+					saybusy = 1;
+					fs.sayresp = nil;
+					fs.saydone = chan of array of byte;
+					spawn asyncsay(fs.saydone, m.fid, string m.data);
+				}
 			Qcancel =>
-				# Hard cancel: kill the synthesizing helper and let
-				# the playback loop notice within one chunk.
+				# One-shot helpers are killed. Resident Kokoro receives a
+				# control record so its loaded model survives cancellation.
 				cancelreq = 1;
 				clearoutputlevel();
-				killproc(sayproc);
+				if(kokororesident)
+					cancelresident(sayproc);
+				else
+					killproc(sayproc);
 				srv.reply(ref Rmsg.Write(m.tag, len m.data));
 			Qchime =>
 				startchime(string m.data);
@@ -1834,6 +2058,8 @@ Serve:
 		}
 	}
 	navops <-= nil;
+	stopproc(sayproc);
+	sayproc = nil;
 	if(pumprunning)
 		pumpc <-= (SINKQUIT, nil);	# don't outlive the mount
 }

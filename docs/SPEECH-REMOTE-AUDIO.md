@@ -442,13 +442,12 @@ characterising capture; IP adds Wi-Fi jitter that the measurement is trying
 to exclude.
 
 Earlier guidance here called for `capturedelay 2500` on the phone. That was
-compensating for something else entirely. A TTS helper does not begin speaking
-when it is asked to — kokoro spends ~2.2 s loading before it emits its first
-byte, then hands over 2.2 s of audio in ~60 ms. The provider anchors its drain
-estimate to the first sample that actually reaches the device, so that startup
-is no longer mistaken for elapsed playback. Before that fix the window closed
-while the reply was still being spoken, and `capturedelay` was the only knob
-big enough to hide it.
+compensating for something else entirely. A cold TTS helper does not begin
+speaking when it is asked to — Kokoro loads its model before it emits the first
+response. The installed wrapper can run in resident server mode, so voice-mode
+entry performs that load before a turn and later requests start at synthesis.
+The provider anchors its drain estimate to the first sample that actually
+reaches the device, so helper startup is not mistaken for elapsed playback.
 
 ```sh
 echo 'duplex half' > /mnt/speech/ctl

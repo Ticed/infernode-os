@@ -293,6 +293,27 @@ testSayqCompletion(t: ref T)
 		"restore default tts engine");
 }
 
+# A completed direct say must release the concurrency guard so the next
+# independent writer is not rejected after the first status read returns.
+testSayBusyClears(t: ref T)
+{
+	t.assert(writefile(MNT + "/ctl", "ttsengine piper") > 0,
+		"configure provider-backed direct say");
+	t.assert(writefile(MNT + "/ctl", "parakeetmount " + PARAKEETMNT) > 0,
+		"configure provider mount for direct say");
+	t.assert(createfile(PARAKEETMNT + "/say", "") >= 0,
+		"create direct say provider file");
+	first := writesayread(MNT + "/say", "first direct say");
+	t.assert(first != nil && hassubstr(first, "first direct say"),
+		"first direct say completes");
+	second := writesayread(MNT + "/say", "second direct say");
+	t.assert(second != nil && hassubstr(second, "second direct say"),
+		"saybusy clears for the next direct say");
+	t.assert(!hassubstr(second, "error: say busy"),
+		"next direct say is not left busy");
+	writefile(MNT + "/ctl", "ttsengine engine");
+}
+
 testDisEngineModule(t: ref T)
 {
 	t.assert(writefile(MNT + "/ctl", "provider " + PARAKEETMNT) > 0,
@@ -464,6 +485,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("ParakeetListenMount", testParakeetListenMount);
 	run("PiperSayMount", testPiperSayMount);
 	run("SayqCompletion", testSayqCompletion);
+	run("SayBusyClears", testSayBusyClears);
 	run("DisEngineModule", testDisEngineModule);
 	run("Cancel", testCancel);
 	run("MultiRecordCtlWrite", testMultiRecordCtlWrite);

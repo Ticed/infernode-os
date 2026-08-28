@@ -195,6 +195,7 @@ if {! ~ $#speechctlfile 0} {
 		# Kokoro instead of the robotic host `say` command (engine cmd).
 		echo engine kokoro > /mnt/speech/ctl
 		echo kokorobin $speechhelperbin/kokoro-cli > /mnt/speech/ctl
+		echo kokororesident on > /mnt/speech/ctl
 		echo whisperstreambin $speechhelperbin/whisper-stream-cli > /mnt/speech/ctl
 		echo wakebin $speechhelperbin/openwakeword-cli > /mnt/speech/ctl
 		echo whispermodel $speechhelperbin/../models/ggml-base.en.bin > /mnt/speech/ctl
@@ -206,6 +207,11 @@ if {! ~ $#speechctlfile 0} {
 		echo 'boot: no speech helpers found — voice mode will not hear or speak.'
 		echo 'boot: run tools/install-speech-helpers.sh, then restart.'
 	}
+}
+# Existing speech.ctl files predate resident Kokoro; the helper directory
+# identifies the in-tree wrapper and keeps the upgrade path automatic.
+if {! ~ $#speechhelperbin 0} {
+	echo kokororesident on > /mnt/speech/ctl
 }
 
 # Close the keys that name the host commands the speech helpers run, and the

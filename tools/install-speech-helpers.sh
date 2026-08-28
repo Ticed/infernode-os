@@ -205,8 +205,10 @@ SH
 #!/usr/bin/env python3
 import argparse
 import os
+import queue
 import struct
 import sys
+import threading
 
 import numpy as np
 
@@ -226,38 +228,165 @@ def resample(samples, src_rate, dst_rate):
     return np.interp(x_new, x_old, samples).astype(np.float32)
 
 
+def load_kokoro(prefix):
+    model = os.path.join(prefix, "models", "kokoro", "kokoro-v1.0.onnx")
+    voices = os.path.join(prefix, "models", "kokoro", "voices-v1.0.bin")
+    from kokoro_onnx import Kokoro
+    return Kokoro(model, voices)
+
+
+def pcm_for(kokoro, text, voice, rate):
+    text = text.strip()
+    if not text:
+        return b""
+    samples, sample_rate = kokoro.create(text, voice=voice, speed=1.0, lang="en-us")
+    samples = np.asarray(samples, dtype=np.float32)
+    samples = resample(samples, int(sample_rate), rate)
+    samples = np.clip(samples, -1.0, 1.0)
+    return (samples * 32767.0).astype("<i2").tobytes()
+
+
+def read_request(inp):
+    line = inp.readline()
+    if not line:
+        return None
+    line = line.rstrip(b"\n")
+    if line == b"cancel":
+        return ("cancel",)
+    fields = line.split(b" ")
+    if len(fields) != 4 or fields[0] != b"synth":
+        return ("invalid",)
+    try:
+        rate = int(fields[1])
+        voice = fields[2].decode("ascii")
+        length = int(fields[3])
+    except (UnicodeDecodeError, ValueError):
+        return ("invalid",)
+    if length < 0 or length > 16 * 1024 * 1024:
+        return ("invalid",)
+    payload = inp.read(length)
+    if len(payload) != length:
+        return None
+    return ("synth", rate, voice, payload.decode("utf-8", errors="replace"))
+
+
+def read_requests(inp, commands):
+    while True:
+        request = read_request(inp)
+        if request is None:
+            commands.put(None)
+            return
+        commands.put(request)
+
+
+def write_frame(out, pcm):
+    out.write(struct.pack("<I", len(pcm)))
+    if pcm:
+        out.write(pcm)
+    out.flush()
+
+
+def serve(args, prefix):
+    # Loading before READY moves the fixed model cost to helper startup. The
+    # shim can therefore warm this process when voice mode is entered.
+    kokoro = load_kokoro(prefix)
+    if args.warm:
+        try:
+            pcm_for(kokoro, "Hello.", args.voice, args.rate)
+        except Exception as exc:
+            print("kokoro warm-up: %s" % exc, file=sys.stderr, flush=True)
+    inp = sys.stdin.buffer
+    out = sys.stdout.buffer
+    out.write(b"READY\n")
+    out.flush()
+
+    commands = queue.Queue()
+    reader = threading.Thread(target=read_requests, args=(inp, commands), daemon=True)
+    reader.start()
+    active = None
+    pending = []
+    eof = False
+
+    def start(request):
+        state = {"cancel": threading.Event(), "sent": False, "lock": threading.Lock()}
+
+        def run():
+            try:
+                pcm = pcm_for(kokoro, request[3], request[2], request[1])
+            except Exception as exc:
+                print("kokoro: %s" % exc, file=sys.stderr, flush=True)
+                pcm = b""
+            with state["lock"]:
+                if not state["cancel"].is_set() and not state["sent"]:
+                    write_frame(out, pcm)
+                state["sent"] = True
+
+        state["thread"] = threading.Thread(target=run, daemon=True)
+        state["thread"].start()
+        return state
+
+    while True:
+        if active is not None and not active["thread"].is_alive():
+            active["thread"].join()
+            active = None
+        if active is None and pending:
+            active = start(pending.pop(0))
+            continue
+        if active is None and eof:
+            return 0
+        try:
+            request = commands.get(timeout=0.05 if active is not None else None)
+        except queue.Empty:
+            continue
+        if request is None:
+            eof = True
+            if active is not None:
+                active["cancel"].set()
+            continue
+        if request[0] == "cancel":
+            if active is not None:
+                active["cancel"].set()
+                with active["lock"]:
+                    if not active["sent"]:
+                        write_frame(out, b"")
+                        active["sent"] = True
+            continue
+        if request[0] != "synth":
+            continue
+        if active is not None:
+            pending.append(request)
+        else:
+            active = start(request)
+
+
 def main():
     parser = argparse.ArgumentParser(description="InferNode Kokoro stdout-PCM wrapper")
     parser.add_argument("--voice", default="af_bella")
     parser.add_argument("--format", choices=["pcm"], default="pcm")
     parser.add_argument("--rate", type=int, default=24000)
     parser.add_argument("--list-voices", action="store_true")
+    parser.add_argument("--server", action="store_true")
+    parser.add_argument("--warm", action="store_true")
     args = parser.parse_args()
 
     if args.list_voices:
         print("\n".join(DEFAULT_VOICES))
         return 0
 
-    text = sys.stdin.read().strip()
-    if not text:
-        return 0
-
     prefix = os.environ.get(
         "INFERNODE_SPEECH_HOME",
         os.path.expanduser("~/.local/share/infernode-speech"),
     )
-    model = os.path.join(prefix, "models", "kokoro", "kokoro-v1.0.onnx")
-    voices = os.path.join(prefix, "models", "kokoro", "voices-v1.0.bin")
+    if args.server:
+        return serve(args, prefix)
 
-    from kokoro_onnx import Kokoro
-
-    kokoro = Kokoro(model, voices)
-    samples, sample_rate = kokoro.create(text, voice=args.voice, speed=1.0, lang="en-us")
-    samples = np.asarray(samples, dtype=np.float32)
-    samples = resample(samples, int(sample_rate), args.rate)
-    samples = np.clip(samples, -1.0, 1.0)
-    pcm = (samples * 32767.0).astype("<i2")
-    sys.stdout.buffer.write(pcm.tobytes())
+    text = sys.stdin.read().strip()
+    if not text:
+        return 0
+    kokoro = load_kokoro(prefix)
+    pcm = pcm_for(kokoro, text, args.voice, args.rate)
+    sys.stdout.buffer.write(pcm)
+    sys.stdout.buffer.flush()
     return 0
 
 
@@ -698,6 +827,7 @@ write_speech_ctl() {
     echo "# line to /mnt/speech/ctl and never executes this file."
     echo "engine kokoro"
     echo "kokorobin $BIN/kokoro-cli"
+    echo "kokororesident on"
     echo "wakebin $BIN/openwakeword-cli"
     echo "voice af_bella"
     echo "wakeword hey jarvis"
