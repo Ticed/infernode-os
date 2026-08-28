@@ -158,6 +158,7 @@ asyncpending: list of (int, int);   # (tag, fid) of reads awaiting a helper
 listenbusy := 0;
 wakebusy := 0;
 hearbusy := 0;
+saybusy := 0;
 
 nomod(s: string)
 {
@@ -812,10 +813,13 @@ listlocalvoices(): string
 
 # Async wrapper for TTS — runs in spawned thread so serveloop stays responsive.
 # Sends result on completion channel instead of writing to shared state directly.
-asyncsay(donech: chan of array of byte, text: string)
+# Also posts Helperdone with a nil read so asyncdone can drop saybusy even if
+# the writer never parks a status read (abandoned fd, same rule as listen/wake/hear).
+asyncsay(donech: chan of array of byte, kind, fid: int, text: string)
 {
-	result := dosay(text);
-	donech <-= array of byte result;
+	result := array of byte dosay(text);
+	helperc <-= ref Helperdone(kind, fid, nil, result);
+	donech <-= result;
 }
 
 # Synthesize text and play through /dev/audio
@@ -2091,7 +2095,10 @@ asyncdone(srv: ref Styxserver, h: ref Helperdone)
 	Qlisten =>	listenbusy = 0;
 	Qwake =>	wakebusy = 0;
 	Qhear =>	hearbusy = 0;
+	Qsay =>		saybusy = 0;
 	}
+	if(h.m == nil)
+		return;
 	if(!isasync(h.m.tag))
 		return;
 	cancelasynctag(h.m.tag);
@@ -2410,15 +2417,22 @@ Serve:
 				text := string m.data;
 				fs := getfidstate(m.fid);
 				fs.sayreq = text;
-				fs.sayresp = nil;
-				# Create a new completion channel for this operation
-				fs.saydone = chan of array of byte;
 				# Reply immediately, run TTS in background.
 				# dosay() blocks for the full duration of audio playback
 				# (e.g. 10-15s for macOS 'say'). Running it inline freezes
 				# the serveloop, blocking all other 9P traffic.
+				# A second writer is refused with error: say busy on the
+				# status read, matching listen/wake/hear.
 				srv.reply(ref Rmsg.Write(m.tag, len m.data));
-				spawn asyncsay(fs.saydone, strip(text));
+				if(saybusy) {
+					fs.sayresp = array of byte "error: say busy";
+					fs.saydone = nil;
+				} else {
+					saybusy = 1;
+					fs.sayresp = nil;
+					fs.saydone = chan of array of byte;
+					spawn asyncsay(fs.saydone, Qsay, m.fid, strip(text));
+				}
 			Qsayq =>
 				text := string m.data;
 				fs := getfidstate(m.fid);
@@ -2427,7 +2441,7 @@ Serve:
 				fs.saydone = chan of array of byte;
 				cancelreq = 0;
 				srv.reply(ref Rmsg.Write(m.tag, len m.data));
-				spawn asyncsay(fs.saydone, strip(text));
+				spawn asyncsay(fs.saydone, Qsayq, m.fid, strip(text));
 			Qvoice =>
 				# The one setting an agent may change. It lives in its
 				# own file so a grant can reach it without reaching ctl,

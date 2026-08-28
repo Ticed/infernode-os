@@ -96,6 +96,7 @@ TARG=\
 	spawn_schedule_test.dis\
 	task_consistency_test.dis\
 	sayq_drain_test.dis\
+	speechbusyengine.dis\
 	speech9p_voice_test.dis\
 	speech_kokoro_test.dis\
 	speech_listen_test.dis\
@@ -233,6 +234,9 @@ DISBIN=$ROOT/dis/tests
 
 <$ROOT/mkfiles/mkdis
 <$ROOT/mkfiles/mksubdirs
+
+speech9p_voice_test.dis: speech9p_voice_test.b speechbusyengine.dis
+	limbo $LIMBOFLAGS -gw speech9p_voice_test.b
 
 # agentlib_test needs -I for appl/veltro/agentlib.m
 agentlib_test.dis: agentlib_test.b $ROOT/appl/veltro/agentlib.m

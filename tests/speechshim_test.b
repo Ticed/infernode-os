@@ -719,6 +719,68 @@ testCancelKillsSay(t: ref T)
 	t.assert(t1 - t0 < 4000, "cancel killed the helper (no 8s run-out)");
 }
 
+# The provider also accepts direct clients. Its busy response follows the
+# say-file convention: write succeeds and the status is read from that fid.
+testSayBusy(t: ref T)
+{
+	fd := sys->create(PCMFILE, Sys->OWRITE, 8r644);
+	t.assert(fd != nil, "create busy-test playback sink");
+	if(fd == nil)
+		return;
+	fd = nil;
+	t.assert(writefile(MNT + "/ctl", "audiodev " + PCMFILE) > 0,
+		"route busy-test playback to a scratch sink");
+	t.assert(writefile(MNT + "/ctl",
+		"kokorobin /bin/sh -c \"printf 0123456789; sleep 2\"") > 0,
+		"configure slow fake synthesizer");
+
+	first := sys->open(MNT + "/say", Sys->ORDWR);
+	t.assert(first != nil, "first provider say opens");
+	if(first == nil)
+		return;
+	firsttext := array of byte "first synthesis";
+	t.assert(sys->write(first, firsttext, len firsttext) == len firsttext,
+		"first provider say write accepted");
+	level := "";
+	for(i := 0; i < 20; i++) {
+		level = readfile(MNT + "/level");
+		if(hassubstr(level, "mode=output"))
+			break;
+		sys->sleep(100);
+	}
+	t.assert(hassubstr(level, "mode=output"),
+		"first provider synthesis reached playback");
+
+	second := sys->open(MNT + "/say", Sys->ORDWR);
+	t.assert(second != nil, "second provider say opens");
+	if(second != nil) {
+		secondtext := array of byte "second synthesis";
+		t.assert(sys->write(second, secondtext, len secondtext) == len secondtext,
+			"busy provider say write is acknowledged");
+		sys->seek(second, big 0, Sys->SEEKSTART);
+		buf := array[512] of byte;
+		n := sys->read(second, buf, len buf);
+		status := "";
+		if(n > 0)
+			status = string buf[0:n];
+		t.assert(hassubstr(status, "error: say busy"),
+			"busy provider say write reads back the refusal");
+		second = nil;
+	}
+
+	sys->seek(first, big 0, Sys->SEEKSTART);
+	buf := array[512] of byte;
+	n := sys->read(first, buf, len buf);
+	status := "";
+	if(n > 0)
+		status = string buf[0:n];
+	t.assert(hassubstr(status, "ok: played"),
+		"first provider synthesis completes after the busy refusal");
+	first = nil;
+	writefile(MNT + "/ctl", "kokorobin /bin/echo");
+	writefile(MNT + "/ctl", "audiodev /dev/audio");
+}
+
 testHalfDuplexSwallowsWakeDuringSay(t: ref T)
 {
 	fd := sys->create(PCMFILE, Sys->OWRITE, 8r644);
@@ -1021,6 +1083,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("DeviceCapture", testDeviceCapture);
 	run("LevelTelemetry", testLevelTelemetry);
 	run("CancelKillsSay", testCancelKillsSay);
+	run("SayBusy", testSayBusy);
 	run("HalfDuplexSwallowsWakeDuringSay", testHalfDuplexSwallowsWakeDuringSay);
 	run("SayWaitsForDrain", testSayWaitsForDrain);
 	run("SpokenCancelDuringPlayback", testSpokenCancelDuringPlayback);

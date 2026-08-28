@@ -20,8 +20,10 @@ Speech9pVoiceTest: module {
 
 SRCFILE: con "/tests/speech9p_voice_test.b";
 SRVPATH: con "/dis/veltro/speech9p.dis";
+BUSYENGINEPATH: con "/dis/tests/speechbusyengine.dis";
 MNT: con "/tmp/speech9p_voice_test";
 PARAKEETMNT: con "/tmp/parakeet_voice_mount";
+BUSYMARK: con "/tmp/speechbusyengine.started";
 
 passed := 0;
 failed := 0;
@@ -115,6 +117,16 @@ pathexists(path: string): int
 {
 	(ok, nil) := sys->stat(path);
 	return ok >= 0;
+}
+
+waitexists(path: string, timeout: int): int
+{
+	for(elapsed := 0; elapsed < timeout; elapsed += 25) {
+		if(pathexists(path))
+			return 1;
+		sys->sleep(25);
+	}
+	return pathexists(path);
 }
 
 hassubstr(s, sub: string): int
@@ -324,6 +336,55 @@ testDisEngineModule(t: ref T)
 		"restore provider engine for later tests");
 }
 
+# The direct engine test module marks synthesis start, then holds it long
+# enough to make the second write overlap without a fixed delay.
+testSayBusyDirectEngine(t: ref T)
+{
+	sys->remove(BUSYMARK);
+	t.assert(writefile(MNT + "/ctl", "module " + BUSYENGINEPATH) > 0,
+		"load blocking direct TTS engine");
+
+	first := sys->open(MNT + "/say", Sys->ORDWR);
+	t.assert(first != nil, "first say opens");
+	if(first == nil) {
+		writefile(MNT + "/ctl", "engine kokoro");
+		return;
+	}
+	firsttext := array of byte "first synthesis";
+	t.assert(sys->write(first, firsttext, len firsttext) == len firsttext,
+		"first say write accepted");
+	t.assert(waitexists(BUSYMARK, 2000), "first direct synthesis started");
+
+	second := sys->open(MNT + "/say", Sys->ORDWR);
+	t.assert(second != nil, "second say opens");
+	if(second != nil) {
+		secondtext := array of byte "second synthesis";
+		t.assert(sys->write(second, secondtext, len secondtext) == len secondtext,
+			"busy say write is acknowledged");
+		sys->seek(second, big 0, Sys->SEEKSTART);
+		buf := array[512] of byte;
+		n := sys->read(second, buf, len buf);
+		status := "";
+		if(n > 0)
+			status = string buf[0:n];
+		t.assert(hassubstr(status, "error: say busy"),
+			"busy say write reads back the refusal");
+		second = nil;
+	}
+
+	sys->seek(first, big 0, Sys->SEEKSTART);
+	buf := array[512] of byte;
+	n := sys->read(first, buf, len buf);
+	status := "";
+	if(n > 0)
+		status = string buf[0:n];
+	t.assert(hassubstr(status, "ok"),
+		"first synthesis completes after the busy refusal");
+	first = nil;
+	writefile(MNT + "/ctl", "engine kokoro");
+	sys->remove(BUSYMARK);
+}
+
 testCancel(t: ref T)
 {
 	t.assert(writefile(MNT + "/cancel", "cancel") > 0, "cancel write accepted");
@@ -465,6 +526,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("PiperSayMount", testPiperSayMount);
 	run("SayqCompletion", testSayqCompletion);
 	run("DisEngineModule", testDisEngineModule);
+	run("SayBusyDirectEngine", testSayBusyDirectEngine);
 	run("Cancel", testCancel);
 	run("MultiRecordCtlWrite", testMultiRecordCtlWrite);
 	run("HelperKeyValuesValidated", testHelperKeyValuesValidated);
