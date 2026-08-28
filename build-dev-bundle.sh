@@ -62,6 +62,15 @@ LLMCONF
 cp "$ROOT/mkconfig" "$RESOURCES/"
 [ -d "$ROOT/mkfiles" ] && cp -a "$ROOT/mkfiles" "$RESOURCES/"
 
+# Host-side local speech setup used by the Lucia Settings action. Keep the
+# installer and its pinned/runtime inputs together; the installer remains the
+# source of truth for detection and configuration.
+mkdir -p "$RESOURCES/tools"
+for f in install-speech-helpers.sh speech-setup.sh parakeet-eou.manifest \
+         parakeet_stream.cpp whisper_stdin_cli.py; do
+	cp "$ROOT/tools/$f" "$RESOURCES/tools/$f"
+done
+
 for f in LICENCE NOTICE TRADEMARK.md README.md QUICKSTART.md \
          build-macos-sdl3.sh build-macos-headless.sh makemk.sh; do
 	[ -f "$ROOT/$f" ] && cp "$ROOT/$f" "$RESOURCES/"

@@ -109,7 +109,16 @@ After building (see Building section below):
 ## Voice Mode
 
 Once Veltro's LLM API key is set up (keyring → factotum inside InferNode),
-talking to Lucia takes one host-side install:
+open **Settings → Speech** in Lucia. The panel verifies an existing local
+installation without changing it, or **Prepare local speech** runs the
+installer-backed setup. It shows each stage, the selected stack, model paths,
+and the next step for a failure. Setup stages a new prefix and activates it
+only after verification, so retrying does not replace a working stack. The
+verification does not test microphone or speaker behavior; allow microphone
+access in macOS Privacy & Security and run a real voice check on the Mac.
+
+For a headless/manual install, run the same source-of-truth installer from the
+host:
 
 ```sh
 tools/install-speech-helpers.sh    # from the repo root, on the host

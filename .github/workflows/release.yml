@@ -459,6 +459,15 @@ jobs:
         cp mkconfig "$STAGE/resources/"
         [ -d mkfiles ] && cp -a mkfiles "$STAGE/resources/"
 
+        # Host-side local speech setup used by Lucia Settings. The installer
+        # and its pinned/runtime inputs travel together so it remains the
+        # source of truth for detection and configuration.
+        mkdir -p "$STAGE/resources/tools"
+        for f in install-speech-helpers.sh speech-setup.sh parakeet-eou.manifest \
+                 parakeet_stream.cpp whisper_stdin_cli.py; do
+          cp "tools/$f" "$STAGE/resources/tools/$f"
+        done
+
         # Distribution defaults for LLM config
         cat > "$STAGE/resources/lib/ndb/llm" << 'LLMCONF'
         mode=local
@@ -929,6 +938,15 @@ jobs:
         cp mkconfig "$STAGE/resources/"
         [ -d mkfiles ] && cp -a mkfiles "$STAGE/resources/"
 
+        # Host-side local speech setup used by Lucia Settings. The installer
+        # and its pinned/runtime inputs travel together so it remains the
+        # source of truth for detection and configuration.
+        mkdir -p "$STAGE/resources/tools"
+        for f in install-speech-helpers.sh speech-setup.sh parakeet-eou.manifest \
+                 parakeet_stream.cpp whisper_stdin_cli.py; do
+          cp "tools/$f" "$STAGE/resources/tools/$f"
+        done
+
         # Distribution defaults for LLM config
         cat > "$STAGE/resources/lib/ndb/llm" << 'LLMCONF'
         mode=local
@@ -1132,6 +1150,15 @@ jobs:
         LLMCONF
         cp mkconfig "$RESOURCES/"
         [ -d mkfiles ] && cp -a mkfiles "$RESOURCES/"
+
+        # Host-side local speech setup used by Lucia Settings. The installer
+        # and its pinned/runtime inputs travel together so it remains the
+        # source of truth for detection and configuration.
+        mkdir -p "$RESOURCES/tools"
+        for f in install-speech-helpers.sh speech-setup.sh parakeet-eou.manifest \
+                 parakeet_stream.cpp whisper_stdin_cli.py; do
+          cp "tools/$f" "$RESOURCES/tools/$f"
+        done
 
         # Docs and build scripts in Resources
         for f in LICENCE NOTICE TRADEMARK.md README.md QUICKSTART.md \

@@ -146,6 +146,25 @@ install_whisper_cpp() {
   brew install whisper-cpp
 }
 
+# Locate the native Whisper stream helper without installing anything. The
+# detector and the installer use the same lookup so a fallback is reported
+# usable only when the binary the wrapper will start is actually present.
+find_whisper_stream_binary() {
+  if command -v whisper-stream >/dev/null 2>&1; then
+    command -v whisper-stream
+    return 0
+  fi
+  if command -v brew >/dev/null 2>&1; then
+    local prefix
+    prefix=$(brew --prefix whisper-cpp 2>/dev/null || true)
+    if [ -n "$prefix" ] && [ -x "$prefix/bin/whisper-stream" ]; then
+      printf '%s\n' "$prefix/bin/whisper-stream"
+      return 0
+    fi
+  fi
+  return 1
+}
+
 install_python_deps() {
   if [ ! -x "$VENV/bin/python" ]; then
     log "create: $VENV"
@@ -768,6 +787,249 @@ $OPENWAKEWORD_DIR (the wrapper picks up an explicit --model path).
 EOF
 }
 
+# --- Installation detection ---
+#
+# This is deliberately a read-only path. It shares every path, manifest pin,
+# wrapper name, and ctl value with the installer above instead of teaching the
+# GUI a second definition of a healthy installation. A zero exit status means
+# all required files and the selected stack's startup smoke test passed.
+CHECK_FAILURES=()
+
+check_failure() {
+  CHECK_FAILURES+=("$1")
+  printf 'problem: %s\n' "$1"
+}
+
+ctl_value() {
+  local ctl=$1
+  local key=$2
+  awk -v wanted="$key" '
+    $0 ~ /^[[:space:]]*#/ { next }
+    $1 == wanted {
+      sub(/^[[:space:]]*[^[:space:]]+[[:space:]]*/, "", $0)
+      print
+      exit
+    }
+  ' "$ctl"
+}
+
+check_ctl_value() {
+  local ctl=$1
+  local key=$2
+  local expected=$3
+  local actual
+  actual=$(ctl_value "$ctl" "$key")
+  if [ "$actual" != "$expected" ]; then
+    check_failure "speech.ctl $key is '$actual' (expected '$expected')"
+    return 1
+  fi
+  return 0
+}
+
+check_python_packages() {
+  if [ ! -x "$VENV/bin/python" ]; then
+    check_failure "Python environment is missing: $VENV/bin/python"
+    return 1
+  fi
+  if ! "$VENV/bin/python" - <<'PY' >/dev/null 2>&1
+import kokoro_onnx
+import numpy
+import openwakeword
+import sounddevice
+import soundfile
+PY
+  then
+    check_failure "speech Python dependencies are not importable; run the setup action again"
+    return 1
+  fi
+  return 0
+}
+
+check_kokoro() {
+  local ok=1
+  if [ ! -x "$BIN/kokoro-cli" ]; then
+    check_failure "Kokoro wrapper is missing or not executable: $BIN/kokoro-cli"
+    ok=0
+  fi
+  if [ ! -s "$KOKORO_DIR/kokoro-v1.0.onnx" ]; then
+    check_failure "Kokoro model is missing or empty: $KOKORO_DIR/kokoro-v1.0.onnx"
+    ok=0
+  fi
+  if [ ! -s "$KOKORO_DIR/voices-v1.0.bin" ]; then
+    check_failure "Kokoro voices file is missing or empty: $KOKORO_DIR/voices-v1.0.bin"
+    ok=0
+  fi
+  if [ "$ok" -eq 1 ] && ! "$BIN/kokoro-cli" --list-voices >/dev/null 2>&1; then
+    check_failure "Kokoro wrapper cannot start; run the setup action again"
+    ok=0
+  fi
+  if [ "$ok" -eq 1 ] && ! printf 'ok' | \
+      "$BIN/kokoro-cli" --voice af_bella --format pcm --rate 24000 >/dev/null 2>&1; then
+    check_failure "Kokoro model cannot be loaded; run the setup action again"
+    ok=0
+  fi
+  if [ "$ok" -eq 1 ]; then
+    printf 'Kokoro model: %s\n' "$KOKORO_DIR/kokoro-v1.0.onnx"
+    printf 'Kokoro voices: %s\n' "$KOKORO_DIR/voices-v1.0.bin"
+  fi
+  return $((1 - ok))
+}
+
+check_wake() {
+  local ok=1
+  local model=""
+  if [ ! -x "$BIN/openwakeword-cli" ]; then
+    check_failure "wake-word wrapper is missing or not executable: $BIN/openwakeword-cli"
+    ok=0
+  fi
+  for candidate in "$OPENWAKEWORD_DIR/hey_jarvis_v0.1.onnx" \
+                   "$OPENWAKEWORD_DIR/hey_jarvis_v0.1.tflite"; do
+    if [ -s "$candidate" ]; then
+      model="$candidate"
+      break
+    fi
+  done
+  if [ -z "$model" ]; then
+    check_failure "the hey-jarvis wake model is missing under $OPENWAKEWORD_DIR"
+    ok=0
+  fi
+  if [ "$ok" -eq 1 ] && ! "$BIN/openwakeword-cli" --help >/dev/null 2>&1; then
+    check_failure "wake-word wrapper cannot start; run the setup action again"
+    ok=0
+  fi
+  # Explicitly select the installed model so this probe never downloads a
+  # model or depends on microphone/TCC permission.
+  if [ "$ok" -eq 1 ] && ! printf '' | \
+      "$BIN/openwakeword-cli" --stdin --model "$model" >/dev/null 2>&1; then
+    check_failure "wake-word model cannot be loaded: $model"
+    ok=0
+  fi
+  if [ "$ok" -eq 1 ]; then
+    printf 'wake model: %s\n' "$model"
+  fi
+  return $((1 - ok))
+}
+
+check_whisper() {
+  local ok=1
+  local native
+  if [ ! -x "$BIN/whisper-stream-cli" ]; then
+    check_failure "Whisper wrapper is missing or not executable: $BIN/whisper-stream-cli"
+    ok=0
+  fi
+  if [ ! -s "$WHISPER_MODEL" ] || \
+     [ "$(wc -c <"$WHISPER_MODEL" | tr -d ' ')" -lt "$WHISPER_MODEL_MIN_BYTES" ]; then
+    check_failure "Whisper model is missing or shorter than $WHISPER_MODEL_MIN_BYTES bytes: $WHISPER_MODEL"
+    ok=0
+  fi
+  native=$(find_whisper_stream_binary || true)
+  if [ -z "$native" ] || [ ! -x "$native" ]; then
+    check_failure "native whisper-stream is not available; install Homebrew whisper-cpp and retry"
+    ok=0
+  elif ! "$native" --help >/dev/null 2>&1; then
+    check_failure "native whisper-stream cannot start: $native"
+    ok=0
+  fi
+  if [ "$ok" -eq 1 ]; then
+    printf 'Whisper model: %s\n' "$WHISPER_MODEL"
+    printf 'Whisper binary: %s\n' "$native"
+  fi
+  return $((1 - ok))
+}
+
+check_parakeet() {
+  local ctl=$1
+  local ok=1
+  local model
+  if [ ! -x "$BIN/parakeet-stream" ]; then
+    check_failure "Parakeet wrapper is missing or not executable: $BIN/parakeet-stream"
+    ok=0
+  fi
+  model=$(ctl_value "$ctl" whispermodel)
+  if [ -z "$model" ] || [ ! -s "$model" ]; then
+    check_failure "Parakeet model is missing or empty: $model"
+    ok=0
+  elif ! verify_parakeet_model "$model" && [ "$PARAKEET_ALLOW_UNVERIFIED_MODEL" != 1 ]; then
+    check_failure "Parakeet model does not match the pinned manifest: $model"
+    ok=0
+  fi
+  if [ "$ok" -eq 1 ] && ! dd if=/dev/zero bs=32000 count=1 2>/dev/null | \
+      "$BIN/parakeet-stream" --stdin --model "$model" --rate 16000 >/dev/null 2>&1; then
+    check_failure "Parakeet cannot load its model; retry setup or use the Whisper fallback"
+    ok=0
+  fi
+  if [ "$ok" -eq 1 ]; then
+    printf 'Parakeet model: %s\n' "$model"
+  fi
+  return $((1 - ok))
+}
+
+check_installation() {
+  CHECK_FAILURES=()
+  CHECK_STACK=""
+  printf 'speech home: %s\n' "$PREFIX"
+  printf 'checking: read-only; no installation or network changes\n'
+
+  check_python_packages || true
+  check_kokoro || true
+  check_wake || true
+
+  ctl="$PREFIX/speech.ctl"
+  if [ ! -f "$ctl" ] || [ ! -r "$ctl" ]; then
+    check_failure "generated speech control file is missing or unreadable: $ctl"
+  else
+    if ! grep -Fq '# Written by tools/install-speech-helpers.sh' "$ctl"; then
+      check_failure "speech control file was not generated by the speech installer: $ctl"
+    fi
+    check_ctl_value "$ctl" engine kokoro || true
+    check_ctl_value "$ctl" kokorobin "$BIN/kokoro-cli" || true
+    check_ctl_value "$ctl" wakebin "$BIN/openwakeword-cli" || true
+    check_ctl_value "$ctl" voice af_bella || true
+    check_ctl_value "$ctl" wakeword 'hey jarvis' || true
+    check_ctl_value "$ctl" wakethreshold 0.5 || true
+    check_ctl_value "$ctl" duplex half || true
+
+    stream=$(ctl_value "$ctl" whisperstreambin)
+    case "$stream" in
+    "$BIN/parakeet-stream")
+      CHECK_STACK="parakeet"
+      check_ctl_value "$ctl" micmode device || true
+      check_ctl_value "$ctl" capturerate 16000 || true
+      check_parakeet "$ctl" || true
+      ;;
+    "$BIN/whisper-stream-cli")
+      CHECK_STACK="whisper"
+      check_ctl_value "$ctl" whispermodel "$WHISPER_MODEL" || true
+      check_ctl_value "$ctl" micmode helper || true
+      check_whisper || true
+      ;;
+    "")
+      check_failure "speech.ctl has no whisperstreambin selection"
+      ;;
+    *)
+      check_failure "speech.ctl selects an unknown STT helper: $stream"
+      ;;
+    esac
+    if [ -n "${CHECK_STACK:-}" ]; then
+      printf 'stack: %s\n' "$CHECK_STACK"
+    fi
+    printf 'speech control: %s\n' "$ctl"
+  fi
+
+  if [ -f "$PREFIX/speech.ctl.sh" ]; then
+    check_failure "superseded executable speech.ctl.sh is still present: $PREFIX/speech.ctl.sh"
+  fi
+
+  if [ "${#CHECK_FAILURES[@]}" -eq 0 ]; then
+    printf 'status: installed\n'
+    return 0
+  fi
+  printf 'status: incomplete (%d problem%s)\n' \
+    "${#CHECK_FAILURES[@]}" \
+    "$(if [ "${#CHECK_FAILURES[@]}" -eq 1 ]; then printf ''; else printf 's'; fi)"
+  return 1
+}
+
 main() {
   if [ "$(uname -s)" != "Darwin" ]; then
     log "notice: this installer is macOS-first; continuing with portable Python setup"
@@ -793,5 +1055,25 @@ main() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  main "$@"
+  case "${1:-}" in
+  --check)
+    if [ "$#" -ne 1 ]; then
+      printf 'usage: %s [--check]\n' "$0" >&2
+      exit 2
+    fi
+    check_installation
+    ;;
+  --help|-h)
+    printf 'usage: %s [--check]\n' "$0"
+    printf '  without arguments: install the local speech helpers\n'
+    printf '  --check: read-only installation and startup check\n'
+    ;;
+  "")
+    main "$@"
+    ;;
+  *)
+    printf 'usage: %s [--check]\n' "$0" >&2
+    exit 2
+    ;;
+  esac
 fi

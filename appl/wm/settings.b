@@ -80,8 +80,8 @@ Runnable: module
 
 # ── Categories ─────────────────────────────────────────────────
 
-CatTheme, CatLLM, CatTools, CatBudget, CatPaths, CatPrompts, CatProfile, CatMessaging, CatSecurity, CatAudit, CatSnapshots: con iota;
-NCATS: con 11;
+CatTheme, CatLLM, CatTools, CatBudget, CatPaths, CatPrompts, CatProfile, CatMessaging, CatSecurity, CatAudit, CatSnapshots, CatSpeech: con iota;
+NCATS: con 12;
 
 catnames := array[] of {
 	"Theme",
@@ -95,6 +95,7 @@ catnames := array[] of {
 	"Security",
 	"Auditing",
 	"Snapshots",
+	"Speech",
 };
 
 # Short aliases for -c <name>: tab-friendly identifiers a launcher can
@@ -112,6 +113,7 @@ catshortnames := array[] of {
 	"security",
 	"audit",
 	"snapshots",
+	"speech",
 };
 
 # ── State ──────────────────────────────────────────────────────
@@ -158,6 +160,18 @@ llm_backend_sel := "";		# backend radio click, preserved across the panel
 				# otherwise snap the radio back to the old value)
 llm_have_synthfs: int;		# 1 when /llm/ctl is mountable
 llm_models: array of string;	# current model catalogue (for tap-to-fill)
+
+# Local speech setup is a host-side action. The status and cancel files are
+# exposed through /n/local so the GUI can observe the host process without
+# putting credentials or command output in UI state.
+SPEECH_STATUS_UI: con "/n/local/tmp/infernode-speech-setup.status";
+SPEECH_CANCEL_UI: con "/n/local/tmp/infernode-speech-setup.cancel";
+SPEECH_STATUS_HOST: con "/tmp/infernode-speech-setup.status";
+SPEECH_CANCEL_HOST: con "/tmp/infernode-speech-setup.cancel";
+speechsetup_running := 0;
+speechsetup_autochecked := 0;
+speechsetup_tick: chan of int;
+speechsetup_done: chan of int;
 
 tool_names:   array of string;
 budget_names:  array of string;
@@ -251,6 +265,8 @@ init(ctxt: ref Draw->Context, argv: list of string)
 	loadcolors();
 
 	actch = chan[16] of string;
+	speechsetup_tick = chan[1] of int;
+	speechsetup_done = chan[1] of int;
 	tk->namechan(top, actch, "act");
 
 	category = startcat;
@@ -279,6 +295,14 @@ init(ctxt: ref Draw->Context, argv: list of string)
 			tk->pointer(top, *ptr);
 		a := <-actch =>
 			handleaction(a);
+		<-speechsetup_tick =>
+			if(category == CatSpeech)
+				updatespeechpanel();
+		<-speechsetup_done =>
+			speechsetup_running = 0;
+			if(category == CatSpeech)
+				updatespeechpanel();
+			flashstatus("speech action finished — see the Speech panel for its result");
 		<-themech =>
 			reloadcolors();
 		}
@@ -351,6 +375,7 @@ buildpanel(cat: int)
 	CatSecurity =>	panelsecurity();
 	CatAudit =>	panelaudit();
 	CatSnapshots =>	panelsnapshots();
+	CatSpeech =>	panelspeech();
 	}
 	tk->cmd(top, "update");
 }
@@ -799,6 +824,195 @@ dosnapnow()
 	flashstatus("snapshot taken");
 }
 
+# ── Local speech setup ─────────────────────────────────────────
+
+panelspeech()
+{
+	raw := speechstatusraw();
+	if(raw == "")
+		raw = "state=idle\nphase=waiting\nprogress=0\nmessage=Not checked yet";
+	hdr("speechh", "Local speech stack");
+	lbl("speechstate", speechsummary(raw));
+	lbl("speechstack", speechdetails(raw));
+	if(speechsetup_running)
+		btn("speechaction", "Cancel setup", "speechcancel");
+	else
+		btn("speechaction", "Prepare local speech", "speechsetup");
+	btn("speechcheck", "Verify local speech", "speechcheck");
+	lbl("speechperm", "Microphone: allow Lucia in macOS Privacy & Security > Microphone when asked.");
+	lbl("speechcred", "Credentials are not read, displayed, or written by this setup.");
+	if(!speechsetup_autochecked) {
+		speechsetup_autochecked = 1;
+		startspeechcommand("check");
+	}
+}
+
+speechstatusraw(): string
+{
+	return readfile(SPEECH_STATUS_UI);
+}
+
+speechfield(raw, key: string): string
+{
+	prefix := key + "=";
+	start := 0;
+	while(start < len raw) {
+		end := start;
+		while(end < len raw && raw[end] != '\n')
+			end++;
+		line := raw[start:end];
+		if(len line >= len prefix && line[0:len prefix] == prefix)
+			return line[len prefix:];
+		start = end + 1;
+	}
+	return "";
+}
+
+speechsummary(raw: string): string
+{
+	state := speechfield(raw, "state");
+	phase := speechfield(raw, "phase");
+	progress := speechfield(raw, "progress");
+	message := speechfield(raw, "message");
+	if(state == "") state = "unknown";
+	if(phase == "") phase = "waiting";
+	if(progress == "") progress = "0";
+	if(message == "") message = "No verification result yet";
+	return sys->sprint("Status: %s — %s (%s%%)\n%s", state, phase, progress, message);
+}
+
+speechdetails(raw: string): string
+{
+	out := "";
+	start := 0;
+	while(start < len raw) {
+		end := start;
+		while(end < len raw && raw[end] != '\n')
+			end++;
+		line := raw[start:end];
+		if(len line >= 7 && line[0:7] == "detail=") {
+			if(out != "") out += "\n";
+			out += line[7:];
+		}
+		start = end + 1;
+	}
+	if(out == "")
+		out = "No verification details yet.";
+	return out;
+}
+
+updatespeechpanel()
+{
+	if(category != CatSpeech)
+		return;
+	raw := speechstatusraw();
+	if(raw == "") {
+		if(speechsetup_running)
+			setpanellbl("speechstate", "Status: running — waiting for the host setup command");
+		else
+			setpanellbl("speechstate", "Status: failed — no host setup status was returned");
+	} else {
+		setpanellbl("speechstate", speechsummary(raw));
+		setpanellbl("speechstack", speechdetails(raw));
+	}
+
+	if(speechsetup_running)
+		tk->cmd(top, ".content.speechaction configure -text {Cancel setup} -command {send act speechcancel}");
+	else
+		tk->cmd(top, ".content.speechaction configure -text {Prepare local speech} -command {send act speechsetup}");
+	tk->cmd(top, "update");
+}
+
+speechscriptpath(): string
+{
+	root := strip(readfile1("/env/emuroot"));
+	if(root == "")
+		return "";
+	return root + "/tools/speech-setup.sh";
+}
+
+startspeechcommand(mode: string)
+{
+	if(speechsetup_running)
+		return;
+	if(mode != "check" && mode != "setup")
+		return;
+	script := speechscriptpath();
+	if(script == "") {
+		flashstatus("speech setup unavailable — the emulator root is unknown");
+		return;
+	}
+	# Do not remove the trfs-backed status path here. A negative lookup can
+	# be cached across the host process recreating it; overwrite it in place
+	# and let the host wrapper publish later phases atomically.
+	writespeechstarting(mode);
+	speechsetup_running = 1;
+	if(category == CatSpeech) {
+		what := "check";
+		if(mode == "setup") what = "setup";
+		setpanellbl("speechstate", "Status: running — starting the host speech " + what);
+		tk->cmd(top, ".content.speechaction configure -text {Cancel setup} -command {send act speechcancel}");
+	}
+	spawn speechcommandrun(script, mode, speechsetup_done);
+	spawn speechcommandticker();
+}
+
+speechcommandrun(script, mode: string, done: chan of int)
+{
+	osmod := load Runnable "/dis/os.dis";
+	if(osmod == nil) {
+		writespeechfailure("Host command support is unavailable", "rebuild the os command and restart Lucia");
+		done <-= 1;
+		return;
+	}
+	args := "os" :: script :: ("--" + mode) ::
+		"--status-file" :: SPEECH_STATUS_HOST ::
+		"--cancel-file" :: SPEECH_CANCEL_HOST :: nil;
+	{
+		osmod->init(nil, args);
+	} exception {
+	* =>
+		# A non-zero host exit has already written an actionable status file.
+		# Only synthesize a generic message when os itself could not start.
+		raw := speechstatusraw();
+		if(raw == "" || speechfield(raw, "state") == "running")
+			writespeechfailure("The host speech setup command could not start", "check the bundled tools directory and retry");
+	}
+	done <-= 1;
+}
+
+writespeechstarting(mode: string)
+{
+	data := "state=running\nphase=starting\nprogress=0\nmessage=Starting host speech " + mode + "\n";
+	fd := sys->open(SPEECH_STATUS_UI, Sys->OWRITE|Sys->OTRUNC);
+	if(fd != nil) {
+		b := array of byte data;
+		sys->write(fd, b, len b);
+	}
+}
+
+speechcommandticker()
+{
+	for(;;) {
+		if(!speechsetup_running)
+			return;
+		sys->sleep(250);
+		if(speechsetup_running)
+			alt { speechsetup_tick <-= 1 => ; * => ; }
+	}
+}
+
+writespeechfailure(message, next: string)
+{
+	data := "state=failed\nphase=failed\nprogress=0\nmessage=" + message +
+		"\ndetail=next: " + next + "\n";
+	fd := sys->open(SPEECH_STATUS_UI, Sys->OWRITE|Sys->OTRUNC);
+	if(fd != nil) {
+		b := array of byte data;
+		sys->write(fd, b, len b);
+	}
+}
+
 # ── shared small helpers for the two panels ────────────────────
 
 fileexists(p: string): int
@@ -902,6 +1116,17 @@ handleaction(a: string)
 	"snapenable" =>	dosnapenable();
 	"snapdisable" =>	dosnapdisable();
 	"snapnow" =>	dosnapnow();
+	"speechsetup" =>
+		startspeechcommand("setup");
+	"speechcheck" =>
+		startspeechcommand("check");
+	"speechcancel" =>
+		if(speechsetup_running) {
+			if(!touchfile(SPEECH_CANCEL_UI))
+				flashstatus("could not request speech setup cancellation");
+			else
+				flashstatus("speech setup cancellation requested");
+		}
 	"secenroll" =>	doenroll2fa();
 	"secaddkey" =>	doaddkey2fa();
 	"secdisable" =>	dodisable2fa();
