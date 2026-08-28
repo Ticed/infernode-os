@@ -54,6 +54,15 @@ sed -i '' "s|InferNode 0.1|InferNode 0.1 build ${BUILD_DATE}-${SHORT_SHA}|" "$RO
 echo "Version: $(grep VERSION "$ROOT/include/version.h")"
 echo ""
 
+# mkhost-MacOSX sets NDATE=ndate and resolves it through PATH. BSD date has
+# no -n, so without utils/ndate built the emulator compiles KERNDATE from an
+# empty string and fails on `ulong kerndate = ;`. The EMUDIRS walk builds it
+# before emu; these scripts go straight to the emulator, so build it here.
+if [[ ! -x "$ROOT/MacOSX/arm64/bin/ndate" ]]; then
+    echo "Building utils/ndate (needed for KERNDATE)..."
+    (cd "$ROOT/utils/ndate" && mk install)
+fi
+
 # Build emulator
 cd "$ROOT/emu/MacOSX"
 
