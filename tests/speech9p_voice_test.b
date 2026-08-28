@@ -21,6 +21,7 @@ Speech9pVoiceTest: module {
 SRCFILE: con "/tests/speech9p_voice_test.b";
 SRVPATH: con "/dis/veltro/speech9p.dis";
 MNT: con "/tmp/speech9p_voice_test";
+MODULEMNT: con "/tmp/speech9p_module_test";
 PARAKEETMNT: con "/tmp/parakeet_voice_mount";
 
 passed := 0;
@@ -293,35 +294,36 @@ testSayqCompletion(t: ref T)
 		"restore default tts engine");
 }
 
-testDisEngineModule(t: ref T)
+testModuleRuntimeRefused(t: ref T)
 {
-	t.assert(writefile(MNT + "/ctl", "provider " + PARAKEETMNT) > 0,
-		"configure module provider mount");
-	t.assert(createfile(PARAKEETMNT + "/say", "") >= 0,
-		"create module provider say file");
-	t.assert(createfile(PARAKEETMNT + "/listen", "final module transcript\n") > 0,
-		"create module provider listen file");
-	t.assert(createfile(PARAKEETMNT + "/voices", "module_voice\n") > 0,
-		"create module provider voices file");
+	before := readfile(MNT + "/ctl");
 	t.assert(writefile(MNT + "/ctl",
-		"module /dis/veltro/speechprovider.dis") > 0,
-		"load provider-backed SpeechEngine module");
-	ctl := readfile(MNT + "/ctl");
+		"module /dis/veltro/speechprovider.dis") < 0,
+		"module is startup-only");
+	t.assert(readfile(MNT + "/ctl") == before,
+		"refused module write leaves the configuration unchanged");
+}
+
+testStartupModuleFlag(t: ref T)
+{
+	# The module remains available through the operator-controlled startup flag.
+	sys->unmount(nil, MODULEMNT);
+	sys->remove(MODULEMNT);
+	t.assert(sys->create(MODULEMNT, Sys->OREAD, Sys->DMDIR | 8r755) != nil,
+		"create startup module mountpoint");
+	srv := load Speech9pSrv SRVPATH;
+	if(srv == nil)
+		raise "fail:load";
+	spawn srv->init(nil, "speech9p" :: "-m" :: MODULEMNT :: "-E" ::
+		"/dis/veltro/speechprovider.dis" :: nil);
+	sys->sleep(300);
+	ctl := readfile(MODULEMNT + "/ctl");
 	t.assert(hassubstr(ctl, "engine module"),
-		"ctl reports dynamically loaded engine selection");
+		"-E selects the SpeechEngine module at startup");
 	t.assert(hassubstr(ctl, "modulename provider"),
-		"ctl reports loaded module name");
-	voices := readfile(MNT + "/voices");
-	t.assert(hassubstr(voices, "module_voice"),
-		"voices are supplied by the loaded module");
-	result := writesayread(MNT + "/sayq", "module-backed speech");
-	t.assert(hassubstr(result, "ok"),
-		"module-backed sayq returns terminal status");
-	written := readfile(PARAKEETMNT + "/say");
-	t.assert(hassubstr(written, "module-backed speech"),
-		"loaded module delegated speech through its provider namespace");
-	t.assert(writefile(MNT + "/ctl", "engine kokoro") > 0,
-		"restore provider engine for later tests");
+		"-E loads the configured SpeechEngine module");
+	sys->unmount(nil, MODULEMNT);
+	sys->sleep(100);
 }
 
 testCancel(t: ref T)
@@ -436,7 +438,6 @@ testSealedKeysRefused(t: ref T)
 		"wakeword hey \"; echo INF56INJECTED; \"",
 		"wakethreshold 0.5; echo INF56INJECTED",
 		"engine cmd",
-		"module /dis/veltro/speechprovider.dis",
 		"provider /tmp/INF56INJECTED",
 		"parakeetmount /tmp/INF56INJECTED",
 		"parakeetlisten /tmp/INF56INJECTED/listen",
@@ -485,7 +486,8 @@ init(nil: ref Draw->Context, args: list of string)
 	run("ParakeetListenMount", testParakeetListenMount);
 	run("PiperSayMount", testPiperSayMount);
 	run("SayqCompletion", testSayqCompletion);
-	run("DisEngineModule", testDisEngineModule);
+	run("ModuleRuntimeRefused", testModuleRuntimeRefused);
+	run("StartupModuleFlag", testStartupModuleFlag);
 	run("Cancel", testCancel);
 	run("MultiRecordCtlWrite", testMultiRecordCtlWrite);
 	run("HelperKeyValuesValidated", testHelperKeyValuesValidated);
