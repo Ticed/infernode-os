@@ -348,17 +348,30 @@ testStartupModuleFlag(t: ref T)
 }
 
 # The direct engine test module marks synthesis start, then holds it long
-# enough to make the second write overlap without a fixed delay.
+# enough to make the second write overlap without a fixed delay. It is loaded
+# through -E because the runtime module control key is startup-only.
 testSayBusyDirectEngine(t: ref T)
 {
 	sys->remove(BUSYMARK);
-	t.assert(writefile(MNT + "/ctl", "module " + BUSYENGINEPATH) > 0,
-		"load blocking direct TTS engine");
+	sys->unmount(nil, MODULEMNT);
+	sys->remove(MODULEMNT);
+	mountfd := sys->create(MODULEMNT, Sys->OREAD, Sys->DMDIR | 8r755);
+	t.assert(mountfd != nil, "create busy-test mountpoint");
+	if(mountfd == nil)
+		return;
+	mountfd = nil;
 
-	first := sys->open(MNT + "/say", Sys->ORDWR);
+	srv := load Speech9pSrv SRVPATH;
+	if(srv == nil)
+		raise "fail:load";
+	spawn srv->init(nil, "speech9p" :: "-m" :: MODULEMNT :: "-E" ::
+		BUSYENGINEPATH :: nil);
+	sys->sleep(300);
+
+	first := sys->open(MODULEMNT + "/say", Sys->ORDWR);
 	t.assert(first != nil, "first say opens");
 	if(first == nil) {
-		writefile(MNT + "/ctl", "engine kokoro");
+		sys->unmount(nil, MODULEMNT);
 		return;
 	}
 	firsttext := array of byte "first synthesis";
@@ -366,7 +379,7 @@ testSayBusyDirectEngine(t: ref T)
 		"first say write accepted");
 	t.assert(waitexists(BUSYMARK, 2000), "first direct synthesis started");
 
-	second := sys->open(MNT + "/say", Sys->ORDWR);
+	second := sys->open(MODULEMNT + "/say", Sys->ORDWR);
 	t.assert(second != nil, "second say opens");
 	if(second != nil) {
 		secondtext := array of byte "second synthesis";
@@ -392,7 +405,8 @@ testSayBusyDirectEngine(t: ref T)
 	t.assert(hassubstr(status, "ok"),
 		"first synthesis completes after the busy refusal");
 	first = nil;
-	writefile(MNT + "/ctl", "engine kokoro");
+	sys->unmount(nil, MODULEMNT);
+	sys->sleep(100);
 	sys->remove(BUSYMARK);
 }
 
