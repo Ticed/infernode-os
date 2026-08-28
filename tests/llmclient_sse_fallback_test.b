@@ -448,7 +448,7 @@ mockserver_sse_trailer(port: string, ready, done: chan of int)
 	done <-= 1;
 }
 
-# INF-46. Once a stream has been consumed incrementally, the response must
+# Once a stream has been consumed incrementally, the response must
 # be built from what was streamed. The old code re-sniffed whatever was
 # left in the buffer and, if it began with '{', parsed that as a whole
 # response instead - so the caller was handed the answer a second time and
