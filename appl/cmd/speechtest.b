@@ -464,7 +464,8 @@ init(nil: ref Draw->Context, args: list of string)
 		err := startsrv(SHIMPATH, "speechshim9p" :: "-m" :: SHIMMNT :: nil,
 			SHIMMNT + "/ctl");
 		if(err == nil)
-			err = startsrv(SPEECH9PPATH, "speech9p" :: "-m" :: speech :: nil,
+			err = startsrv(SPEECH9PPATH,
+				"speech9p" :: "-m" :: speech :: "-P" :: SHIMMNT :: nil,
 				speech + "/ctl");
 		if(err != nil)
 			fatal(err);

@@ -136,7 +136,7 @@ mkdir -p /tmp
 > /tmp/speechshim9p.log
 /dis/veltro/speechshim9p >[2] /tmp/speechshim9p.log
 > /tmp/speech9p.log
-/dis/veltro/speech9p >[2] /tmp/speech9p.log
+/dis/veltro/speech9p -P /mnt/speechshim >[2] /tmp/speech9p.log
 echo provider /mnt/speechshim > /mnt/speech/ctl
 echo duplex half > /mnt/speech/ctl
 

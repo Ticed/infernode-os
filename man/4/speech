@@ -9,6 +9,9 @@ speech \- 9P file server for text-to-speech and speech-to-text
 .B \-m
 .I mountpoint
 ] [
+.B \-P
+.I provider-root
+] [
 .B \-e
 .I engine
 ] [
@@ -65,6 +68,16 @@ Mount the file server at
 .I mountpoint
 (default
 .BR /mnt/speech ).
+.TP
+.BI \-P " provider-root"
+Declare the provider mount root. The
+.B provider ,
+.B parakeetmount ,
+.B parakeetlisten ,
+and
+.B pipersay
+control values are restricted to this root and its descendants (default
+.BR /n/parakeet ).
 .TP
 .BI \-e " engine"
 Select the speech engine backend.

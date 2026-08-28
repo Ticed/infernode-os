@@ -137,7 +137,7 @@ startserver()
 		sys->fprint(sys->fildes(2), "cannot load speech9p: %r\n");
 		raise "fail:load";
 	}
-	spawn srv->init(nil, "speech9p" :: "-m" :: MNT :: "-e" :: "kokoro" :: "-v" :: "af_bella" :: nil);
+	spawn srv->init(nil, "speech9p" :: "-m" :: MNT :: "-P" :: PARAKEETMNT :: "-e" :: "kokoro" :: "-v" :: "af_bella" :: nil);
 	sys->sleep(300);
 }
 
@@ -190,10 +190,10 @@ testConfig(t: ref T)
 		"wake helper accepted");
 	t.assert(writefile(MNT + "/ctl", "wakeword hey lucia") > 0, "wake word accepted");
 	t.assert(writefile(MNT + "/ctl", "wakethreshold 0.7") > 0, "wake threshold accepted");
-	t.assert(writefile(MNT + "/ctl", "parakeetmount /n/parakeet") > 0, "parakeet mount accepted");
-	t.assert(writefile(MNT + "/ctl", "parakeetlisten /n/parakeet/listen") > 0,
+	t.assert(writefile(MNT + "/ctl", "parakeetmount " + PARAKEETMNT) > 0, "parakeet mount accepted");
+	t.assert(writefile(MNT + "/ctl", "parakeetlisten " + PARAKEETMNT + "/listen") > 0,
 		"parakeet listen mount accepted");
-	t.assert(writefile(MNT + "/ctl", "pipersay /n/parakeet/say") > 0,
+	t.assert(writefile(MNT + "/ctl", "pipersay " + PARAKEETMNT + "/say") > 0,
 		"piper say mount accepted");
 	ctl = readfile(MNT + "/ctl");
 	t.assert(ctl != nil && len ctl > 0, "ctl remains readable after config writes");
@@ -203,10 +203,10 @@ testConfig(t: ref T)
 	t.assert(hassubstr(ctl, "listenengine whisper"), "ctl reports listen engine");
 	t.assert(hassubstr(ctl, "wakeword hey lucia"), "ctl reports wake word");
 	t.assert(hassubstr(ctl, "wakethreshold 0.7"), "ctl reports wake threshold");
-	t.assert(hassubstr(ctl, "parakeetmount /n/parakeet"), "ctl reports parakeet mount");
-	t.assert(hassubstr(ctl, "parakeetlisten /n/parakeet/listen"),
+	t.assert(hassubstr(ctl, "parakeetmount " + PARAKEETMNT), "ctl reports parakeet mount");
+	t.assert(hassubstr(ctl, "parakeetlisten " + PARAKEETMNT + "/listen"),
 		"ctl reports parakeet listen mount");
-	t.assert(hassubstr(ctl, "pipersay /n/parakeet/say"),
+	t.assert(hassubstr(ctl, "pipersay " + PARAKEETMNT + "/say"),
 		"ctl reports piper say mount");
 }
 
@@ -393,6 +393,27 @@ testHelperKeyValuesValidated(t: ref T)
 			"accepted: " + legit[j]);
 }
 
+# Provider aliases must stay below the configured provider root even while
+# boot is still applying its startup configuration. The seal closes the keys
+# later, but it cannot repair a path accepted before the seal.
+testProviderPathsConfined(t: ref T)
+{
+	t.assert(writefile(MNT + "/ctl", "provider " + PARAKEETMNT) > 0,
+		"configure provider root");
+	t.assert(writefile(MNT + "/ctl", "parakeetlisten " + PARAKEETMNT + "/listen") > 0,
+		"provider listen path accepted");
+	t.assert(writefile(MNT + "/ctl", "pipersay " + PARAKEETMNT + "/say") > 0,
+		"provider say path accepted");
+	t.assert(writefile(MNT + "/ctl", "parakeetlisten /tmp/speech9p-outside/listen") < 0,
+		"provider listen path outside root refused");
+	t.assert(writefile(MNT + "/ctl", "pipersay /tmp/speech9p-outside/say") < 0,
+		"provider say path outside root refused");
+	t.assert(writefile(MNT + "/ctl", "provider /tmp/speech9p-outside") < 0,
+		"provider root outside declared mount refused");
+	t.assert(writefile(MNT + "/ctl", "provider " + PARAKEETMNT) > 0,
+		"restore provider root");
+}
+
 # These keys choose what code runs: the engine, the host helper
 # commands forwarded to the provider, the .dis module, and the provider tree
 # the say/listen files are proxied from. Writing one is equivalent to running a
@@ -468,6 +489,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("Cancel", testCancel);
 	run("MultiRecordCtlWrite", testMultiRecordCtlWrite);
 	run("HelperKeyValuesValidated", testHelperKeyValuesValidated);
+	run("ProviderPathsConfined", testProviderPathsConfined);
 	run("SealedKeysRefused", testSealedKeysRefused);
 
 	teardown();
