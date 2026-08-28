@@ -1,0 +1,14 @@
+#!/bin/sh
+# Keep the top-level Limbo test list complete and unambiguous.
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
+	echo "pre-commit: cannot locate repository root" >&2
+	exit 2
+}
+
+if [ ! -x "$ROOT/tools/verify-test-targs.sh" ]; then
+	# Checked out a revision from before the guard landed. Let the commit
+	# through rather than block on missing infrastructure; CI still checks.
+	exit 0
+fi
+
+exec "$ROOT/tools/verify-test-targs.sh"

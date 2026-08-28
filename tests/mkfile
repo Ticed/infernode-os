@@ -4,6 +4,16 @@ DIRS=\
 	testing\
 
 TARG=\
+	alt_nilchan_test.dis\
+	factotum_grant_test.dis\
+	lock_stress_test.dis\
+	msg_inject_test.dis\
+	msg_triage_test.dis\
+	plan_test.dis\
+	rfc3339_test.dis\
+	spawn_exec_test.dis\
+	spawn_schedule_test.dis\
+	wallet9p_test.dis\
 	authnode.dis\
 	9p_export_test.dis\
 	auditchain_test.dis\
