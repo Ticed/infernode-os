@@ -123,7 +123,7 @@ write /mnt/speech/ctl <- pipermodel /opt/piper/models/en_US-lessac-medium.onnx
 | `piperbin` / `pipermodel`     | binary path / `.onnx` voice model | `local` engine. |
 | `whisperbin` / `whispermodel` | binary path / `.bin` GGML model    | `local` engine. |
 | `ttsengine` | `engine` or `piper` | Selects whether `/mnt/speech/say` uses the configured speech9p TTS engine or delegates to the provider's `say` file. |
-| `provider` | provider mount root | The speech provider mount behind `listen`, `wake`, kokoro-engine `say`, `cancel`, and live `level` telemetry (see the provider contract below). Default `/n/parakeet`; boot points it at `/mnt/speechshim`. |
+| `provider` | provider mount root | The speech provider mount behind `listen`, `wake`, kokoro-engine `say`, `cancel`, and live `level` telemetry (see the provider contract below). Default `/n/parakeet`; boot points it at `/mnt/speechshim`. The startup `-P` root bounds this value and its compatibility aliases. |
 | `listenengine` | `whisper` or `parakeet` | Compatibility alias; both values consume the provider mount. |
 | `whisperstreambin` / `wakebin` / `kokorobin` / `wakeword` / `wakethreshold` | helper commands and wake tuning | Stored for introspection and forwarded to the provider's `ctl`; `speechshim9p` consumes them. `speech9p` itself runs no helpers. |
 | `audiodev` / `capturedev` / `micmode` / `capturerate` | audio routing (see SPEECH-REMOTE-AUDIO.md) | Forwarded to the provider's `ctl` unchanged. In `speechshim9p`: `audiodev` is the playback (and default capture) device path; `/dev/audio` playback accepts only 8000, 11025, 16000, 22050, or 44100 Hz, while non-default devices may use any configured 8000–48000 Hz rate their own control endpoint supports. `capturedev` overrides capture (`default` clears it); `micmode helper\|device` chooses whether the helper CLI grabs the host mic or the shim pumps PCM from the capture device into helper stdin; `capturerate` remains independently configurable from 8000–48000 Hz for the capture/Parakeet resampling path. |
@@ -151,7 +151,9 @@ mount** — a 9P namespace serving this contract:
 | `<provider>/voices` | optional voice list |
 
 `speech9p` selects the provider with `echo 'provider /n/x' > /mnt/speech/ctl`
-(`parakeetmount` remains as an alias) and consumes only these files — it runs
+(`parakeetmount` remains as an alias) and consumes only these files. Start it
+with `-P /n/x` (or another operator-selected mount root) to bound provider
+selection and the `parakeetlisten`/`pipersay` aliases — it runs
 no helper binaries itself. Streaming reads ignore the fid offset (a consumer
 holds one fd across many reads), and helper-configuration keys written to
 `/mnt/speech/ctl` are forwarded to the provider's `ctl`.

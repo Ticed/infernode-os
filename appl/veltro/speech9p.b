@@ -125,6 +125,9 @@ providerwakefd: ref Sys->FD;
 
 # Helper configuration retained for introspection and forwarded to the
 # provider's ctl when one is mounted (speechshim9p consumes these keys).
+# The operator declares the provider mount root at startup; ctl values may
+# select only that root or one of its descendants.
+providerallow := "/n/parakeet";
 kokorobin := "kokoro-cli";
 ttsengine := "engine";
 listenengine := "whisper";
@@ -167,9 +170,10 @@ nomod(s: string)
 
 usage()
 {
-	sys->fprint(stderr, "Usage: speech9p [-D] [-m mountpoint] [-e engine] [-E module.dis] [-k apikey]\n");
+	sys->fprint(stderr, "Usage: speech9p [-D] [-m mountpoint] [-P provider-root] [-e engine] [-E module.dis] [-k apikey]\n");
 	sys->fprint(stderr, "  -D            Enable 9P debug tracing\n");
 	sys->fprint(stderr, "  -m mountpoint Mount point (default: /mnt/speech)\n");
+	sys->fprint(stderr, "  -P provider-root Allowed provider mount root (default: /n/parakeet)\n");
 	sys->fprint(stderr, "  -e engine     Engine: cmd (default), api, local, kokoro\n");
 	sys->fprint(stderr, "  -E module.dis Load a SpeechEngine module and select it\n");
 	sys->fprint(stderr, "  -k key        API key (for api engine)\n");
@@ -208,6 +212,12 @@ init(nil: ref Draw->Context, args: list of string)
 		case o {
 		'D' =>	styxservers->traceset(1);
 		'm' =>	mountpt = arg->earg();
+		'P' =>
+			providerallow = arg->earg();
+			if(!safemount(providerallow)) {
+				sys->fprint(stderr, "speech9p: unsafe provider root '%s'\n", providerallow);
+				usage();
+			}
 		'e' =>
 			e := arg->earg();
 			case e {
@@ -234,6 +244,13 @@ init(nil: ref Draw->Context, args: list of string)
 		* =>	usage();
 		}
 	arg = nil;
+
+	# Start with the operator-declared provider root. Runtime ctl writes can
+	# narrow this selection, but cannot move it outside the declared mount.
+	providermount = providerallow;
+	providerlisten = providerallow + "/listen";
+	providersay = providerallow + "/say";
+	providerwake = providerallow + "/wake";
 
 	# Detect platform and set defaults
 	initplatform();
@@ -628,15 +645,21 @@ applyconfig(cmd: string): string
 		# not transcribing between turns.
 		forwardprovider(key, val);
 	"provider" or "parakeetmount" =>
+		if(!pathwithin(providerallow, val))
+			return "error: provider path is outside the allowed mount";
 		resetprovider();
 		providermount = val;
 		providerlisten = val + "/listen";
 		providersay = val + "/say";
 		providerwake = val + "/wake";
 	"parakeetlisten" =>
+		if(!pathwithin(providermount, val))
+			return "error: parakeetlisten path is outside the provider mount";
 		resetprovider();
 		providerlisten = val;
 	"pipersay" =>
+		if(!pathwithin(providermount, val))
+			return "error: pipersay path is outside the provider mount";
 		providersay = val;
 	* =>
 		return "error: unknown config key: " + key;
@@ -685,6 +708,32 @@ safename(s: string): int
 		return 0;
 	}
 	return 1;
+}
+
+# A provider mount path must be rooted and contain ordinary path components.
+# Rejecting dot components keeps the lexical containment check below truthful.
+safemount(s: string): int
+{
+	if(s == nil || len s < 2 || s[0] != '/' || !safepath(s))
+		return 0;
+	start := 1;
+	for(i := 1; i <= len s; i++) {
+		if(i < len s && s[i] != '/')
+			continue;
+		component := s[start:i];
+		if(component == "" || component == "." || component == "..")
+			return 0;
+		start = i + 1;
+	}
+	return 1;
+}
+
+pathwithin(root, path: string): int
+{
+	if(!safemount(root) || !safemount(path))
+		return 0;
+	return path == root ||
+		(len path > len root && hasprefix(path, root) && path[len root] == '/');
 }
 
 # A host path naming an executable or a model file. `..` is allowed as a
