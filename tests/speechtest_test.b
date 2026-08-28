@@ -185,6 +185,15 @@ testEchoFinal(t: ref T)
 		"-e should speak the transcript itself");
 }
 
+testEchoConfidenceFinal(t: ref T)
+{
+	t.assert(waitfor(MOCK + "/say", "hello world", 5000),
+		"-e should speak the text from a confidence-bearing final");
+	got := strip(readfile(MOCK + "/say"));
+	t.assertseq(got, "hello world",
+		"confidence metadata is not part of the spoken transcript");
+}
+
 testPartialDoesNotSpeak(t: ref T)
 {
 	sys->sleep(600);
@@ -235,6 +244,8 @@ init(nil: ref Draw->Context, args: list of string)
 
 	runst("FinalSpeaksPhrase", "final hello world\n", nil, testFinalSpeaksPhrase);
 	runst("EchoFinal", "final hello world\n", "-e" :: nil, testEchoFinal);
+	runst("EchoConfidenceFinal", "final confidence=0.9500 hello world\n",
+		"-e" :: nil, testEchoConfidenceFinal);
 	runst("PartialDoesNotSpeak", "partial hel\n", nil, testPartialDoesNotSpeak);
 	runst("JunkFinalNotSpoken", "final [BLANK_AUDIO]\n", nil, testJunkFinalNotSpoken);
 	runst("ErrorDoesNotSpeak", "error: helper missing\n", nil, testErrorDoesNotSpeak);

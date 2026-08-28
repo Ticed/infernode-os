@@ -5,6 +5,8 @@ include "sys.m";
 
 include "draw.m";
 
+include "speech.m";
+
 include "testing.m";
 	testing: Testing;
 	T: import testing;
@@ -295,6 +297,14 @@ testSayqCompletion(t: ref T)
 
 testDisEngineModule(t: ref T)
 {
+	# This test is compiled against the public Speech interface. Constructing
+	# Partial exercises the confidence field while the rest of the test loads
+	# the provider module through speech9p.
+	partial := ref Speech->Partial("module transcript", 0, 950);
+	t.assertseq(partial.text, "module transcript", "Partial text shape");
+	t.asserteq(partial.isfinal, 0, "Partial hypothesis shape");
+	t.asserteq(partial.confidence, 950, "Partial confidence shape");
+
 	t.assert(writefile(MNT + "/ctl", "provider " + PARAKEETMNT) > 0,
 		"configure module provider mount");
 	t.assert(createfile(PARAKEETMNT + "/say", "") >= 0,

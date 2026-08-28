@@ -329,8 +329,9 @@ chime(kind: string)
 
 # Parse a listen-stream record into a final transcript, or nil if the record
 # is a partial, an error, or empty. Wire format (see appl/veltro/speech9p.b):
-# newline-delimited "partial <text>" / "final <text>" records; bare text from
-# batch-style helpers is treated as final.
+# newline-delimited "partial [confidence=N] <text>" /
+# "final [confidence=N] <text>" records; bare text from batch-style helpers
+# is treated as final.
 finaltext(s: string): string
 {
 	s = strip(s);

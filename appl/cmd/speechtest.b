@@ -30,8 +30,8 @@ implement Speechtest;
 # Host-side launcher: tools/speech-test.sh.
 #
 # The listen wire format and the junk-final filter are kept in sync
-# with appl/cmd/voicemode.b (newline-delimited "partial <text>" /
-# "final <text>" / "error: <reason>" records; bare text is a final).
+# with appl/cmd/voicemode.b (newline-delimited "partial [confidence=N] <text>" /
+# "final [confidence=N] <text>" / "error: <reason>" records; bare text is a final).
 #
 
 include "sys.m";
@@ -130,7 +130,7 @@ finaltext(s: string): string
 	if(s == nil || s == "")
 		return nil;
 	if(hasprefix(s, "final "))
-		return strip(s[6:]);
+		return recordtext(s[6:]);
 	if(hasprefix(s, "text "))
 		return strip(s[5:]);
 	if(hasprefix(s, "partial "))
@@ -138,6 +138,17 @@ finaltext(s: string): string
 	if(hasprefix(s, "error:"))
 		return nil;
 	return s;
+}
+
+recordtext(s: string): string
+{
+	s = strip(s);
+	if(!hasprefix(s, "confidence="))
+		return s;
+	for(i := 0; i < len s; i++)
+		if(s[i] == ' ')
+			return strip(s[i+1:]);
+	return nil;
 }
 
 ispartial(s: string): int
@@ -166,7 +177,7 @@ parselisten(s: string): (int, string)
 		if(ispartial(line)) {
 			if(kind != LISTEN_FINAL) {
 				kind = LISTEN_PARTIAL;
-				text = strip(line[8:]);
+				text = recordtext(line[8:]);
 			}
 			continue;
 		}

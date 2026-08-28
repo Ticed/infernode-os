@@ -59,17 +59,21 @@ Speech: module {
 	#
 	# /mnt/speech/listen serves these as newline-delimited text records:
 	#
-	#   partial <text>    hypothesis; may be revised by later records
-	#   final <text>      end-of-speech transcript; closes the utterance
-	#   error: <reason>   helper failure
+	#   partial [confidence=N] <text>    hypothesis; may be revised by later records
+	#   final [confidence=N] <text>      end-of-speech transcript; closes the utterance
+	#   error: <reason>                    helper failure
+	#
+	# confidence=N is optional and is a decimal value from 0 to 1. Consumers
+	# that expose Partial store it as permille (0 to 1000), or -1 when absent.
 	#
 	# Bare text from batch-style helpers is treated as final. voicemode
 	# consumes the stream; speech9p passes helper records through
 	# unparsed (see appl/veltro/speech9p.b dolisten and appl/cmd/
 	# voicemode.b finaltext).
 	Partial: adt {
-		text:    string;  # Transcript text (partial or final)
-		isfinal: int;     # 0 = hypothesis, 1 = end-of-speech transcript
+		text:       string;  # Transcript text (partial or final)
+		isfinal:    int;     # 0 = hypothesis, 1 = end-of-speech transcript
+		confidence: int;     # Permille confidence; -1 = not supplied
 	};
 
 	# TTS engine interface
