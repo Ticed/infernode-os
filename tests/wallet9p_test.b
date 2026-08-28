@@ -17,6 +17,7 @@ include "testing.m";
 Wallet9pTest: module
 {
 	init: fn(nil: ref Draw->Context, args: list of string);
+	_marker: fn();	# prevents joiniface() type conflation with Wallet9p
 };
 
 passed := 0;
@@ -266,6 +267,8 @@ testChain(t: ref T)
 	t.assert(chain != nil, "chain readable");
 	t.log("chain: " + chain);
 }
+
+_marker() {}
 
 init(nil: ref Draw->Context, args: list of string)
 {
