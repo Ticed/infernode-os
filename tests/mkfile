@@ -138,6 +138,7 @@ TARG=\
 	matrix_test.dis\
 	opus_test.dis\
 	keyringinst_test.dis\
+	wallet9p_test.dis\
 	wallet_capability_test.dis\
 	secp256k1_test.dis\
 	ethcrypto_test.dis\
