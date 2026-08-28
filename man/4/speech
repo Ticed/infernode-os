@@ -47,6 +47,10 @@ Write configuration commands to change settings.
 Write UTF-8 text to synthesize and play through
 .BR /dev/audio .
 Read to get the status of the last synthesis operation.
+A write while another synthesis is in flight still succeeds;
+the status read returns
+.B error: say busy
+and does not start a second voice.
 .TP
 .B hear
 Write

@@ -176,6 +176,7 @@ helperc: chan of ref Helperdone;
 asyncpending: list of (int, int);   # (tag, fid)
 listenbusy := 0;
 wakebusy := 0;
+saybusy := 0;
 
 # Capture pump (micmode device): one proc owns the capture device and the
 # helper stdin sinks; registration and reset arrive over pumpc so there is
@@ -1164,9 +1165,11 @@ startchime(kind: string)
 	}
 }
 
-asyncsay(donech: chan of array of byte, text: string)
+asyncsay(donech: chan of array of byte, fid: int, text: string)
 {
-	donech <-= array of byte dosay(text);
+	result := array of byte dosay(text);
+	helperc <-= ref Helperdone(Qsay, fid, nil, result);
+	donech <-= result;
 }
 
 # === Async read completion (same pattern as speech9p) ===
@@ -1228,7 +1231,10 @@ asyncdone(srv: ref Styxserver, h: ref Helperdone)
 	case h.kind {
 	Qlisten =>	listenbusy = 0;
 	Qwake =>	wakebusy = 0;
+	Qsay =>		saybusy = 0;
 	}
+	if(h.m == nil)
+		return;
 	if(!isasync(h.m.tag))
 		return;
 	cancelasynctag(h.m.tag);
@@ -1803,10 +1809,16 @@ Serve:
 					srv.reply(ref Rmsg.Write(m.tag, len m.data));
 			Qsay =>
 				fs := getfidstate(m.fid);
-				fs.sayresp = nil;
-				fs.saydone = chan of array of byte;
 				srv.reply(ref Rmsg.Write(m.tag, len m.data));
-				spawn asyncsay(fs.saydone, string m.data);
+				if(saybusy) {
+					fs.sayresp = array of byte "error: say busy";
+					fs.saydone = nil;
+				} else {
+					saybusy = 1;
+					fs.sayresp = nil;
+					fs.saydone = chan of array of byte;
+					spawn asyncsay(fs.saydone, m.fid, string m.data);
+				}
 			Qcancel =>
 				# Hard cancel: kill the synthesizing helper and let
 				# the playback loop notice within one chunk.

@@ -83,7 +83,7 @@ sub-directories). Permissions:
 | File     | Mode   | Read                                    | Write                                       |
 |----------|--------|-----------------------------------------|---------------------------------------------|
 | `ctl`    | rw     | dumps current config as `key value\n` lines | `key value` configures one setting; `Eperm` on unknown keys |
-| `say`    | rw     | per-fid status of last write            | UTF-8 text → spawned TTS                     |
+| `say`    | rw     | per-fid status of last write (`error: say busy` if another TTS is in flight) | UTF-8 text → spawned TTS; concurrent writes are refused |
 | `hear`   | rw     | **blocking** — triggers recording + STT  | `start [duration_ms]` resets and arms a recording |
 | `voices` | r      | newline-separated voice list            | `Eperm`                                      |
 
