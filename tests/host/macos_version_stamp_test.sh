@@ -1,11 +1,14 @@
 #!/bin/sh
 # Verify the SDL3 build script stamps include/version.h without destroying it.
 #
-# Two properties, both of which the previous mechanism got wrong:
+# Three properties, the first two of which the previous mechanism got wrong:
 #   - a failed build restores what was there, not what git has, so an
 #     in-progress edit to version.h survives;
-#   - the stamp anchors on the unstamped form, so a second run cannot stamp
-#     an already-stamped string.
+#   - the stamp anchors on the unstamped form, so a run cannot stamp an
+#     already-stamped string;
+#   - the anchor is checked against the build's echoed Version line and
+#     against a hand-fed stamp, because with the restore working, the restored
+#     file looks the same whichever sed ran and cannot pin the anchor.
 #
 # The build is expected to fail here, and the pkg-config stub is what makes
 # that certain: it answers --exists and --modversion but falls through to a
@@ -58,6 +61,19 @@ run_build() {
 }
 
 run_build
+
+# The build echoes the line it just stamped. With the restore working, the
+# restored file is identical no matter which sed ran, so version.h cannot
+# distinguish an anchored stamp from an unanchored one -- assert on the
+# output instead: the stamped form, with `build ` exactly once.
+version_line=$(grep '^Version: ' "$TMP/out")
+if ! printf '%s\n' "$version_line" | grep -q 'InferNode 0\.1 build [0-9]*-[0-9a-f]* (' ||
+   [ "$(printf '%s\n' "$version_line" | grep -o 'build ' | wc -l | tr -d ' ')" -ne 1 ]; then
+	echo "build output does not show exactly one anchored stamp:" >&2
+	echo "  $version_line" >&2
+	exit 1
+fi
+
 if ! cmp -s "$VERSION_H" "$TMP/version.h.edited"; then
 	echo "version.h was not restored to the edited content" >&2
 	echo "expected:"; sed 's/^/  /' "$TMP/version.h.edited" >&2
@@ -65,7 +81,7 @@ if ! cmp -s "$VERSION_H" "$TMP/version.h.edited"; then
 	exit 1
 fi
 
-# A second run must leave it identical again, not doubly stamped.
+# A second run must leave it identical again.
 run_build
 if ! cmp -s "$VERSION_H" "$TMP/version.h.edited"; then
 	echo "version.h differs after a second run" >&2
@@ -76,5 +92,25 @@ if grep -c "build " "$VERSION_H" | grep -qv '^0$'; then
 	sed 's/^/  /' "$VERSION_H" >&2
 	exit 1
 fi
+
+# The anchor only bites when a stamp is already present -- the state a run
+# is left in when its restore failed. Feed one in by hand: an unanchored sed
+# stamps the stamp and the echoed Version line shows `build ` twice, while
+# every check on the restored file would pass, because the trap restores the
+# doubly-stamped copy just as faithfully.
+sed 's|InferNode 0\.1 (|InferNode 0.1 build 20260101-deadbeef (|' "$TMP/version.h.edited" > "$VERSION_H"
+cp "$VERSION_H" "$TMP/version.h.stamped"
+run_build
+version_line=$(grep '^Version: ' "$TMP/out")
+if [ "$(printf '%s\n' "$version_line" | grep -o 'build ' | wc -l | tr -d ' ')" -ne 1 ]; then
+	echo "an already-stamped version.h was stamped again:" >&2
+	echo "  $version_line" >&2
+	exit 1
+fi
+if ! cmp -s "$VERSION_H" "$TMP/version.h.stamped"; then
+	echo "version.h was not restored to the stamped content it started from" >&2
+	exit 1
+fi
+cp "$TMP/version.h.edited" "$VERSION_H"
 
 echo "macos_version_stamp: PASS"
