@@ -10,7 +10,28 @@ set -eu
 
 ROOT=$(CDPATH= cd "$(dirname "$0")/../.." && pwd)
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/build-macos-preflight.XXXXXX")
-trap 'rm -rf "$TMP"' EXIT HUP INT TERM
+
+# Both build scripts prepend "$ROOT/MacOSX/arm64/bin" to PATH before the
+# preflight check, so an empty PATH is not enough to hide the tools on a
+# machine where they are actually built — the preflight would never fire and
+# the test would fail on exactly the platform it is written for. Move the
+# native tools aside for the duration so the script's own PATH line finds
+# nothing either, and restore them on the way out.
+BIN="$ROOT/MacOSX/arm64/bin"
+STASH="$TMP/bin-stash"
+mkdir -p "$STASH"
+stash_native_tools() {
+	for t in mk limbo; do
+		if [ -e "$BIN/$t" ]; then mv "$BIN/$t" "$STASH/$t"; fi
+	done
+}
+restore_native_tools() {
+	for t in mk limbo; do
+		if [ -e "$STASH/$t" ]; then mv "$STASH/$t" "$BIN/$t"; fi
+	done
+}
+stash_native_tools
+trap 'restore_native_tools; rm -rf "$TMP"' EXIT HUP INT TERM
 
 # Keep dirname available while controlling which build tools are on PATH.
 ln -s "$(command -v dirname)" "$TMP/dirname"
@@ -35,7 +56,10 @@ expect_refusal() {
 		echo "$script: unexpectedly succeeded without $missing" >&2
 		exit 1
 	fi
-	for want in "required native build tool(s) not found: $missing" "Run ./makemk.sh,"; do
+	for want in \
+		"required native build tool(s) not found: $missing" \
+		"./makemk.sh" \
+		"lib9 libbio libmp libsec libmath utils/iyacc limbo"; do
 		if ! printf '%s\n' "$output" | grep -F "$want" >/dev/null; then
 			echo "$script [$missing]: expected the message to contain: $want" >&2
 			echo "got:" >&2

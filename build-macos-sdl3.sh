@@ -51,7 +51,11 @@ for tool in mk limbo; do
 done
 if [[ -n "$missing_tools" ]]; then
     echo "Error: required native build tool(s) not found: $missing_tools" >&2
-    echo "Run ./makemk.sh, then build libmath, libbio, lib9, and libsec in order before rebuilding limbo." >&2
+    echo "Bootstrap them from the repository root; the whole sequence takes about 30 seconds:" >&2
+    echo '  export ROOT="$PWD" PATH="$PWD/MacOSX/arm64/bin:$PATH"' >&2
+    echo '  SYSTARG=MacOSX OBJTYPE=arm64 ./makemk.sh' >&2
+    echo '  for d in lib9 libbio libmp libsec libmath utils/iyacc limbo; do (cd $d && mk install); done' >&2
+    echo "Then re-run this script." >&2
     exit 1
 fi
 
