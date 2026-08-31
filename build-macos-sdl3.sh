@@ -43,6 +43,18 @@ export PATH="$ROOT/MacOSX/arm64/bin:$PATH"
 export AWK=awk
 export SHELLNAME=sh
 
+missing_tools=""
+for tool in mk limbo; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        missing_tools="${missing_tools:+$missing_tools }$tool"
+    fi
+done
+if [[ -n "$missing_tools" ]]; then
+    echo "Error: required native build tool(s) not found: $missing_tools" >&2
+    echo "Run ./makemk.sh, then build libmath, libbio, lib9, and libsec in order before rebuilding limbo." >&2
+    exit 1
+fi
+
 echo "Building for: SYSHOST=$SYSHOST OBJTYPE=$OBJTYPE"
 echo "GUI Backend: SDL3"
 echo ""
