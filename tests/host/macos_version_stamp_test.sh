@@ -7,10 +7,21 @@
 #   - the stamp anchors on the unstamped form, so a second run cannot stamp
 #     an already-stamped string.
 #
-# The build is expected to fail here: mk is not on PATH. That is the point —
-# it exercises the EXIT trap, which is the path that used to lose the edit.
+# The build is expected to fail here, and the pkg-config stub is what makes
+# that certain: it answers --exists and --modversion but falls through to a
+# bare `exit 0` for --cflags/--libs, so the compile gets no SDL3 include
+# paths and dies. Do not tighten the stub — the premise of this test depends
+# on the build failing after the stamp, even on machines where SDL3 is
+# installed and mk is on PATH (the build script adds $ROOT/MacOSX/arm64/bin
+# itself). Failing after the stamp is the point: it exercises the EXIT trap,
+# which is the path that used to lose the edit.
 
 set -eu
+
+if [ "$(uname -s)" != "Darwin" ]; then
+    echo "SKIP: macos_version_stamp is macOS-only (build-macos-sdl3.sh's BSD sed -i '' does not run under GNU sed)"
+    exit 77
+fi
 
 ROOT=$(CDPATH= cd "$(dirname "$0")/../.." && pwd)
 VERSION_H="$ROOT/include/version.h"
