@@ -99,15 +99,25 @@ capture idle
 ```
 
 Write `in <name>` or `out <name>` to select one. Names are quoted in the
-readback because they contain spaces, and either form is accepted on write, so
-a line from the read can be written straight back. `in default` returns to
-following the host default. An unknown name is refused rather than ignored.
-Selection takes effect at once: a stream that is already open is reopened on
-the new device.
+readback because they contain spaces, and the readback's own forms —
+`in device '<name>'` and `in selected '<name>'` — are accepted on write
+as well, so a line from the read can be written straight back. `in
+default` returns to following the host default. An unknown name is
+refused rather than ignored. Selection takes effect at once: a stream
+that is already open is reopened on the new device.
 
 ```sh
 echo 'in Built-in Microphone' > /dev/audiodev
+echo "$(cat /dev/audiodev | grep '^in device' | head -1)" > /dev/audiodev
 ```
+
+A launcher that already knows the right device can set it before the
+emulator starts, which matters when the voice stack opens capture
+during startup — before anything could write `#A/audiodev`. The
+environment variables `INFERNODE_AUDIO_IN` and `INFERNODE_AUDIO_OUT`
+take a device name each and preselect the input and output device;
+an unknown name is not validated at startup but warned about and
+fallen back to the system default at open time.
 
 The last line is the diagnostic. `capture active` means the device produced at
 least one non-zero sample. `capture silent` means it delivered data and all of

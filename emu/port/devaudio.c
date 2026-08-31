@@ -139,8 +139,10 @@ audioread(Chan *c, void *va, long count, vlong offset)
 /*
  * "in <name>" or "out <name>" selects a host device; an empty name, or
  * the literal "default", follows the system default again. The readback
- * quotes names because they routinely contain spaces, so accept that
- * form here too — a line from a read can be written straight back.
+ * emits "in device 'X'" and "in selected 'X'" — quotes because real
+ * names contain spaces, and the keyword for the device's role in the
+ * listing — so those forms are accepted here too: a line from a read
+ * can be written straight back.
  */
 static long
 audiodevwrite(void *va, long count)
@@ -172,6 +174,15 @@ audiodevwrite(void *va, long count)
 	}else
 		error("audiodev: write \"in <name>\" or \"out <name>\"");
 
+	while(*name == ' ' || *name == '\t')
+		name++;
+	/* Skip the keyword the readback puts between the direction and the
+	 * name. A device actually called "device" is still reachable: the
+	 * word is only skipped when another word follows it. */
+	if(strncmp(name, "device", 6) == 0 && (name[6] == ' ' || name[6] == '\t'))
+		name += 6;
+	else if(strncmp(name, "selected", 8) == 0 && (name[8] == ' ' || name[8] == '\t'))
+		name += 8;
 	while(*name == ' ' || *name == '\t')
 		name++;
 	if(*name == '\''){
