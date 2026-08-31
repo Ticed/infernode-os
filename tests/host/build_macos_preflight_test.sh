@@ -10,28 +10,24 @@ set -eu
 
 ROOT=$(CDPATH= cd "$(dirname "$0")/../.." && pwd)
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/build-macos-preflight.XXXXXX")
+trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
 # Both build scripts prepend "$ROOT/MacOSX/arm64/bin" to PATH before the
 # preflight check, so an empty PATH is not enough to hide the tools on a
 # machine where they are actually built — the preflight would never fire and
-# the test would fail on exactly the platform it is written for. Move the
-# native tools aside for the duration so the script's own PATH line finds
-# nothing either, and restore them on the way out.
-BIN="$ROOT/MacOSX/arm64/bin"
-STASH="$TMP/bin-stash"
-mkdir -p "$STASH"
-stash_native_tools() {
-	for t in mk limbo; do
-		if [ -e "$BIN/$t" ]; then mv "$BIN/$t" "$STASH/$t"; fi
-	done
-}
-restore_native_tools() {
-	for t in mk limbo; do
-		if [ -e "$STASH/$t" ]; then mv "$STASH/$t" "$BIN/$t"; fi
-	done
-}
-stash_native_tools
-trap 'restore_native_tools; rm -rf "$TMP"' EXIT HUP INT TERM
+# the test would fail on exactly the platform it is written for.
+#
+# Hiding the real tools by moving them aside is not an option: a SIGKILL
+# between the stash and the restore (CI timeout kill, OOM kill) would leave
+# the tree without its native build tools and no way to notice. Instead the
+# test never touches the real tree at all. It copies the two scripts into a
+# fake tree under $TMP with an empty MacOSX/arm64/bin and runs them from
+# there. Both scripts derive ROOT from "$0", so they find the empty bin
+# directory on their own, the preflight fires, and the tree's real tools are
+# untouched no matter how the test dies.
+FAKETREE="$TMP/faketree"
+mkdir -p "$FAKETREE/MacOSX/arm64/bin"
+cp "$ROOT/build-macos-headless.sh" "$ROOT/build-macos-sdl3.sh" "$FAKETREE/"
 
 # Keep dirname available while controlling which build tools are on PATH.
 ln -s "$(command -v dirname)" "$TMP/dirname"
@@ -52,13 +48,15 @@ chmod +x "$TMP/pkg-config"
 expect_refusal() {
 	script=$1
 	missing=$2
-	if output=$(env PATH="$TMP" "$ROOT/$script" 2>&1); then
+	if output=$(env PATH="$TMP" "$FAKETREE/$script" 2>&1); then
 		echo "$script: unexpectedly succeeded without $missing" >&2
 		exit 1
 	fi
 	for want in \
 		"required native build tool(s) not found: $missing" \
 		"./makemk.sh" \
+		'SYSTARG=MacOSX OBJTYPE=arm64 ./makemk.sh' \
+		'export ROOT="$PWD" PATH="$PWD/MacOSX/arm64/bin:$PATH"' \
 		"lib9 libbio libmp libsec libmath utils/iyacc limbo"; do
 		if ! printf '%s\n' "$output" | grep -F "$want" >/dev/null; then
 			echo "$script [$missing]: expected the message to contain: $want" >&2
