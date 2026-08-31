@@ -108,7 +108,9 @@ that is already open is reopened on the new device.
 
 ```sh
 echo 'in Built-in Microphone' > /dev/audiodev
-echo "$(cat /dev/audiodev | grep '^in device' | head -1)" > /dev/audiodev
+# a line from the read, written back verbatim:
+line=`{grep '^in device' /dev/audiodev | sed 1q}
+echo $line > /dev/audiodev
 ```
 
 A launcher that already knows the right device can set it before the
