@@ -42,19 +42,10 @@ run_audio_inferno() {
   if run_inferno "$1" >"$log" 2>&1; then
     cat "$log"
     assert_devices_or_skip "$log" || return 1
-    if grep -Eq "cannot start CoreAudio (input|output): -66680" "$log"; then
-      rm -f "$AUDIODIR/audio-capture.pcm"
-      echo "SKIP: CoreAudio device unavailable in this host session"
-    fi
     return 0
   fi
   cat "$log"
   assert_devices_or_skip "$log" || return 1
-  if grep -Eq "cannot start CoreAudio (input|output): -66680" "$log"; then
-    rm -f "$AUDIODIR/audio-capture.pcm"
-    echo "SKIP: CoreAudio device unavailable in this host session"
-    return 0
-  fi
   return 1
 }
 
@@ -70,14 +61,22 @@ playback)
 capture)
   rm -f "$AUDIODIR/audio-capture.pcm"
   run_audio_inferno "bind -a '#A' /dev; echo 'in rate 16000 chans 1 bits 16 enc pcm' > /dev/audioctl; dd -if /dev/audio -of /$AUDIODIR/audio-capture.pcm -bs 32000 -count 1"
-  if [ -e "$AUDIODIR/audio-capture.pcm" ] && [ ! -s "$AUDIODIR/audio-capture.pcm" ]; then
+  if [ ! -s "$AUDIODIR/audio-capture.pcm" ]; then
     # The device opened but delivered no frames. On macOS this is the
     # microphone-permission (TCC) posture for non-interactive shells and
-    # CI: the input AudioQueue starts but never gets buffers. Same skip
-    # philosophy as the -66680 device-unavailable case above — a real
+    # CI: the input AudioQueue starts but never gets buffers. A real
     # capture regression can only be asserted where a mic is usable.
     echo "SKIP: no audio captured (microphone unavailable or permission denied in this host session)"
+    exit 77
   fi
+  # A capture that delivered 738 of 32000 bytes must not pass the same
+  # check as a healthy one: assert a floor of 0.25 s at 16 kHz mono s16.
+  capsize=$(wc -c < "$AUDIODIR/audio-capture.pcm" | tr -d ' ')
+  if [ "$capsize" -lt 8000 ]; then
+    echo "FAIL: capture delivered only ${capsize} of 32000 bytes"
+    exit 1
+  fi
+  echo "capture delivered ${capsize} of 32000 bytes"
   ;;
 roundtrip)
   "$0" playback
