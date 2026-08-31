@@ -137,6 +137,7 @@ static void audio_platform_init(void) { }
 #endif
 
 static int sdl_audio_inited;		/* SDL_InitSubSystem(SDL_INIT_AUDIO) done? */
+static int sdl_quiet_host;		/* probed once: the host has no audio devices */
 static SDL_AudioStream *in_stream;	/* mic capture */
 static SDL_AudioStream *out_stream;	/* speaker playback */
 static QLock inlock;
@@ -204,15 +205,33 @@ audio_devices_present(void)
 }
 
 static int
+sdl_streams_live(void)
+{
+	return in_stream != NULL || out_stream != NULL;
+}
+
+static int
 ensure_sdl_audio(void)
 {
 	int i;
 
 	/* An earlier caller may have left the subsystem up with an empty
 	 * device list. That state never recovers on its own, so re-init
-	 * rather than trusting the flag. */
+	 * rather than trusting the flag — but only once: a host that came
+	 * up with no devices stays device-less as far as this probe is
+	 * concerned, and re-running the bounded probe below on every call
+	 * would block each /dev/audio open and audioctl read for a second
+	 * or more, forever. SDL still notices devices that appear later:
+	 * the subsystem is left up, and SDL3 refreshes its device list
+	 * while it runs. */
 	if(sdl_audio_inited) {
-		if(audio_devices_present())
+		if(sdl_quiet_host || audio_devices_present())
+			return 1;
+		/* Tearing the subsystem down under a live stream leaves
+		 * the stream pointer dangling; the next
+		 * SDL_DestroyAudioStream would be a use-after-free. Leave
+		 * it up instead. */
+		if(sdl_streams_live())
 			return 1;
 		SDL_QuitSubSystem(SDL_INIT_AUDIO);
 		sdl_audio_inited = 0;
@@ -257,6 +276,8 @@ ensure_sdl_audio(void)
 		SDL_Delay(AUDIO_INIT_DELAY_MS);
 	}
 	sdl_audio_inited = 1;
+	if(!audio_devices_present())
+		sdl_quiet_host = 1;
 	return 1;
 }
 
@@ -358,14 +379,19 @@ open_stream(int isin, Audio_d *fmt)
 			 * subsystem and re-init it via SDL_Init (not
 			 * SubSystem, see ensure_sdl_audio for why). Do NOT
 			 * call SDL_Quit — that's process-wide and would tear
-			 * down the parent's audio too.
+			 * down the parent's audio too. Skipped when a stream
+			 * is live: quitting under an open stream leaves the
+			 * pointer dangling (use-after-free on the next
+			 * SDL_DestroyAudioStream); failing the open is safe.
 			 */
-			SDL_QuitSubSystem(SDL_INIT_AUDIO);
-			sdl_audio_inited = 0;
-			select_audio_driver();
-			if(SDL_Init(SDL_INIT_AUDIO)) {
-				sdl_audio_inited = 1;
-				s = SDL_OpenAudioDeviceStream(dev, &spec, NULL, NULL);
+			if(!sdl_streams_live()) {
+				SDL_QuitSubSystem(SDL_INIT_AUDIO);
+				sdl_audio_inited = 0;
+				select_audio_driver();
+				if(SDL_Init(SDL_INIT_AUDIO)) {
+					sdl_audio_inited = 1;
+					s = SDL_OpenAudioDeviceStream(dev, &spec, NULL, NULL);
+				}
 			}
 		}
 	}
