@@ -157,6 +157,11 @@ testLoopback(t: ref T)
 		t.error("acceptor: " + e);
 }
 
+# Only discriminates on BSD-family hosts. POSIX makes shutdown() on a listening
+# socket ENOTCONN and macOS and FreeBSD return it, which is where the descriptor
+# leaks; Linux permits it as the idiom for unblocking a thread parked in accept(),
+# so the close happens there either way and this passes with or without the fix.
+# Most of the CI runners are Linux. Do not remove it after watching it pass there.
 testAnnounceHangupReleasesPort(t: ref T)
 {
 	addr := "tcp!127.0.0.1!18798";
