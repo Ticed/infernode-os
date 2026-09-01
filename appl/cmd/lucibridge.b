@@ -535,17 +535,60 @@ readuserinput(): string
 }
 
 # Determine if a tool call needs user approval.
+shellword(args, want: string): int
+{
+	(nil, toks) := sys->tokenize(args, " \t\n;|&{}()");
+	for(; toks != nil; toks = tl toks)
+		if(hd toks == want)
+			return 1;
+	return 0;
+}
+
+recursiveRmOutsideTmp(args: string): int
+{
+	(nil, toks) := sys->tokenize(args, " \t\n;|&{}()");
+	sawrm := 0;
+	recursive := 0;
+	tmptarget := 0;
+	outsidetarget := 0;
+	for(; toks != nil; toks = tl toks) {
+		tok := hd toks;
+		if(tok == "rm") {
+			sawrm = 1;
+			continue;
+		}
+		if(!sawrm)
+			continue;
+		if(len tok > 1 && tok[0] == '-') {
+			if(agentlib->contains(tok[1:], "r"))
+				recursive = 1;
+			continue;
+		}
+		if(len tok > 0 && tok[0] == '/') {
+			if(tok == "/tmp" || agentlib->hasprefix(tok, "/tmp/"))
+				tmptarget = 1;
+			else
+				outsidetarget = 1;
+		}
+	}
+	return sawrm && recursive && (outsidetarget || !tmptarget);
+}
+
+headlessApprovalDeny(): int
+{
+	(ok, nil) := sys->stat("/tmp/veltro/.headless-approval-deny");
+	return ok >= 0;
+}
+
 needsapproval(toolname, args: string): int
 {
 	if(toolname != "exec" && toolname != "write" && toolname != "edit")
 		return 0;
 	if(toolname == "exec") {
-		if(agentlib->contains(args, "rm") && agentlib->contains(args, "-r")) {
-			if(!agentlib->hasprefix(args, "rm") || !agentlib->contains(args, "/tmp"))
-				return 1;
-		}
-		if(agentlib->contains(args, "bind ") || agentlib->contains(args, "mount ") ||
-		   agentlib->contains(args, "unmount "))
+		if(recursiveRmOutsideTmp(args))
+			return 1;
+		if(shellword(args, "bind") || shellword(args, "mount") ||
+		   shellword(args, "unmount"))
 			return 1;
 	}
 	if(toolname == "write" || toolname == "edit") {
@@ -556,11 +599,18 @@ needsapproval(toolname, args: string): int
 	return 0;
 }
 
-# Pre-tool approval gate. Returns "allow" or "deny".
+# Pre-tool approval gate. Returns "allow", "deny", or "headless-deny".
 pretoolapproval(toolname, args: string): string
 {
 	if(!needsapproval(toolname, args))
 		return "allow";
+	# An unattended grind campaign has no trusted operator surface. Its marker
+	# can only make a request fail, never grant authority, so spoofing it cannot
+	# cross a namespace boundary.
+	if(headlessApprovalDeny()) {
+		log("pretool: denied by headless campaign policy for " + toolname);
+		return "headless-deny";
+	}
 	desc := toolname + " " + agentlib->truncate(args, 120);
 	didx := writedialogue("Permission required",
 		desc, "", "Allow,Deny");
@@ -609,6 +659,18 @@ checkandcompact_ui()
 		if(didx >= 0)
 			updatedialogue(didx, "100", "Context compacted", "Session history summarized.");
 	}
+}
+
+toolresultstatus(name, content: string): string
+{
+	lower := str->tolower(content);
+	if(agentlib->hasprefix(lower, "error:") ||
+	   agentlib->hasprefix(lower, "error —") ||
+	   agentlib->contains(lower, "(exit:") ||
+	   agentlib->contains(lower, "... (timeout") ||
+	   (name == "limbo" && agentlib->contains(lower, "status: failed")))
+		return "error";
+	return "success";
 }
 
 # Track consecutive tool failures with UI notification.
@@ -726,12 +788,13 @@ initsession(): string
 	# override the default task prompt by writing /tmp/veltro/tasks/agenttype.<id>
 	# (e.g. "coder" -> /lib/veltro/agents/coder.txt) — see INFR-55.
 	suffix := BRIDGE_SUFFIX;
+	atype := "";
 	if(actid == 0) {
 		meta := agentlib->readfile(META_PROMPT_PATH);
 		if(meta != nil)
 			suffix = "\n\n" + agentlib->strip(meta);
 	} else {
-		atype := agentlib->strip(agentlib->readfile(
+		atype = agentlib->strip(agentlib->readfile(
 			sys->sprint("/tmp/veltro/tasks/agenttype.%d", actid)));
 		promptpath := "/lib/veltro/agents/task.txt";
 		if(atype != "" && safeagenttype(atype))
@@ -833,7 +896,10 @@ initsession(): string
 	# Register namespace entries (services, devices, filesystems) as resources
 	registernamespace();
 
-	prov("agentstart", sys->sprint("activity=%d agent=%s", actid, sessionid), nil);
+	if(atype == "")
+		atype = "default";
+	prov("agentstart", sys->sprint("activity=%d agent=%s agenttype=%s", actid, sessionid,
+		atype), nil);
 	prov("nscaps", sys->sprint("activity=%d agent=%s", actid, sessionid), array of byte ns);
 	prov("sysprompt", sys->sprint("activity=%d agent=%s", actid, sessionid),
 		array of byte sysprompt);
@@ -1280,7 +1346,7 @@ applypathchanges()
 			continue;
 		if(len p >= 9 && p[0:9] == "/n/local/") {
 			log("path accessible: " + p);
-		} else if(len p >= 5 && p[0:5] == "/dis/") {
+		} else if(agentlib->pathexists(p)) {
 			log("path accessible (Inferno-native): " + p);
 		} else {
 			base := pathbase(p);
@@ -1306,7 +1372,7 @@ applypathchanges()
 		p := hd op;
 		if(p == "" || strcontains(newpaths, p))
 			continue;
-		if(!(len p >= 9 && p[0:9] == "/n/local/")) {
+		if(!(len p >= 9 && p[0:9] == "/n/local/") && !agentlib->pathexists(p)) {
 			base := pathbase(p);
 			if(base == nil || base == "")
 				base = "path";
@@ -1767,11 +1833,16 @@ agentturn(input: string)
 
 				# Pre-tool approval for destructive operations
 				approval := pretoolapproval(nm, eargs);
-				if(approval == "deny") {
+				if(approval == "deny" || approval == "headless-deny") {
 					denied := "error: operation denied by operator";
+					status := "denied";
+					if(approval == "headless-deny") {
+						denied = "error: operation denied by headless campaign policy";
+						status = "headless-denied";
+					}
 					results = (id, denied) :: results;
-					prov("toolres", sys->sprint("activity=%d agent=%s step=%d tool=%s status=denied",
-						actid, sessionid, step + 1, name), array of byte denied);
+					prov("toolres", sys->sprint("activity=%d agent=%s step=%d tool=%s status=%s",
+						actid, sessionid, step + 1, name, status), array of byte denied);
 					writefile(ctxpath, "resource update path=" + nm + " status=idle");
 					if(fpath != nil)
 						writefile(ctxpath, "resource update path=" + fpath + " status=idle");
@@ -1793,8 +1864,8 @@ agentturn(input: string)
 				setstatus(nm);
 				log("tool " + name + ": calling with " + string len eargs + " bytes");
 				result := agentlib->calltool(name, eargs);
-				prov("toolres", sys->sprint("activity=%d agent=%s step=%d tool=%s",
-					actid, sessionid, step + 1, name), array of byte result);
+				prov("toolres", sys->sprint("activity=%d agent=%s step=%d tool=%s status=%s",
+					actid, sessionid, step + 1, name, toolresultstatus(nm, result)), array of byte result);
 				agentlib->deduprecord(nm, eargs, result, step);
 				setstatus("working");
 				writefile(ctxpath, "resource update path=" + nm + " status=idle");
