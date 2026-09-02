@@ -80,6 +80,14 @@ if [[ -f o.emu ]]; then
     cp o.emu InferNode
     echo "Copied o.emu -> InferNode (for InferNode.app bundle)"
     echo ""
+    if [[ ! -f "$ROOT/dis/emuinit.dis" ]]; then
+        echo "The emulator is built, but the Dis runtime is missing (dis/emuinit.dis)."
+        echo "A fresh tree does not ship bytecode. Compile it, then run:"
+        echo "  export ROOT=\$PWD"
+        echo "  export PATH=\"\$ROOT/MacOSX/arm64/bin:\$PATH\""
+        echo "  for d in appl appl/mpeg appl/veltro; do (cd \"\$d\" && mk install); done"
+        echo ""
+    fi
     echo "Run from terminal (standard dev path):"
     echo "  $ROOT/emu/MacOSX/o.emu -c1 -pheap=1024m -pmain=1024m -pimage=1024m -r$ROOT sh -l /lib/lucifer/boot.sh"
     echo ""

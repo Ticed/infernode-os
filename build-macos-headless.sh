@@ -41,6 +41,14 @@ if [[ -f o.emu ]]; then
     echo "Checking for SDL dependencies..."
     otool -L o.emu | grep -i sdl || echo "  ✓ No SDL dependencies (correct for headless)"
     echo ""
+    if [[ ! -f "$ROOT/dis/emuinit.dis" ]]; then
+        echo "The emulator is built, but the Dis runtime is missing (dis/emuinit.dis)."
+        echo "A fresh tree does not ship bytecode. Compile it, then run:"
+        echo "  export ROOT=\$PWD"
+        echo "  export PATH=\"\$ROOT/MacOSX/arm64/bin:\$PATH\""
+        echo "  for d in appl appl/mpeg appl/veltro; do (cd \"\$d\" && mk install); done"
+        echo ""
+    fi
     echo "Run from terminal (headless, drops to Inferno shell):"
     echo "  $ROOT/emu/MacOSX/o.emu -c1 -r$ROOT sh -l"
 else
