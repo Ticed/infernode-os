@@ -282,6 +282,15 @@ restrictns(caps: ref Capabilities): string
 		if(err != nil)
 			return sys->sprint("restrict /n: %s", err);
 
+		if(inlist("/n/speech", caps.paths)) {
+			(speechok, nil) := sys->stat("/n/speech");
+			if(speechok >= 0) {
+				serr := restrictspeech();
+				if(serr != nil)
+					return sys->sprint("restrict /n/speech: %s", serr);
+			}
+		}
+
 		if(inlist("/n/wallet", caps.paths)) {
 			werr := restrictwallet();
 			if(werr != nil)
@@ -702,6 +711,14 @@ restrictlocal(paths: list of string): string
 	return nil;
 }
 
+# Agents with /n/speech see ctl/say/hear/voices/budget. policy/ is the
+# operator replenishment surface and is never bound into an agent namespace.
+restrictspeech(): string
+{
+	allow := "ctl" :: "say" :: "hear" :: "voices" :: "budget" :: nil;
+	return restrictdir("/n/speech", allow, 0);
+}
+
 restrictwallet(): string
 {
 	accts := walletaccounts();
@@ -995,11 +1012,14 @@ privilegedcontrolpath(path: string, tools: list of string): int
 		"/n/wallet/ctl",
 		"/n/wallet/pending",
 		"/n/wallet/new",
+		"/n/speech/policy",
 	};
 	for(i := 0; i < len dangerous; i++)
 		if(path == dangerous[i] || prefix(path, dangerous[i] + "/"))
 			return 1;
 	if(walletcontrolpath(path))
+		return 1;
+	if(speechcontrolpath(path))
 		return 1;
 	if(ftreecontrolpath(path))
 		return 1;
@@ -1038,6 +1058,13 @@ walletcontrolpath(path: string): int
 	# Per-account ctl (budget/approval config) and sign (blind signing
 	# oracle over the spend key) are trusted controller surfaces.
 	return pathhascomponent(path, "ctl") || pathhascomponent(path, "sign");
+}
+
+# Operator replenishment for microphone/API budgets. Exported so tools9p
+# and nsconstruct cannot drift apart on which speech files are grantable.
+speechcontrolpath(path: string): int
+{
+	return path == "/n/speech/policy" || prefix(path, "/n/speech/policy/");
 }
 
 ftreecontrolpath(path: string): int
@@ -1435,6 +1462,7 @@ verifyns(expected: list of string): string
 		"/n/wallet/ctl",
 		"/n/wallet/pending",
 		"/n/wallet/new",
+		"/n/speech/policy",
 	};
 	for(i := 0; i < len dangerous; i++) {
 		(dok, nil) := sys->stat(dangerous[i]);

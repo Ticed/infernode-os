@@ -68,7 +68,7 @@ doc(): string
 		"  hear                       Listen for 5 seconds\n" +
 		"  hear 10000                 Listen for 10 seconds\n\n" +
 		"Requires /n/speech (run speech9p first).\n" +
-		"Configure STT engine via: echo 'engine api' > /n/speech/ctl";
+		"Each start charges /n/speech/budget; further calls fail when remaining is 0.\n";
 }
 
 schema(): string

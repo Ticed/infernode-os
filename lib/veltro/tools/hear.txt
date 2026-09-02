@@ -12,4 +12,7 @@ Examples:
   hear 10000                 Listen for 10 seconds
 
 Requires /n/speech (run speech9p first).
-Configure STT engine via: echo 'engine api' > /n/speech/ctl
+Each start charges a cumulative microphone budget (cat /n/speech/budget).
+Once remaining is 0, further hear calls are refused until the operator
+replenishes /n/speech/policy/ctl. API-backed hear is off unless the
+operator has allowed it.

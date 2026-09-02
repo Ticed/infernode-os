@@ -842,11 +842,14 @@ privilegedcontrolpath(path: string): int
 		"/n/wallet/ctl",
 		"/n/wallet/pending",
 		"/n/wallet/new",
+		"/n/speech/policy",
 	};
 	for(i := 0; i < len dangerous; i++)
 		if(path == dangerous[i] || prefix(path, dangerous[i] + "/"))
 			return 1;
 	if(walletaccountcontrolpath(path))
+		return 1;
+	if(speechpolicypath(path))
 		return 1;
 	if(ftreecontrolpath(path))
 		return 1;
@@ -880,6 +883,17 @@ walletaccountcontrolpath(path: string): int
 		nsc->init();
 	}
 	return nsc->walletcontrolpath(path);
+}
+
+speechpolicypath(path: string): int
+{
+	if(nsc == nil) {
+		nsc = load NsConstruct NsConstruct->PATH;
+		if(nsc == nil)
+			return 1;	# fail closed: cannot verify, so deny
+		nsc->init();
+	}
+	return nsc->speechcontrolpath(path);
 }
 
 ftreecontrolpath(path: string): int

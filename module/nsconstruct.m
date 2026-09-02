@@ -93,6 +93,11 @@ NsConstruct: module {
 	# that disagree mean one of them re-opens what the other closed.
 	walletcontrolpath: fn(path: string): int;
 
+	# True if `path` names the speech operator policy surface
+	# (`/n/speech/policy` and anything under it). Must never be granted
+	# to an agent: writing it replenishes microphone and API budgets.
+	speechcontrolpath: fn(path: string): int;
+
 	# Clean up shadow directories for the current process.
 	# Call on agent exit to reclaim /tmp/.veltro-ns/shadow/{pid}-* entries.
 	cleanup: fn();

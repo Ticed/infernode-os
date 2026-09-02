@@ -63,6 +63,36 @@ are sealed before the mount is published. The shipped launcher is
 , run by Lucifer boot before tools9p.
 .I Profile
 does not start a server.
+.TP
+.B budget
+Read-only remaining and limit records for this
+.I speech9p
+process. One record per line, fields space-separated:
+.IP
+.EX
+hear remaining limit
+api remaining limit
+http allow|deny
+apihear allow|deny
+.EE
+.IP
+.B hear
+values are milliseconds of microphone time.
+.B api
+values are HTTP request counts.
+Writing
+.B start
+to
+.B hear
+charges the requested duration immediately, even if the
+subsequent read never happens, so repeated bounded calls
+cannot re-arm the microphone after the cumulative budget
+is spent.
+.TP
+.B policy/ctl
+Operator replenishment. The write format matches
+.BR budget .
+This directory is not bound into an agent namespace.
 .SS Options
 .TP
 .B \-D

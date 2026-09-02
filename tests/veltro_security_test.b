@@ -1978,6 +1978,8 @@ privilegedGrantPathsWorker(result: chan of string)
 		"/mnt/msg/ctl/session",
 		"/n/wallet/alice/ctl",
 		"/n/wallet/alice/ctl/session",
+		"/n/speech/policy",
+		"/n/speech/policy/ctl",
 		"/mnt/mail/accounts/alice/compose",
 		"/mnt/mail/accounts/alice/boxes/INBOX/1/draft-reply",
 		"/tmp/veltro/.ns",

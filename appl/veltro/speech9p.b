@@ -11,7 +11,10 @@ implement Speech9p;
 #   ├── ctl        (rw)  Configuration: engine, voice, lang, etc.
 #   ├── say        (rw)  Write text, read status. Plays audio on /dev/audio.
 #   ├── hear       (rw)  Write "start", read transcribed text from /dev/audio.
-#   └── voices     (r)   List available voices for current engine.
+#   ├── voices     (r)   List available voices for current engine.
+#   ├── budget     (r)   Remaining hear/api budgets and http/apihear flags.
+#   └── policy/          Operator-only; never bound into an agent namespace.
+#       └── ctl    (rw)  Write the same records as budget to set/replenish.
 #
 # Usage:
 #   speech9p                       # Start with defaults, sealed before mount
@@ -35,6 +38,14 @@ implement Speech9p;
 # are refused; voice, lang, and audio shape stay writable. The shipped
 # launcher is lib/lucifer/boot-speech.sh; lib/sh/profile does not start a
 # server.
+#
+# Microphone and API spend are bounded by budget (readable by anyone who can
+# see the tree) and replenished only via policy/ctl. Defaults:
+#   hear 60000 60000   cumulative ms (the old per-call cap, made to compose)
+#   api 0 0            no cloud spend until the operator writes a limit
+#   http deny          captured audio does not leave in cleartext
+#   apihear deny       API-backed hear ships mic audio to a third party; off
+# Consent is remaining-budget plus operator writes to policy/ctl, not a prompt.
 #
 
 include "sys.m";
@@ -62,7 +73,12 @@ Speech9p: module {
 };
 
 # Qid layout for synthetic files
-Qroot, Qctl, Qsay, Qhear, Qvoices: con iota;
+Qroot, Qctl, Qsay, Qhear, Qvoices, Qbudget, Qpolicy, Qpolicyctl: con iota;
+
+# Per-call hear cap (ms). The cumulative session budget is separate.
+MAXHEARMS: con 60000;
+DEFHEARMS: con 5000;
+DEFHEARBUDGET: con 60000;	# cumulative microphone lease, same number as the per-call cap
 
 # Per-fid state for say and hear operations
 FidState: adt {
@@ -71,6 +87,7 @@ FidState: adt {
 	sayresp:  array of byte;   # Status response from say
 	saydone:  chan of array of byte;  # Completion channel for async TTS
 	hearresp: array of byte;   # Transcription result from hear
+	hearmed:  int;             # ms already charged for this fid; 0 if unarmed
 };
 
 # Engine backends
@@ -93,7 +110,17 @@ sealed := 0;     # Set before mount unless -U; see sealedkey()
 # Platform-specific defaults for cmd engine
 cmdtts := "";    # Set in initplatform()
 cmdstt := "";    # Set in initplatform()
-hearduration := 5000;  # Recording duration in ms (default 5s)
+hearduration := DEFHEARMS;  # Recording duration in ms (default 5s)
+
+# Cumulative budgets. hearremain is milliseconds; apiremain is request count.
+# Defaults: 60s of microphone in total (the old per-call number, made to compose),
+# zero API spend, no API hear, no plain HTTP. Operator replenishes via policy/ctl.
+hearremain := DEFHEARBUDGET;
+hearlimit := DEFHEARBUDGET;
+apiremain := 0;
+apilimit := 0;
+httpallow := 0;
+apihearok := 0;
 
 # Local engine configuration (Piper TTS + whisper.cpp STT)
 piperbin := "piper";
@@ -425,6 +452,184 @@ sealedkey(key: string): int
 	return 0;
 }
 
+# === Session budgets ===
+#
+# hear remaining/limit are milliseconds of microphone time for this
+# speech9p process. api remaining/limit are API request counts.
+# http and apihear are allow/deny. The readable form is also the write
+# form on policy/ctl.
+
+readbudget(): string
+{
+	httpw := "deny";
+	if(httpallow)
+		httpw = "allow";
+	apihw := "deny";
+	if(apihearok)
+		apihw = "allow";
+	return sys->sprint("hear %d %d\napi %d %d\nhttp %s\napihear %s\n",
+		hearremain, hearlimit, apiremain, apilimit, httpw, apihw);
+}
+
+applypolicy(data: string): string
+{
+	(nil, lines) := sys->tokenize(data, "\n");
+	for(; lines != nil; lines = tl lines) {
+		line := strip(hd lines);
+		if(line == "")
+			continue;
+		err := applypolicyline(line);
+		if(err != nil)
+			return err;
+	}
+	return nil;
+}
+
+applypolicyline(line: string): string
+{
+	(n, argv) := sys->tokenize(line, " \t");
+	if(n == 0)
+		return nil;
+	key := hd argv;
+	argv = tl argv;
+	n--;
+	case key {
+	"hear" =>
+		(remain, limit, err) := parsebudgetpair(argv, n, "hear");
+		if(err != nil)
+			return err;
+		hearremain = remain;
+		hearlimit = limit;
+	"api" =>
+		(remain, limit, err) := parsebudgetpair(argv, n, "api");
+		if(err != nil)
+			return err;
+		apiremain = remain;
+		apilimit = limit;
+	"http" =>
+		if(n != 1)
+			return "usage: http allow|deny";
+		v := allowdeny(hd argv);
+		if(v < 0)
+			return "http must be allow or deny";
+		httpallow = v;
+	"apihear" =>
+		if(n != 1)
+			return "usage: apihear allow|deny";
+		v := allowdeny(hd argv);
+		if(v < 0)
+			return "apihear must be allow or deny";
+		apihearok = v;
+	* =>
+		return "unknown policy key: " + key;
+	}
+	return nil;
+}
+
+parsebudgetpair(argv: list of string, n: int, key: string): (int, int, string)
+{
+	if(n != 1 && n != 2)
+		return (0, 0, "usage: " + key + " remaining [limit]");
+	remain := int hd argv;
+	limit := remain;
+	if(n == 2)
+		limit = int hd tl argv;
+	if(remain < 0 || limit < 0)
+		return (0, 0, key + " budget must be >= 0");
+	if(remain > limit)
+		remain = limit;
+	return (remain, limit, nil);
+}
+
+allowdeny(s: string): int
+{
+	case s {
+	"allow" =>
+		return 1;
+	"deny" =>
+		return 0;
+	}
+	return -1;
+}
+
+isplainhttp(url: string): int
+{
+	(scheme, nil, nil, nil, err) := parseurl(url);
+	if(err != nil)
+		return 0;
+	return scheme == "http";
+}
+
+# Charge requested microphone time. Caps the request to remaining if
+# some budget is left; refuses when remaining is 0. Per-call still
+# cannot exceed MAXHEARMS.
+takehear(want: int): (int, string)
+{
+	if(want <= 0)
+		return (0, "bad duration");
+	if(want > MAXHEARMS)
+		return (0, "duration must be <= 60000ms");
+	if(hearremain <= 0)
+		return (0, "hear budget exhausted");
+	if(want > hearremain)
+		want = hearremain;
+	hearremain -= want;
+	return (want, nil);
+}
+
+takeapi(): string
+{
+	if(apiremain <= 0)
+		return "api budget exhausted";
+	if(!httpallow && isplainhttp(apiurl))
+		return "plain http api disabled";
+	apiremain--;
+	return nil;
+}
+
+peekapi(): string
+{
+	if(apiremain <= 0)
+		return "api budget exhausted";
+	if(!httpallow && isplainhttp(apiurl))
+		return "plain http api disabled";
+	return nil;
+}
+
+# Arm a hear fid: charge the cumulative budget and refuse API hear
+# unless the operator has allowed it. Does not open the microphone.
+armhear(fs: ref FidState, dur: int): string
+{
+	if(engine == ENGINE_API) {
+		if(!apihearok)
+			return "api hear disabled";
+		err := peekapi();
+		if(err != nil)
+			return err;
+	}
+	(used, herr) := takehear(dur);
+	if(herr != nil)
+		return herr;
+	fs.hearmed = used;
+	fs.hearresp = nil;
+	hearduration = used;
+	return nil;
+}
+
+parsedur(cmd: string): (int, string)
+{
+	dur := hearduration;
+	if(dur <= 0)
+		dur = DEFHEARMS;
+	(nc, argv) := sys->tokenize(cmd, " \t");
+	if(nc >= 2) {
+		dur = int hd tl argv;
+		if(dur <= 0)
+			return (0, "bad duration");
+	}
+	return (dur, nil);
+}
+
 safename(s: string): int
 {
 	if(s == nil || s == "" || s == "." || s == "..")
@@ -672,13 +877,18 @@ hearcmd_linux(): string
 # STT via HTTP API (OpenAI Whisper-compatible)
 hearapi(): string
 {
+	if(!apihearok)
+		return "error: api hear disabled";
+	aerr := peekapi();
+	if(aerr != nil)
+		return "error: " + aerr;
 	if(apikey == "")
 		return "error: API key not set";
 
 	tmpfile := "/tmp/speech_stt.wav";
 
-	# Record audio
-	err := recordaudio(tmpfile, 5000);
+	# Record audio using the duration charged at arm time
+	err := recordaudio(tmpfile, hearduration);
 	if(err != nil)
 		return "error: recording failed: " + err;
 
@@ -688,6 +898,9 @@ hearapi(): string
 		return "error: cannot read recorded audio";
 
 	# POST to Whisper API as multipart form
+	aerr = takeapi();
+	if(aerr != nil)
+		return "error: " + aerr;
 	url := apiurl + "/audio/transcriptions";
 	result := apitranscribe(url, audiodata);
 	return result;
@@ -1069,6 +1282,8 @@ apipost(url, body, contenttype: string): array of byte
 	(scheme, host, port, path, err) := parseurl(url);
 	if(err != nil)
 		return nil;
+	if(scheme == "http" && !httpallow)
+		return nil;
 
 	addr := sys->sprint("tcp!%s!%s", host, port);
 
@@ -1138,6 +1353,8 @@ apitranscribe(url: string, audiodata: array of byte): string
 	(scheme, host, port, path, err) := parseurl(url);
 	if(err != nil)
 		return "error: " + err;
+	if(scheme == "http" && !httpallow)
+		return "error: plain http api disabled";
 
 	addr := sys->sprint("tcp!%s!%s", host, port);
 
@@ -1476,7 +1693,7 @@ getfidstate(fid: int): ref FidState
 		if((hd l).fid == fid)
 			return hd l;
 	}
-	fs := ref FidState(fid, "", nil, nil, nil);
+	fs := ref FidState(fid, "", nil, nil, nil, 0);
 	fidstates = fs :: fidstates;
 	return fs;
 }
@@ -1511,6 +1728,23 @@ walkto(n: ref Navop.Walk)
 {
 	parent := int n.path;
 
+	if(n.name == ".") {
+		n.reply <-= dirgen(parent);
+		return;
+	}
+	if(n.name == "..") {
+		case parent {
+		Qpolicy =>
+			n.path = big Qroot;
+		Qpolicyctl =>
+			n.path = big Qpolicy;
+		* =>
+			n.path = big Qroot;
+		}
+		n.reply <-= dirgen(int n.path);
+		return;
+	}
+
 	case parent {
 	Qroot =>
 		case n.name {
@@ -1525,6 +1759,20 @@ walkto(n: ref Navop.Walk)
 			n.reply <-= dirgen(int n.path);
 		"voices" =>
 			n.path = big Qvoices;
+			n.reply <-= dirgen(int n.path);
+		"budget" =>
+			n.path = big Qbudget;
+			n.reply <-= dirgen(int n.path);
+		"policy" =>
+			n.path = big Qpolicy;
+			n.reply <-= dirgen(int n.path);
+		* =>
+			n.reply <-= (nil, Enotfound);
+		}
+	Qpolicy =>
+		case n.name {
+		"ctl" =>
+			n.path = big Qpolicyctl;
 			n.reply <-= dirgen(int n.path);
 		* =>
 			n.reply <-= (nil, Enotfound);
@@ -1560,6 +1808,16 @@ dirgen(path: int): (ref Sys->Dir, string)
 	Qvoices =>
 		d.name = "voices";
 		d.mode = 8r444;
+	Qbudget =>
+		d.name = "budget";
+		d.mode = 8r444;
+	Qpolicy =>
+		d.name = "policy";
+		d.mode = Sys->DMDIR | 8r555;
+		d.qid.qtype = Sys->QTDIR;
+	Qpolicyctl =>
+		d.name = "ctl";
+		d.mode = 8r666;
 	* =>
 		return (nil, Enotfound);
 	}
@@ -1572,7 +1830,16 @@ readdir(n: ref Navop.Readdir, path: int)
 {
 	case path {
 	Qroot =>
-		entries := array[] of {Qctl, Qsay, Qhear, Qvoices};
+		entries := array[] of {Qctl, Qsay, Qhear, Qvoices, Qbudget, Qpolicy};
+		for(i := 0; i < len entries; i++) {
+			if(i >= n.offset) {
+				(d, err) := dirgen(entries[i]);
+				if(d != nil)
+					n.reply <-= (d, err);
+			}
+		}
+	Qpolicy =>
+		entries := array[] of {Qpolicyctl};
 		for(i := 0; i < len entries; i++) {
 			if(i >= n.offset) {
 				(d, err) := dirgen(entries[i]);
@@ -1626,12 +1893,23 @@ Serve:
 				# Trigger listening and return transcription
 				fs := getfidstate(m.fid);
 				if(fs.hearresp == nil) {
+					if(fs.hearmed == 0) {
+						aerr := armhear(fs, hearduration);
+						if(aerr != nil) {
+							srv.reply(ref Rmsg.Error(m.tag, aerr));
+							continue;
+						}
+					}
 					text := dohear();
 					fs.hearresp = array of byte text;
 				}
 				srv.reply(styxservers->readbytes(m, fs.hearresp));
 			Qvoices =>
 				srv.reply(styxservers->readstr(m, listvoices()));
+			Qbudget =>
+				srv.reply(styxservers->readstr(m, readbudget()));
+			Qpolicyctl =>
+				srv.reply(styxservers->readstr(m, readbudget()));
 			* =>
 				srv.default(gm);
 			}
@@ -1652,6 +1930,13 @@ Serve:
 					sys->fprint(stderr, "speech9p: %s\n", result);
 			Qsay =>
 				text := string m.data;
+				if(engine == ENGINE_API) {
+					aerr := takeapi();
+					if(aerr != nil) {
+						srv.reply(ref Rmsg.Error(m.tag, aerr));
+						continue;
+					}
+				}
 				fs := getfidstate(m.fid);
 				fs.sayreq = text;
 				fs.sayresp = nil;
@@ -1664,18 +1949,27 @@ Serve:
 				srv.reply(ref Rmsg.Write(m.tag, len m.data));
 				spawn asyncsay(fs.saydone, strip(text));
 			Qhear =>
-				# Writing to hear resets/starts a new recording
-				# Parse optional duration: "start 10000" = 10 seconds
+				# Writing to hear takes a microphone lease of the
+				# requested duration. Recording happens on the subsequent read.
 				fs := getfidstate(m.fid);
-				fs.hearresp = nil;
 				cmd := strip(string m.data);
-				(nc, argv) := sys->tokenize(cmd, " \t");
-				if(nc >= 2) {
-					dur := int (hd tl argv);
-					if(dur > 0 && dur <= 60000)
-						hearduration = dur;
+				(dur, derr) := parsedur(cmd);
+				if(derr != nil) {
+					srv.reply(ref Rmsg.Error(m.tag, derr));
+					continue;
+				}
+				aerr := armhear(fs, dur);
+				if(aerr != nil) {
+					srv.reply(ref Rmsg.Error(m.tag, aerr));
+					continue;
 				}
 				srv.reply(ref Rmsg.Write(m.tag, len m.data));
+			Qpolicyctl =>
+				perr := applypolicy(string m.data);
+				if(perr != nil)
+					srv.reply(ref Rmsg.Error(m.tag, perr));
+				else
+					srv.reply(ref Rmsg.Write(m.tag, len m.data));
 			* =>
 				srv.reply(ref Rmsg.Error(m.tag, Eperm));
 			}

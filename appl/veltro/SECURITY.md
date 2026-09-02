@@ -80,6 +80,18 @@ grant). wallet9p constructs everything it signs
 and approval policy on every execution path. Payment approval and wallet
 configuration remain trusted-controller actions outside the model namespace.
 
+Speech follows the same split. A `/n/speech` grant is narrowed inside the
+agent namespace: agents can use `say`, `hear`, `voices`, `ctl`, and read
+`budget`, but cannot name `policy/` (replenishment). `speech9p` charges a
+cumulative microphone lease on each `hear` start and meters API-backed
+`say`/`hear` against an API request budget. Defaults fail closed for
+cloud spend (`api 0 0`), plain HTTP (`http deny`), and shipping
+microphone audio to a third party (`apihear deny`). Consent is the
+readable remaining budget plus operator writes to `policy/ctl` from a
+namespace the agent does not inhabit — not a prompt the model can
+answer. `NsConstruct->speechcontrolpath`, shared with `tools9p`, refuses
+`/n/speech/policy` as a path grant.
+
 When a workflow appears to require user files and the web simultaneously, split
 it into stages with a trusted mediator. There is no safe prompt that compensates
 for granting a compromised model both confidential data and unrestricted egress.
