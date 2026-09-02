@@ -34,11 +34,11 @@ if {~ $emuhost MacOSX Linux Nt}{
 		# Windows: mount C:\ at /n/local. Profiles live at C:\Users\<name>,
 		# so /n/local/Users/$user matches macOS's /n/local/Users/$user.
 		trfs '#UC:/' /n/local >[2] /dev/null
-		ls /n/local >[2] /dev/null		# settle the EXPASYNC export/mount before first use (host-root trfs race)
+		ls /n/local > /dev/null >[2] /dev/null		# settle the EXPASYNC export/mount before first use (host-root trfs race)
 		ghome=/n/local/Users/^$user
 	}{
 		trfs '#U*' /n/local >[2] /dev/null
-		ls /n/local >[2] /dev/null		# settle the EXPASYNC export/mount before first use (host-root trfs race)
+		ls /n/local > /dev/null >[2] /dev/null		# settle the EXPASYNC export/mount before first use (host-root trfs race)
 		ghome=/n/local/^`{echo 'echo $HOME' | os sh}
 	}
 	home=$ghome
