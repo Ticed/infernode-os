@@ -35,11 +35,7 @@ if {~ $emuhost MacOSX Linux Nt}{
 		# so /n/local/Users/$user matches macOS's /n/local/Users/$user.
 		trfs '#UC:/' /n/local >[2] /dev/null
 		ls /n/local > /dev/null >[2] /dev/null		# settle the EXPASYNC export/mount before first use (host-root trfs race)
-		if {~ $#user 0} {
-			ghome=/n/local/Users/inferno
-		} {
-			ghome=/n/local/Users/^$user
-		}
+		ghome=/n/local/Users/^$user
 	}{
 		trfs '#U*' /n/local >[2] /dev/null
 		ls /n/local > /dev/null >[2] /dev/null		# settle the EXPASYNC export/mount before first use (host-root trfs race)
