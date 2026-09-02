@@ -69,7 +69,7 @@ Bootstrap the build tools and install the post-merge git hook:
 
 This hook runs automatically after every `git pull` or `git merge`. It detects which `.m` (interface) and `.b` (source) files changed and rebuilds the affected `.dis` files. Without it, pulling interface changes can leave you with stale `.dis` files that fail at load time with `link typecheck` errors.
 
-### Why are `.dis` files in git?
+### Why isn't there a `dis/` runtime after clone?
 
 Inferno is a self-hosting OS and the `dis/` directory is its runtime, like
 `/usr/bin` on Unix. It holds compiled bytecode, so it is a **build product and
@@ -91,9 +91,9 @@ makes `git pull` do it for you. All four directories matter: `appl/mpeg` and
 A downloaded **release** already contains a built runtime — the packaging job
 builds it before staging, so nothing is required of you there.
 
-Build artifacts in source directories (`appl/**/*.dis`, `tests/**/*.dis`) are **not** tracked — only the runtime tree.
+Build artifacts in source directories (`appl/**/*.dis`, `tests/**/*.dis`) are gitignored. The runtime `dis/` tree is also untracked and must be built.
 
-The trade-off: tracked `.dis` files can go stale when `.m` interfaces change between commits. The post-merge hook closes that gap automatically.
+The post-merge hook rebuilds bytecode after a pull when `.m` interfaces change, so you do not keep running yesterday's modules.
 
 ## First Steps
 
@@ -122,7 +122,7 @@ After building (see Building section below):
 - **Network**: mntgen, trfs, os
 - **Utilities**: du, wc, grep, ftest, echo
 
-**Note:** The runtime `.dis` files in `dis/` are tracked in git, so basic commands work after clone. If you see `link typecheck` errors, run `./hooks/install.sh` and pull again, or rebuild manually with `mk install` in the affected `appl/` subdirectory.
+**Note:** A fresh clone has no `dis/*.dis` runtime. After `mk` and `limbo` exist, compile it with the loop above. If you see `link typecheck` errors, run `./hooks/install.sh` and pull again, or rebuild with that same loop.
 
 ## Building
 
