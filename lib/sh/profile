@@ -35,11 +35,23 @@ if {~ $emuhost MacOSX Linux Nt}{
 		# so /n/local/Users/$user matches macOS's /n/local/Users/$user.
 		trfs '#UC:/' /n/local >[2] /dev/null
 		ls /n/local > /dev/null >[2] /dev/null		# settle the EXPASYNC export/mount before first use (host-root trfs race)
-		ghome=/n/local/Users/^$user
+		if {~ $#user 0} {
+			ghome=/n/local/Users/inferno
+		} {
+			ghome=/n/local/Users/^$user
+		}
 	}{
 		trfs '#U*' /n/local >[2] /dev/null
 		ls /n/local > /dev/null >[2] /dev/null		# settle the EXPASYNC export/mount before first use (host-root trfs race)
-		ghome=/n/local/^`{echo 'echo $HOME' | os sh}
+		# printf, not echo: a blank os output is a null list, and
+		# /n/local/^$empty is "sh: null list in concatenation".
+		h=`{os sh -c 'printf %s "$HOME"'}
+		if {~ $#h 0} {
+			echo 'profile: could not read host HOME; overlays will use /n/local/tmp/infernode-home'
+			ghome=/n/local/tmp/infernode-home
+		} {
+			ghome=/n/local^$h
+		}
 	}
 	home=$ghome
 
@@ -225,20 +237,29 @@ if {! ftest -f /mnt/factotum/proto}{
 # <SERVICE>_API_KEY first, then the legacy plaintext file /lib/veltro/keys/<svc>.
 # Add a service to the lists below to provision it the same way.
 fn provisionkey {
-	# $1 = service name, $2 = host env var
-	_pk=`{os sh -c 'printf %s "${'^$2^'}"' >[2] /dev/null}
-	if {~ $#_pk 0} {
-		_pk=`{cat /lib/veltro/keys/$1 >[2] /dev/null}
-	}
-	if {! ~ $#_pk 0} {
-		echo 'key proto=pass service='^$1^' user=apikey !password='^$_pk > /mnt/factotum/ctl >[2] /dev/null
+	# $* is service name, then host env var name.
+	if {! no $*} {
+		svc=${hd $*}
+		rest=${tl $*}
+		if {! no $rest} {
+			envn=${hd $rest}
+			_pk=`{os sh -c 'printf %s "${'^$"envn^'}"' >[2] /dev/null}
+			if {~ $#_pk 0} {
+				_pk=`{cat /lib/veltro/keys/$svc >[2] /dev/null}
+			}
+			if {! ~ $#_pk 0} {
+				echo 'key proto=pass service='^$"svc^' user=apikey !password='^$"_pk > /mnt/factotum/ctl >[2] /dev/null
+			}
+		}
 	}
 }
 fn provisionkeyfile {
-	# Windows: os sh in backticks hangs, so file-only. $1 = service name.
-	_pk=`{cat /lib/veltro/keys/$1 >[2] /dev/null}
-	if {! ~ $#_pk 0} {
-		echo 'key proto=pass service='^$1^' user=apikey !password='^$_pk > /mnt/factotum/ctl >[2] /dev/null
+	if {! no $*} {
+		svc=${hd $*}
+		_pk=`{cat /lib/veltro/keys/$svc >[2] /dev/null}
+		if {! ~ $#_pk 0} {
+			echo 'key proto=pass service='^$"svc^' user=apikey !password='^$"_pk > /mnt/factotum/ctl >[2] /dev/null
+		}
 	}
 }
 if {~ $emuhost Nt} {

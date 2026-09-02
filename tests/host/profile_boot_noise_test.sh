@@ -2,7 +2,8 @@
 #
 # The login profile settle-walks /n/local so trfs has the host root in
 # cache before overlay binds. Those walks must not print the host
-# filesystem to the user's terminal.
+# filesystem to the user's terminal. Key provisioning must not raise
+# "null list in concatenation" and abort before speech9p starts.
 #
 # Run from project root: ./tests/host/profile_boot_noise_test.sh
 
@@ -25,7 +26,8 @@ SDL_VIDEODRIVER=dummy
 SDL_AUDIODRIVER=dummy
 export HOME SDL_VIDEODRIVER SDL_AUDIODRIVER
 
-timeout 12 "$EMU" -c0 -r"$ROOT" /dis/sh.dis -l -c 'echo PROFILE_DONE' \
+timeout 12 "$EMU" -c0 -r"$ROOT" /dis/sh.dis -l -c \
+	'if {ftest -f /n/speech/ctl} {echo SPEECH_OK} {echo SPEECH_MISSING}; echo PROFILE_DONE' \
 	</dev/null >"$LOG" 2>&1 || true
 
 if ! grep -q 'PROFILE_DONE' "$LOG"; then
@@ -39,6 +41,26 @@ if grep -q '/n/local/Applications' "$LOG" || grep -q '/n/local/Users' "$LOG"; th
 	echo 'FAIL: profile printed the host root listing to stdout'
 	echo '--- matching lines ---'
 	grep '/n/local/' "$LOG" | head
+	exit 1
+fi
+
+if grep -q 'null list in concatenation' "$LOG"; then
+	echo 'FAIL: profile hit sh: null list in concatenation'
+	echo '--- log ---'
+	cat "$LOG"
+	exit 1
+fi
+
+if grep -q 'SPEECH_MISSING' "$LOG"; then
+	echo 'FAIL: profile did not start speech9p (concat raise used to abort before it)'
+	echo '--- log ---'
+	cat "$LOG"
+	exit 1
+fi
+if ! grep -q 'SPEECH_OK' "$LOG"; then
+	echo 'FAIL: profile did not report speech9p ctl'
+	echo '--- log ---'
+	cat "$LOG"
 	exit 1
 fi
 
