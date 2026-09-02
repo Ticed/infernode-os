@@ -449,6 +449,9 @@ init(img: ref Draw->Image, dsp: ref Draw->Display,
 			sendinput(inputbuf);
 			inputbuf = "";
 			inputpos = 0;
+		} else if(hasprefix(vtext, "error:")) {
+			inputbuf = vtext;
+			inputpos = len inputbuf;
 		}
 		redrawconv();
 	ev := <-evch =>
@@ -1178,10 +1181,17 @@ startvoice()
 	(ok, nil) := sys->stat("/n/speech/hear");
 	if(ok < 0) {
 		sys->fprint(stderr, "luciconv: /n/speech not mounted\n");
+		voicestate = VOICE_REC;
+		spawn sendvoiceerr(voicech, "error: /n/speech is not running");
 		return;
 	}
 	voicestate = VOICE_REC;
 	spawn voiceworker(voicech);
+}
+
+sendvoiceerr(ch: chan of string, s: string)
+{
+	ch <-= s;
 }
 
 VOICE_TIMEOUT_MS: con 30000;
