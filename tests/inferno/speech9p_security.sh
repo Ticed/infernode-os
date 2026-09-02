@@ -8,6 +8,11 @@ sleep 1
 
 echo voice safevoice > /tmp/speech9p-security/ctl
 cfg := `{cat /tmp/speech9p-security/ctl}
+if {! ~ $"cfg *'seal on'*} {
+	echo 'SPEECH9P-SECURITY FAIL: default start was not sealed'
+	kill Speech9p Styx > /dev/null >[2] /dev/null
+	raise fail:speech9p-security
+}
 if {! ~ $"cfg *'voice safevoice'*} {
 	echo 'SPEECH9P-SECURITY FAIL: safe voice was not applied'
 	kill Speech9p Styx > /dev/null >[2] /dev/null
@@ -34,7 +39,7 @@ echo 'apikey secret' > /tmp/speech9p-security/ctl
 echo 'piperbin touch' > /tmp/speech9p-security/ctl
 after := `{cat /tmp/speech9p-security/ctl}
 if {! ~ $"before $"after} {
-	echo 'SPEECH9P-SECURITY FAIL: startup-only config changed'
+	echo 'SPEECH9P-SECURITY FAIL: sealed config changed'
 	kill Speech9p Styx > /dev/null >[2] /dev/null
 	raise fail:speech9p-security
 }

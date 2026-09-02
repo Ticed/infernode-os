@@ -490,18 +490,17 @@ input. When enabled, every assistant response is piped through
 
 By default a Veltro agent's namespace strips `/n` down to whatever
 `caps.paths` allows. `/n/speech` would therefore be invisible to most
-agents. Two mechanisms ensure say/hear actually work:
+agents. The grant is tool-derived, not auto-detected from a live mount:
 
-- **Auto-grant in tools9p** (`tools9p.b:992`): if the agent has `say` or
-  `hear` registered, `/n/speech` is added to `allpaths` automatically.
-- **Auto-grant in nsconstruct** (`nsconstruct.b:212`): if `/n/speech` is
-  in `caps.paths` *and* it actually exists on the host, it's added to
-  the agent's `nallow` list.
+- **tools9p**: if the invoked tool is `say` or `hear`, `/n/speech` is
+  added to `allpaths`.
+- **nsconstruct**: `/n/speech` enters `nallow` when `say` or `hear` is
+  in `caps.tools`, or when `/n/speech` is in `caps.paths`, *and* the
+  mount exists.
 
-Both predicates check `sys->stat("/n/speech")` so an agent in a session
-without speech9p running does not get a stale mountpoint — the namespace
-just doesn't include it, and the tool reports `error: /n/speech not
-mounted`.
+A session without speech9p running does not get a stale mountpoint —
+`stat` fails, the namespace omits it, and the tool reports
+`error: /n/speech not mounted`.
 
 ## 8. Threat surface
 
@@ -636,26 +635,30 @@ Use this as the reference for what actually happens when you press
 sequenceDiagram
     autonumber
     participant emu as emu (./emu/MacOSX/o.emu)
-    participant prof as lib/sh/profile
+    participant boot as lib/lucifer/boot.sh
+    participant spboot as lib/lucifer/boot-speech.sh
     participant det as detectplatform
     participant init as initplatform
     participant sp as speech9p server
     participant ns as /n/speech mount
 
-    emu->>prof: source profile (after bind ~/.infernode overlays)
-    prof->>sp: /dis/veltro/speech9p.dis -e cmd &
+    emu->>boot: sh -l /lib/lucifer/boot.sh
+    boot->>spboot: run before tools9p
+    spboot->>sp: /dis/veltro/speech9p.dis -e cmd &
     sp->>det: read /env/emuhost
     det-->>sp: "MacOSX"  → "macos"
     sp->>init: case "macos"
-    Note over init: cmdtts := "say"<br/>cmdstt := "whisper-cli"<br/>voice := "samantha"<br/>audrate := 22050, chans := 1, bits := 16
+    Note over init: cmdtts := "say"<br/>cmdstt := "whisper-cli"<br/>voice := "samantha"<br/>audrate := 22050, chans := 1, bits := 16<br/>sealed before mount
     sp->>ns: ensuredir /n/speech<br/>mount fds[1] MREPL|MCREATE
     ns-->>sp: ready
+    spboot->>ns: echo seal on > /n/speech/ctl
 ```
 
-After `lib/sh/profile` runs, `cat /n/speech/ctl` returns:
+`lib/sh/profile` does not start a speech server. After `boot-speech.sh` runs, `cat /n/speech/ctl` returns:
 
 ```
 engine cmd
+seal on
 voice samantha
 lang en
 rate 22050
@@ -869,7 +872,7 @@ switch on Intel macs where the cmd path is broken (§10.3).
   `appl/veltro/tools/hear.b`, `appl/cmd/lucibridge.b:237`,
   `appl/veltro/nsconstruct.b:188-216`, `appl/veltro/tools9p.b:992`,
   `module/speech.m`.
-- Boot: `lib/sh/profile:112` (`speech9p -e cmd &` on macOS/Linux).
+- Boot: `lib/lucifer/boot-speech.sh` (sealed `speech9p -e cmd` before tools9p). `lib/sh/profile` does not start a server.
 - Manual page: `man/4/speech`.
 - Companion docs: [SPEECH-REMOTE-AUDIO.md](SPEECH-REMOTE-AUDIO.md)
   (cross-host audio composition), [ARCHITECTURE.md](ARCHITECTURE.md)

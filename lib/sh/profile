@@ -294,8 +294,13 @@ if {~ $emuhost MacOSX Linux Nt}{
 		}
 	}
 
-	# Start speech file server (TTS/STT via /n/speech)
-	/dis/veltro/speech9p.dis -e cmd &
+	# Speech is not started here. lib/sh/profile runs for every desktop
+	# shell, including headless ones that never run Lucifer. A host-command
+	# speech server is a privileged desktop service: the canonical start
+	# is lib/lucifer/boot-speech.sh, which declares the engine and seals
+	# host-command keys before tools9p (the agent grant) exists. A bare
+	# shell that wants speech starts speech9p itself; the server seals
+	# before publishing the mount unless invoked with -U.
 }{
 	# Non-desktop: mount remote llm9p
 	mount -A 'tcp!llmserver!5640' /mnt/llm >[2] /dev/null

@@ -352,7 +352,7 @@ The subagent's system prompt comes from `/lib/veltro/agents/{type}.txt`, loaded 
 | Shell access controlled | `sh.dis` + named command `.dis` files only bound if `shellcmds` is non-nil |
 | Writable views explicit | `MCREATE` appears only on `/tmp`, proposal endpoints, activity scratch, and cowfs staging |
 | Host path control | `/n/local` hidden unless `caps.paths` grants specific subpaths (`-p` flag) |
-| Speech preserved | `/n/speech` auto-detected and included in `/n` allowlist |
+| Speech grant | `/n/speech` is derived from the `say`/`hear` tools (or an explicit `/n/speech` path grant); a live mount is not auto-included. Host-command keys are sealed before tools9p starts |
 | 9P self-mount safe | Root restriction skips `stat()` to avoid deadlock on `/tool` |
 
 ## Shell and Exec Access

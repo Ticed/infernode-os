@@ -215,7 +215,7 @@ restrictns(caps: ref Capabilities): string
 	# 4-5. Restrict /n to explicitly granted entries only.
 	# /n is the IMPORT YARD — foreign trees imported intact (docs/NAMESPACE-LAYOUT.md).
 	# All /n/ entries are capability-driven — never auto-exposed by existence:
-	#   /n/speech — "/n/speech" in caps.paths
+	#   /n/speech — say/hear tools, or "/n/speech" in caps.paths
 	#   /n/wallet — "/n/wallet" in caps.paths
 	#   /n/pres-* — caps.xenith != 0
 	#   /n/local  — /n/local/ subpaths in caps.paths
@@ -232,8 +232,11 @@ restrictns(caps: ref Capabilities): string
 		# /mnt — they synthesize their own schema (docs/NAMESPACE-LAYOUT.md). All
 		# /mnt grants are handled in step 5b below, not here.
 
-		# /n/speech — only if explicitly granted via caps.paths
-		if(inlist("/n/speech", caps.paths)) {
+		# /n/speech — derived from the say/hear tools, or an explicit
+		# path grant. A live mount is not enough; generic path grants
+		# from unrelated tools cannot expose it unless they name it.
+		if(inlist("say", caps.tools) || inlist("hear", caps.tools) ||
+		   inlist("/n/speech", caps.paths)) {
 			(speechok, nil) := sys->stat("/n/speech");
 			if(speechok >= 0)
 				nallow = "speech" :: nallow;

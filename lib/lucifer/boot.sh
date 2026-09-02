@@ -115,7 +115,6 @@ if {ftest -f /lib/veltro/sources/email.conf} {
 luciuisrv
 echo activity create Main > /mnt/ui/ctl
 sleep 1
-/dis/veltro/tools9p -v -m /tool -b read,list,find,search,grep,write,edit,exec,launch,spawn,diff,json,webfetch,git,say,editor,fractal,memory,todo,plan,websearch,mail,keyring,present,gap,limbo,sms,dial,contacts -p /dis/wm read list find present say hear task memory gap keyring editor shell limbo sms dial contacts
 # /tmp is bound by lib/sh/profile; on Windows the bind has hit edge
 # cases where it silently failed and the redirect below produced no log
 # file (GH #230 sphynkx report). Force /tmp into existence and pre-create
@@ -123,6 +122,11 @@ sleep 1
 # /tmp truly doesn't exist after this, the mkdir will print to stderr
 # instead of being silenced.
 mkdir -p /tmp
+# Sealed speech before the agent grant. tools9p below registers say/hear;
+# boot-speech.sh publishes /n/speech already sealed. Profile does not
+# start a competing server, so there is no start-order window.
+run /lib/lucifer/boot-speech.sh
+/dis/veltro/tools9p -v -m /tool -b read,list,find,search,grep,write,edit,exec,launch,spawn,diff,json,webfetch,git,say,editor,fractal,memory,todo,plan,websearch,mail,keyring,present,gap,limbo,sms,dial,contacts -p /dis/wm read list find present say hear task memory gap keyring editor shell limbo sms dial contacts
 > /tmp/lucibridge.log
 lucibridge -a 0 -v -s >[2] /tmp/lucibridge.log &
 sleep 1

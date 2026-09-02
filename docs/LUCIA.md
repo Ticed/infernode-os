@@ -46,8 +46,8 @@ Both scripts:
 1. Set memory limits: `-pheap=512m -pmain=512m -pimage=512m`.
 2. Start `luciuisrv` (the UI 9P filesystem at `/mnt/ui`).
 3. Create the `Main` activity.
-4. Start `speech9p` (TTS/STT, mounted at `/n/speech`).
-5. Start `tools9p` (tool registry at `/tool` with the default capability budget — see below).
+4. Start sealed `speech9p` via `lib/lucifer/boot-speech.sh` (TTS/STT, mounted at `/n/speech`).
+5. Start `tools9p` (tool registry at `/tool` with the default capability budget — see below). The speech server is already sealed before this grant exists.
 6. Start `lucibridge` (the agent loop) in the background.
 7. Create a `taskboard` artifact in the presentation zone.
 8. Run `lucifer` (the window owner).

@@ -6,6 +6,8 @@ speech \- 9P file server for text-to-speech and speech-to-text
 [
 .B \-D
 ] [
+.B \-U
+] [
 .B \-m
 .I mountpoint
 ] [
@@ -55,10 +57,23 @@ Writing clears any previous transcription and starts a new recording.
 .TP
 .B voices
 Read to list available voices for the current engine.
+Host-command keys (engine, command paths, model paths, API URL and key)
+are sealed before the mount is published. The shipped launcher is
+.B /lib/lucifer/boot-speech.sh
+, run by Lucifer boot before tools9p.
+.I Profile
+does not start a server.
 .SS Options
 .TP
 .B \-D
 Enable 9P debug tracing.
+.TP
+.B \-U
+Start unsealed: host-command keys stay writable until
+.B seal on
+is written to
+.BR ctl .
+The default start is sealed.
 .TP
 .BI \-m " mountpoint"
 Mount the file server at
@@ -78,14 +93,14 @@ A third backend,
 shells out to local ML binaries
 .RB ( piper " for TTS, " whisper-cli " for STT)"
 and is selected automatically on Linux when both binaries are on
-.BR $PATH ;
-the
-.B \-e
-flag itself currently rejects
-.BR local ,
-so set it via
-.B "echo 'engine local' > /n/speech/ctl"
-or rely on auto-detection.
+.BR $PATH ,
+or by
+.BR "\-e local" .
+After the seal,
+.B engine
+writes to
+.B ctl
+are refused.
 .TP
 .BI \-k " apikey"
 API authentication key (for
@@ -117,11 +132,18 @@ Language code (default:
 .SS Configuration Commands
 Write to
 .B ctl
-to change settings:
+to change settings. After the seal, only inert knobs (voice, language,
+audio shape) remain writable.
+.TP
+.BI seal " on"
+Seal host-command keys. One-way; already sealed is a no-op.
 .TP
 .BI engine " name"
 Switch engine backend
 .RB ( cmd ", " api ", or " local ).
+Refused after the seal. The
+.B \-e
+flag sets this at start.
 .TP
 .BI voice " name"
 Set the voice.

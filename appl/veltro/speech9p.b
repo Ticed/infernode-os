@@ -14,12 +14,13 @@ implement Speech9p;
 #   └── voices     (r)   List available voices for current engine.
 #
 # Usage:
-#   speech9p                       # Start with defaults
+#   speech9p                       # Start with defaults, sealed before mount
 #   speech9p -D                    # With 9P debug tracing
 #   speech9p -m /n/speech          # Custom mount point
 #   speech9p -e cmd                # Use host command engine
 #   speech9p -e api                # Use HTTP API engine
 #   speech9p -e api -k <key>       # API engine with key
+#   speech9p -U                    # Start unsealed; write host-command keys, then `seal on`
 #
 # Examples:
 #   echo 'Hello world' > /n/speech/say         # Speak text
@@ -29,10 +30,11 @@ implement Speech9p;
 #   cat /n/speech/voices                        # List voices
 #   cat /n/speech/ctl                           # Show current config
 #
-# Runtime ctl writes are intentionally limited to inert knobs such as voice,
-# language, and audio shape. Backend selection, host command paths, model
-# paths, API URLs, and API keys are startup/admin configuration because /n/speech
-# may be present in an agent namespace.
+# Host-command keys (engine, cmdtts, cmdstt, apiurl, apikey, piper*, whisper*)
+# are sealed before the mount is published, unless -U. After `seal on` they
+# are refused; voice, lang, and audio shape stay writable. The shipped
+# launcher is lib/lucifer/boot-speech.sh; lib/sh/profile does not start a
+# server.
 #
 
 include "sys.m";
@@ -86,6 +88,7 @@ apikey := "";
 audrate := 22050;
 audchans := 1;
 audbits := 16;
+sealed := 0;     # Set before mount unless -U; see sealedkey()
 
 # Platform-specific defaults for cmd engine
 cmdtts := "";    # Set in initplatform()
@@ -111,8 +114,9 @@ nomod(s: string)
 
 usage()
 {
-	sys->fprint(stderr, "Usage: speech9p [-D] [-m mountpoint] [-e engine] [-k apikey]\n");
+	sys->fprint(stderr, "Usage: speech9p [-D] [-U] [-m mountpoint] [-e engine] [-k apikey]\n");
 	sys->fprint(stderr, "  -D            Enable 9P debug tracing\n");
+	sys->fprint(stderr, "  -U            Start unsealed (host-command keys writable until `seal on`)\n");
 	sys->fprint(stderr, "  -m mountpoint Mount point (default: /n/speech)\n");
 	sys->fprint(stderr, "  -e engine     Engine: cmd (default), api, local\n");
 	sys->fprint(stderr, "  -k key        API key (for api engine)\n");
@@ -147,9 +151,11 @@ init(nil: ref Draw->Context, args: list of string)
 		nomod(Arg->PATH);
 	arg->init(args);
 
+	unsealed := 0;
 	while((o := arg->opt()) != 0)
 		case o {
 		'D' =>	styxservers->traceset(1);
+		'U' =>	unsealed = 1;
 		'm' =>	mountpt = arg->earg();
 		'e' =>
 			e := arg->earg();
@@ -178,6 +184,11 @@ init(nil: ref Draw->Context, args: list of string)
 
 	# Detect platform and set defaults
 	initplatform();
+
+	# Seal host-command keys before the mount is published. -U leaves
+	# an operator window; the caller must then write `seal on`.
+	if(!unsealed)
+		sealed = 1;
 
 	sys->pctl(Sys->FORKFD, nil);
 
@@ -287,6 +298,10 @@ readconfig(): string
 		ename = "local";
 
 	result := "engine " + ename + "\n";
+	if(sealed)
+		result += "seal on\n";
+	else
+		result += "seal off\n";
 	result += "voice " + voice + "\n";
 	result += "lang " + lang + "\n";
 	result += "rate " + string audrate + "\n";
@@ -334,9 +349,22 @@ applyconfig(cmd: string): string
 		val += hd argv;
 	}
 
+	if(sealed && sealedkey(key))
+		return "error: " + key + " is sealed";
+
 	case key {
 	"engine" =>
-		return "error: engine is startup-only";
+		case val {
+		"cmd" =>	engine = ENGINE_CMD;
+		"api" =>	engine = ENGINE_API;
+		"local" =>	engine = ENGINE_LOCAL;
+		* =>
+			return "error: unknown engine: " + val;
+		}
+	"seal" =>
+		if(val != "on")
+			return "error: seal must be on";
+		sealed = 1;
 	"voice" =>
 		if(!safename(val))
 			return "error: unsafe voice";
@@ -361,26 +389,40 @@ applyconfig(cmd: string): string
 			return "error: bits must be 8 or 16";
 		audbits = b;
 	"cmdtts" =>
-		return "error: cmdtts is startup-only";
+		cmdtts = val;
 	"cmdstt" =>
-		return "error: cmdstt is startup-only";
+		cmdstt = val;
 	"apiurl" =>
-		return "error: apiurl is startup-only";
+		apiurl = val;
 	"apikey" =>
-		return "error: apikey is startup-only";
+		apikey = val;
 	"piperbin" =>
-		return "error: piperbin is startup-only";
+		piperbin = val;
 	"pipermodel" =>
-		return "error: pipermodel is startup-only";
+		pipermodel = val;
 	"whisperbin" =>
-		return "error: whisperbin is startup-only";
+		whisperbin = val;
 	"whispermodel" =>
-		return "error: whispermodel is startup-only";
+		whispermodel = val;
 	* =>
 		return "error: unknown config key: " + key;
 	}
 
 	return "ok";
+}
+
+# Keys that name a backend, a host command, a model path, or a credential.
+# Writing one is operator configuration. The default start seals them
+# before the mount is published; -U leaves them writable until `seal on`.
+sealedkey(key: string): int
+{
+	case key {
+	"engine" or "cmdtts" or "cmdstt" or
+	"apiurl" or "apikey" or
+	"piperbin" or "pipermodel" or "whisperbin" or "whispermodel" =>
+		return 1;
+	}
+	return 0;
 }
 
 safename(s: string): int
