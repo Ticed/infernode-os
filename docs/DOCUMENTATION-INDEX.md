@@ -32,6 +32,7 @@
 | [decisions/0001-rooted-agent-capabilities.md](decisions/0001-rooted-agent-capabilities.md) | Proposed decision: rooted 9P filesystem capabilities and atomic agent delegation |
 | [LUCIFER-EVALUATION.md](LUCIFER-EVALUATION.md) | Lucifer GUI production readiness evaluation (P0/P1/P2 issues) |
 | [evaluations/fractal-app-evaluation.md](evaluations/fractal-app-evaluation.md) | Fractal app production readiness evaluation |
+| [evaluations/kokoro-apple-silicon-backends.md](evaluations/kokoro-apple-silicon-backends.md) | Kokoro-82M bakeoff on Apple Silicon: CPU, CoreML EP, native CoreML, MLX, MetalRT |
 | [architecture-review-veltro-unification.md](architecture-review-veltro-unification.md) | Veltro architecture review |
 | [matrix-architecture.md](matrix-architecture.md) | Matrix compositional module runtime — modules, compositions, the library, 9P control namespace, and the Lucifer GUI control surface |
 | [9p-data-conventions.md](9p-data-conventions.md) | Data conventions for 9P file servers — text records, hierarchy as schema, ctl files, `/mnt` placement, the no-JSON argument |
