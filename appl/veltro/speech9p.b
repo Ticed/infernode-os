@@ -441,7 +441,7 @@ listlocalvoices(): string
 	# Try to list models in common Piper model directories
 	result := runcmd("ls /opt/piper/models/*.onnx 2>/dev/null; ls /usr/share/piper-voices/*.onnx 2>/dev/null");
 	if(result == "" || hasprefix(result, "error:"))
-		return "(no local voice models found)\nhint: set pipermodel path via ctl\n";
+		return "(no local voice models found)\nnext: set pipermodel at speech9p startup; it cannot be changed via ctl\n";
 	return result;
 }
 
@@ -523,7 +523,7 @@ saycmd_windows(nil: string): string
 sayapi(text: string): string
 {
 	if(apikey == "")
-		return "error: API key not set (use: echo 'apikey <key>' > /n/speech/ctl)";
+		return "error: API key not set; start speech9p with -k (apikey cannot be changed via ctl)";
 
 	# Build JSON request body
 	apivoice := voice;
@@ -565,7 +565,7 @@ hearcmd(): string
 {
 	if(cmdstt == "")
 		return "error: no STT command configured\n" +
-			"hint: install whisper-cpp and set: echo 'cmdstt whisper-cli' > /n/speech/ctl";
+			"next: install whisper-cpp and restart speech9p; cmdstt cannot be changed via ctl";
 
 	platform := detectplatform();
 	case platform {
@@ -582,6 +582,10 @@ hearcmd_macos(): string
 {
 	tmpfile := "/tmp/speech_stt.wav";
 	duration := string (hearduration / 1000);
+	modelpath := "/opt/homebrew/share/whisper-cpp/models/ggml-base.en.bin";
+	if(!hostfileok(modelpath))
+		return "error: whisper model not found at " + modelpath + "\n" +
+			"next: download ggml-base.en.bin to that path; brew whisper-cpp does not ship a model";
 
 	# Record from macOS microphone via ffmpeg
 	# -f avfoundation -i :0 = default audio input device
@@ -595,7 +599,6 @@ hearcmd_macos(): string
 
 	# Transcribe with whisper-cli
 	# -np = no prints (timestamps etc), -nt = no timestamps, just text
-	modelpath := "/opt/homebrew/share/whisper-cpp/models/ggml-base.en.bin";
 	wcmd := cmdstt + " -m " + modelpath + " -nt -np -f " + tmpfile +
 		" 2>/dev/null";
 	text := strip(runcmd(wcmd));
@@ -631,7 +634,7 @@ hearcmd_linux(): string
 hearapi(): string
 {
 	if(apikey == "")
-		return "error: API key not set";
+		return "error: API key not set; start speech9p with -k (apikey cannot be changed via ctl)";
 
 	tmpfile := "/tmp/speech_stt.wav";
 
@@ -900,6 +903,15 @@ put32le(buf: array of byte, off, val: int)
 	buf[off+1] = byte ((val >> 8) & 16rFF);
 	buf[off+2] = byte ((val >> 16) & 16rFF);
 	buf[off+3] = byte ((val >> 24) & 16rFF);
+}
+
+# Host path as seen through the #U mount at /n/local (absolute paths only).
+hostfileok(path: string): int
+{
+	if(path == nil || path == "" || path[0] != '/')
+		return 0;
+	(ok, nil) := sys->stat("/n/local" + path);
+	return ok >= 0;
 }
 
 # === Host command execution via #C (devcmd) ===
