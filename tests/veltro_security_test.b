@@ -698,6 +698,7 @@ TRAVERSAL_TMP_CANARY: con "/tmp/veltro-traversal-canary";
 TRAVERSAL_ROOT_CANARY: con "/veltro-traversal-canary-root";
 TRAVERSAL_TMP_ESCAPE: con "/tmp/veltro-traversal-escape";
 TRAVERSAL_ROOT_ESCAPE: con "/veltro-traversal-escape-root";
+TRAVERSAL_PROBE: con "/tmp/veltro/probe-sdk";
 
 testNamespaceTraversalContainment(t: ref T)
 {
@@ -727,6 +728,8 @@ cleanuptraversal()
 	sys->remove(TRAVERSAL_ROOT_CANARY);
 	sys->remove(TRAVERSAL_TMP_ESCAPE);
 	sys->remove(TRAVERSAL_ROOT_ESCAPE);
+	sys->remove(TRAVERSAL_PROBE + "/marker");
+	sys->remove(TRAVERSAL_PROBE);
 }
 
 # Directory entry names at a path, for probes that care about how much is
@@ -745,6 +748,14 @@ lsnames(path: string): list of string
 			names = d[i].name :: names;
 	}
 	return names;
+}
+
+hasname(names: list of string, want: string): int
+{
+	for(; names != nil; names = tl names)
+		if(hd names == want)
+			return 1;
+	return 0;
 }
 
 # Containment must hold for code that is not a Veltro tool. Rooted filesystem
@@ -810,10 +821,12 @@ traversalWorker(result: chan of string)
 	sys->pctl(Sys->FORKNS, nil);
 	createfile(TRAVERSAL_TMP_CANARY);
 	createfile(TRAVERSAL_ROOT_CANARY);
+	mkdirp(TRAVERSAL_PROBE);
+	createfile(TRAVERSAL_PROBE + "/marker");
 
 	caps := ref NsConstruct->Capabilities(
-		"read" :: "write" :: nil, nil, nil, nil, 0 :: 1 :: 2 :: nil,
-		nil, 0, 0, 41003, nil
+		"read" :: "write" :: nil, TRAVERSAL_PROBE :: nil, nil, nil,
+		0 :: 1 :: 2 :: nil, nil, 0, 0, 41003, TRAVERSAL_PROBE :: nil
 	, nil);
 	err := nsconstruct->restrictns(caps);
 	if(err != nil) {
@@ -831,6 +844,8 @@ traversalWorker(result: chan of string)
 		"/tmp/veltro/scratch/../../veltro-traversal-canary",
 		"/tmp/veltro/scratch/../../../veltro-traversal-canary-root",
 		"/tmp/veltro/scratch/../../../../veltro-traversal-canary-root",
+		"/tmp/veltro/probe-sdk/../../veltro-traversal-canary",
+		"/tmp/veltro/probe-sdk/../../../veltro-traversal-canary-root",
 		"/tmp/veltro/../../veltro-traversal-canary",
 		"/dis/lib/../../veltro-traversal-canary-root",
 		"/dis/veltro/../../veltro-traversal-canary-root",
@@ -842,6 +857,9 @@ traversalWorker(result: chan of string)
 			report += sys->sprint("  READ  %s reached a canary outside the namespace\n",
 				reads[i]);
 	}
+	if(hasname(lsnames("/tmp/veltro/probe-sdk/../../.."), ".veltro-ns") ||
+	   hasname(lsnames("/tmp/veltro/probe-sdk/../../../.veltro-ns"), "shadow"))
+		report += "  READ  probe-sdk parent traversal exposed .veltro-ns/shadow\n";
 
 	# Relative resolution after chdir. Plan 9 4e keeps the mount-point stack on
 	# the channel, so a relative walk from the working directory must clamp the
@@ -869,6 +887,7 @@ traversalWorker(result: chan of string)
 	# granted writable view by any traversal.
 	writes := array[] of {
 		"/tmp/veltro/scratch/../../veltro-traversal-escape",
+		"/tmp/veltro/probe-sdk/../../veltro-traversal-escape",
 		"/dis/lib/../../veltro-traversal-escape-root",
 		"/lib/veltro/../../veltro-traversal-escape-root",
 	};
