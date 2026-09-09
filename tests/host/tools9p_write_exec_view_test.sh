@@ -61,6 +61,13 @@ cat /tool/write/ctl
 echo '@@LIST'
 echo '/tmp/veltro/probe-sdk' > /tool/list/ctl
 cat /tool/list/ctl
+echo '@@BOUNDARY_ROOT'
+echo '/tmp/veltro/probe-sdk/../../..' > /tool/list/ctl
+cat /tool/list/ctl
+echo '@@BOUNDARY_INTERNAL'
+echo '/tmp/veltro/probe-sdk/../../../.veltro-ns' > /tool/list/ctl
+cat /tool/list/ctl
+echo '@@BOUNDARY_DONE'
 echo '@@COMPILE'
 echo '/tmp/veltro/probe-sdk/dis/limbo.dis -I /tmp/veltro/probe-sdk/module -o /tmp/veltro/probe-sdk/qualification-probe.dis /tmp/veltro/probe-sdk/qualification-probe.b' > /tool/exec/ctl
 cat /tool/exec/ctl
@@ -75,6 +82,14 @@ rc=$?
 case "$rc" in 0|124|137) ;; *) echo "FAIL: driver exited with status $rc"; sed -n '1,40p' "$LOG"; exit 1 ;; esac
 
 out="$(grep -vE '^JIT|sdl3_pre|mounted on' "$LOG")"
+
+boundary="$(printf '%s\n' "$out" | sed -n '/^@@BOUNDARY_ROOT$/,/^@@BOUNDARY_DONE$/p')"
+if printf '%s\n' "$boundary" |
+	grep -Eq '^d[[:space:]]+- (\.veltro-ns|shadow)$'; then
+	echo "FAIL: probe-sdk parent traversal exposed Veltro shadow backing"
+	printf '%s\n' "$boundary"
+	exit 1
+fi
 
 # list must see the written file
 if ! echo "$out" | grep -q 'qualification-probe.b'; then
