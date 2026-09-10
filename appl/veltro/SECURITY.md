@@ -361,6 +361,15 @@ The subagent's system prompt comes from `/lib/veltro/agents/{type}.txt`, loaded 
 | Speech preserved | `/n/speech` auto-detected and included in `/n` allowlist |
 | 9P self-mount safe | Root restriction skips `stat()` to avoid deadlock on `/tool` |
 
+The baseline paths above are retained capabilities, not declarations that an
+entire subtree is harmless. `/dev/cons` is an input/output channel, `/prog`
+reveals the current tool process, and `/lib/veltro` contains agent-visible
+prompts and configuration. Installation secrets must never be placed in that
+tree; credentials belong in factotum. The deterministic security suite pins the
+exact `/dev`, `/dis`, `/prog`, and `/lib` top-level views, the granted tool
+module set, protected-key exclusion, and read-only attenuation. Escape-room
+campaign results supplement those checks but do not prove these paths safe.
+
 ## Shell and Exec Access
 
 The `exec` tool and `shellcmds` field both affect what appears in `/dis`:
@@ -510,7 +519,8 @@ Tests cover:
 - `restrictns()` full policy (/dis, /dev, /n, /lib, /tmp, /)
 - `restrictns()` shell access via shellcmds
 - `/prog` is empty for exec both with and without shellcmds
-- `restrictns()` concurrent (race safety)
+- baseline `/dev`, `/dis`, `/prog`, and `/lib` surface and read-only attenuation
+- concurrent live-shadow containment while restricted namespaces coexist
 - `verifyns()` violation detection
 - Audit logging
 - Missing items handled gracefully
