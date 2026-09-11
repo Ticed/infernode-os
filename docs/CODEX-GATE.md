@@ -79,6 +79,15 @@ All endpoints bind `127.0.0.1` only.
 | `/v1/models` | GET | Advertised model ids — what llmsrv's `/mnt/llm/models` and the Settings picker show. Set with `CODEX_GATE_MODELS`; whatever a request names is passed straight to `codex -m`, so the list is a convenience, not a whitelist. |
 | `/health` | GET | Liveness + gauges. |
 
+Trusted CLI failures are never returned as assistant prose when the caller can
+act on them safely. Account exhaustion is a structured HTTP 429
+`usage_limit`; transient model saturation is a structured HTTP 503
+`model_capacity`. Streaming requests receive the same error object as an SSE
+`data:` record followed by `[DONE]`. Both carry `retryable: true`; callers may
+retry only under their own bounded policy and must preserve the original
+request. Text merely resembling either error in a successful model reply is
+ordinary untrusted assistant output.
+
 `/health` response:
 
 ```json
