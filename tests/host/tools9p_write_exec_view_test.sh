@@ -45,7 +45,9 @@ rm -r /tmp/veltro/probe-sdk /tmp/veltro/cow >[2] /dev/null
 mkdir -p /tmp/veltro/probe-sdk/dis
 cp /dis/limbo.dis /tmp/veltro/probe-sdk/dis/limbo.dis
 cp -r /module /tmp/veltro/probe-sdk/module
-tools9p -a 1 -p /tmp/veltro/probe-sdk:rw write list read exec & sleep 2
+tools9p -a 1 -p /tmp/veltro/probe-sdk:rw write list read exec &
+tools9p -m /tool.hold -a 2 -p /tmp/veltro/probe-sdk:rw exec &
+sleep 2
 echo '/tmp/veltro/probe-sdk/qualification-probe.b
 implement Probe;
 include "sys.m";
@@ -73,7 +75,7 @@ echo '@@COMPILE'
 echo '/tmp/veltro/probe-sdk/dis/limbo.dis -I /tmp/veltro/probe-sdk/module -o /tmp/veltro/probe-sdk/qualification-probe.dis /tmp/veltro/probe-sdk/qualification-probe.b' > /tool/exec/ctl
 cat /tool/exec/ctl
 echo '@@RUN'
-echo '/tmp/veltro/probe-sdk/qualification-probe.dis' > /tool/exec/ctl &
+echo '/tmp/veltro/probe-sdk/qualification-probe.dis' > /tool.hold/exec/ctl &
 sleep 1
 echo '@@CONCURRENT_BOUNDARY'
 echo '/tmp/veltro/probe-sdk/../../..' > /tool/list/ctl
@@ -85,7 +87,7 @@ cat /tool/list/ctl
 echo '/tmp/veltro/probe-sdk/../../../.veltro-ns' > /tool/list/ctl
 cat /tool/list/ctl
 echo '@@CONCURRENT_DONE'
-sleep 8
+sleep 6
 echo '/tmp/veltro/probe-sdk/qualification-probe.dis' > /tool/exec/ctl
 cat /tool/exec/ctl
 echo '@@DRIVEDONE'
