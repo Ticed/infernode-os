@@ -758,6 +758,17 @@ hasname(names: list of string, want: string): int
 	return 0;
 }
 
+samenames(got, want: list of string): int
+{
+	for(g := got; g != nil; g = tl g)
+		if(!hasname(want, hd g))
+			return 0;
+	for(w := want; w != nil; w = tl w)
+		if(!hasname(got, hd w))
+			return 0;
+	return 1;
+}
+
 # Containment must hold for code that is not a Veltro tool. Rooted filesystem
 # grants (ADR 0001) confine the tools; they do nothing for a shell command,
 # which resolves paths itself in the process namespace. This is the coverage
@@ -2357,6 +2368,142 @@ testEnvironmentAllowlist(t: ref T)
 		t.error(r);
 }
 
+
+# ============================================================================
+# Baseline capability surface
+# Pins the intentional residual authority in /dev, /dis, /prog and /lib.
+# A campaign PASS is not this contract: these assertions inspect the namespace
+# deterministically and verify that the retained code/config views are read-only.
+# ============================================================================
+testBaselineCapabilitySurface(t: ref T)
+{
+	result := chan of string;
+	parentpid := sys->pctl(0, nil);
+	spawn baselineCapabilityWorker(result, parentpid);
+	r := <-result;
+	if(r != "")
+		t.error(r);
+}
+
+baselineCapabilityWorker(result: chan of string, parentpid: int)
+{
+	selfpid := sys->pctl(Sys->FORKNS, nil);
+	caps := ref NsConstruct->Capabilities(
+		"read" :: nil, nil, nil, nil, 0 :: 1 :: 2 :: nil,
+		nil, 0, 0, -1, nil
+	, nil);
+	err := nsconstruct->restrictns(caps);
+	if(err != nil) {
+		result <-= sys->sprint("restrictns failed: %s", err);
+		return;
+	}
+
+	if(!samenames(lsnames("/dev"), "cons" :: "null" :: "time" :: nil)) {
+		result <-= "/dev contains authority outside cons, null and time";
+		return;
+	}
+	if(!samenames(lsnames("/dis"), "lib" :: "veltro" :: nil)) {
+		result <-= "/dis contains an ungranted top-level executable or tree";
+		return;
+	}
+	if(!samenames(lsnames("/dis/veltro/tools"), "read.dis" :: nil)) {
+		result <-= "/dis/veltro/tools contains an ungranted tool module";
+		return;
+	}
+	if(!samenames(lsnames("/lib"), "certs" :: "veltro" :: nil)) {
+		result <-= "/lib contains a tree outside certs and veltro";
+		return;
+	}
+	if(!samenames(lsnames("/prog"), string selfpid :: nil)) {
+		result <-= "/prog is not restricted to the current tool process";
+		return;
+	}
+	(parentok, nil) := sys->stat(sys->sprint("/prog/%d/ns", parentpid));
+	if(parentok >= 0) {
+		result <-= "/prog exposes the parent namespace";
+		return;
+	}
+
+	readonly := array[] of {
+		"/dev/time",
+		"/dis/veltro/tools/read.dis",
+		"/lib/veltro/system.txt",
+		sys->sprint("/prog/%d/ctl", selfpid),
+	};
+	for(i := 0; i < len readonly; i++) {
+		fd := sys->open(readonly[i], Sys->OWRITE);
+		if(fd != nil) {
+			result <-= "baseline capability accepted a write open: " + readonly[i];
+			return;
+		}
+	}
+
+	(keyok, nil) := sys->stat("/lib/veltro/keys/ns-secret-canary");
+	if(keyok >= 0) {
+		result <-= "/lib/veltro exposes protected key material";
+		return;
+	}
+	result <-= "";
+}
+
+
+# ============================================================================
+# Concurrent live-shadow containment
+# Every worker holds its completed restricted namespace at a barrier, ensuring
+# other workers' physical shadow trees are live during direct and parent-walk
+# probes. This covers the concurrency condition absent from the INFR-470 serial
+# traversal regression.
+# ============================================================================
+testConcurrentShadowContainment(t: ref T)
+{
+	nworkers := 4;
+	mkdirp(TRAVERSAL_PROBE);
+	createfile(TRAVERSAL_PROBE + "/marker");
+	ready := chan of int;
+	probe := chan[nworkers] of int;
+	results := chan of string;
+	for(i := 0; i < nworkers; i++)
+		spawn concurrentShadowWorker(ready, probe, results, 42000 + i);
+	for(i = 0; i < nworkers; i++)
+		<-ready;
+	for(i = 0; i < nworkers; i++)
+		probe <-= 1;
+	for(i = 0; i < nworkers; i++) {
+		r := <-results;
+		if(r != "")
+			t.error(r);
+	}
+	sys->remove(TRAVERSAL_PROBE + "/marker");
+	sys->remove(TRAVERSAL_PROBE);
+}
+
+concurrentShadowWorker(ready, probe: chan of int, results: chan of string,
+	actid: int)
+{
+	sys->pctl(Sys->FORKNS, nil);
+	caps := ref NsConstruct->Capabilities(
+		"read" :: nil, TRAVERSAL_PROBE :: nil, nil, nil,
+		0 :: 1 :: 2 :: nil, nil, 0, 0, actid, nil
+	, nil);
+	err := nsconstruct->restrictns(caps);
+	if(err != nil) {
+		ready <-= 1;
+		results <-= sys->sprint("restrictns failed: %s", err);
+		return;
+	}
+	ready <-= 1;
+	<-probe;
+
+	if(hasname(lsnames("/tmp"), ".veltro-ns") ||
+	   hasname(lsnames("/tmp/.veltro-ns"), "shadow") ||
+	   hasname(lsnames(TRAVERSAL_PROBE + "/../../.."), ".veltro-ns") ||
+	   hasname(lsnames(TRAVERSAL_PROBE + "/../../../.veltro-ns"), "shadow")) {
+		results <-= "concurrent restricted worker exposed live shadow backing";
+		return;
+	}
+	results <-= "";
+}
+
 environmentAllowlistWorker(result: chan of string)
 {
 	sys->pctl(Sys->FORKNS, nil);
@@ -2545,6 +2692,8 @@ init(nil: ref Draw->Context, args: list of string)
 	run("ExecTraversalContainment", testExecTraversalContainment);
 	run("NetworkCapability", testNetworkCapability);
 	run("EnvironmentAllowlist", testEnvironmentAllowlist);
+	run("BaselineCapabilitySurface", testBaselineCapabilitySurface);
+	run("ConcurrentShadowContainment", testConcurrentShadowContainment);
 	run("ProgAllowlist", testProgAllowlist);
 	run("ExecProgAllowlist", testExecProgAllowlist);
 	run("ExecShellProgAllowlist", testExecShellProgAllowlist);
