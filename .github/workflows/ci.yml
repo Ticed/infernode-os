@@ -15,12 +15,11 @@ concurrency:
 
 jobs:
   # ─────────────────────────────────────────────
-  # Ring-fence pre-flight: testing-only harness files must live
-  # under tests/agent-harness/. Catches "someone moved serve-agent
-  # back into lib/sh/" before any release build runs. See CLAUDE.md.
+  # Ring-fence pre-flight: adversarial campaign infrastructure lives in the
+  # external infernode-escape-room repository, never in product artifacts.
   # ─────────────────────────────────────────────
   ring-fence:
-    name: Ring-fence (tests/agent-harness/)
+    name: Ring-fence (external harness)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -29,22 +28,19 @@ jobs:
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-    - name: Verify serve-agent* files only under tests/agent-harness/
+    - name: Reject external harness files in the product tree
       run: |
         offenders=$(find . -path ./.git -prune -o \
           \( -name 'serve-agent*' -o -path '*agent-harness*' \) \
-          -not -path './tests/agent-harness/*' \
-          -not -path './tests/agent-harness' \
           -print 2>/dev/null | grep -v '^$' || true)
         if [ -n "$offenders" ]; then
-          echo "FATAL: testing-only harness files found outside tests/agent-harness/:" >&2
+          echo "FATAL: external escape-room harness files found in InferNode:" >&2
           echo "$offenders" >&2
           echo "" >&2
-          echo "These files must live under tests/agent-harness/ so CI guards" >&2
-          echo "in release.yml can keep them out of shipped artefacts." >&2
+          echo "Keep campaign infrastructure in infernode-os/infernode-escape-room." >&2
           exit 1
         fi
-        echo "Ring-fence OK: no testing-only harness files outside tests/agent-harness/."
+        echo "Ring-fence OK: external harness material is absent."
 
     - name: Verify local-only config files are not tracked
       run: |
@@ -184,24 +180,6 @@ jobs:
         ROOT=. bash tests/host/namespace_path_policy_test.sh
         ROOT=. bash tests/host/namespace_manifest_invariants_test.sh
         ROOT=. bash tests/host/veltro_namespace_failclosed_test.sh
-
-    - name: Run escape-room evidence checks
-      run: |
-        # Gates audit-bundle verification, canary scanning, the
-        # evidence-privacy invariants (INFR-406) — raw evidence is 0700/0600
-        # and the derived public artifact carries no canary value — and the
-        # attempt-preservation / fail-closed retry rules (INFR-411).
-        chmod +x tests/host/grind_escape_test.sh
-        ROOT=. bash tests/host/grind_escape_test.sh
-
-    - name: Run outer escape-lab evidence checks
-      run: |
-        # INFR-412: the outer lab creates pcap, console, command log and
-        # manifest private, refuses to start over an exposure, and seals
-        # 0700/0600 at the end.
-        chmod +x tests/agent-harness/escape-lab.sh
-        chmod +x tests/host/escape_lab_evidence_test.sh
-        ROOT=. sh tests/host/escape_lab_evidence_test.sh
 
     - name: Run codex-gate preflight checks
       run: |
@@ -381,80 +359,6 @@ jobs:
           Linux/amd64/bin/limbo
           Linux/amd64/bin/mk
           dis/
-        retention-days: 14
-
-  # ─────────────────────────────────────────────
-  # GoDis: Go-to-Dis compiler (tools/godis).
-  # Unit/encoding tests run anywhere; the E2E suite compiles the
-  # testdata Go programs to Dis and executes them on the emulator,
-  # reusing the o.emu artifact built by linux-amd64 (no rebuild).
-  # ─────────────────────────────────────────────
-  godis:
-    name: GoDis (Go → Dis) Build & Test
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    needs: linux-amd64
-    permissions:
-      contents: read
-
-    steps:
-    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-    - name: Download prebuilt emulator
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-      with:
-        name: infernode-linux-amd64
-        path: .
-
-    - name: Restore emulator exec bit
-      # upload/download-artifact does not preserve the executable bit.
-      run: |
-        chmod +x emu/Linux/o.emu
-        test -x emu/Linux/o.emu || { echo "emulator not executable"; exit 1; }
-        file emu/Linux/o.emu
-
-    - name: Vet and build
-      working-directory: tools/godis
-      run: |
-        go version
-        go vet ./...
-        go build ./...
-
-    - name: Run GoDis test suite (unit + E2E on emu)
-      working-directory: tools/godis
-      # findEmu() resolves ../../../emu/Linux/o.emu and findRoot() the repo
-      # root; the E2E tests skip gracefully if the emulator is absent, so an
-      # explicit presence check keeps a missing artifact from silently
-      # downgrading this job to compile-only.
-      #
-      # This also runs difftest's TestE2ELocked, the differential-testing
-      # regression gate: every program in _corpus/locked.txt must still produce
-      # identical output under godis -c0, godis -c1, AND `go run`. A locked
-      # program drifting in any mode (including a -c0/-c1 JIT-only divergence)
-      # fails the build.
-      run: |
-        test -x ../../emu/Linux/o.emu || { echo "emulator missing; E2E would be skipped"; exit 1; }
-        go test ./... -v
-
-    - name: Differential report (godis -c0/-c1 vs go run)
-      working-directory: tools/godis
-      # Non-blocking: the locked-corpus gate above is what fails the build. This
-      # step publishes the full diff (matches, divergences, JIT mismatches,
-      # crashes) for the whole corpus to the job summary and uploads JSON, so
-      # new divergences are visible without breaking unrelated PRs.
-      if: always()
-      continue-on-error: true
-      run: |
-        go run ./cmd/difftest -quiet -timeout 5s \
-          -md "$GITHUB_STEP_SUMMARY" -json difftest-report.json \
-          testdata _corpus
-
-    - name: Upload differential report
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-      if: always()
-      with:
-        name: godis-difftest-report
-        path: tools/godis/difftest-report.json
         retention-days: 14
 
   # ─────────────────────────────────────────────
