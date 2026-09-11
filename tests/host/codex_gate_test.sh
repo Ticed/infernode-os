@@ -230,6 +230,62 @@ if echo "$stream_error" | grep -q '"content"'; then
 fi
 pass "streaming usage-limit error is not assistant content"
 
+# A transient capacity failure is also structured at the trusted CLI boundary.
+# It must not become an ordinary successful assistant reply, which would make
+# callers unable to distinguish it safely from model-authored prose.
+CAPACITY_PORT=$((PORT+3))
+CODEX_GATE_MOCK=1 \
+CODEX_GATE_MOCK_ERROR='Selected model is at capacity. Please try a different model.' \
+CODEX_GATE_MOCK_ERROR_COUNT=2 CODEX_GATE_PORT=$CAPACITY_PORT \
+    python3 "$GATE" >/dev/null 2>&1 &
+CAPACITY_PID=$!
+trap 'kill $GATE_PID $ERROR_PID $CAPACITY_PID 2>/dev/null || true; rm -f "$ERROR_BODY"' EXIT
+i=0
+while ! curl -sf -m 1 "http://127.0.0.1:$CAPACITY_PORT/health" >/dev/null 2>&1; do
+    i=$((i+1))
+    [ $i -lt 30 ] || fail "capacity gate did not come up on :$CAPACITY_PORT"
+    sleep 0.2
+done
+status="$(curl -s -o "$ERROR_BODY" -w '%{http_code}' \
+    "http://127.0.0.1:$CAPACITY_PORT/v1/chat/completions" \
+    -H 'Content-Type: application/json' \
+    -d '{"model":"default","messages":[{"role":"user","content":"hello"}]}')"
+[ "$status" = 503 ] || fail "capacity injection returned HTTP $status"
+grep -q '"type": "model_capacity"' "$ERROR_BODY" || \
+    fail "capacity injection lost structured type"
+grep -q '"retryable": true' "$ERROR_BODY" || \
+    fail "capacity injection is not marked retryable"
+if grep -q 'Please try a different model' "$ERROR_BODY"; then
+    fail "raw provider capacity text escaped into the response"
+fi
+stream_capacity="$(curl -sf --no-buffer \
+    "http://127.0.0.1:$CAPACITY_PORT/v1/chat/completions" \
+    -H 'Content-Type: application/json' \
+    -d '{"model":"default","stream":true,"messages":[{"role":"user","content":"hello"}]}')"
+echo "$stream_capacity" | grep -q '"type": "model_capacity"' || \
+    fail "streaming capacity failure lost structured error ($stream_capacity)"
+if echo "$stream_capacity" | grep -q '"content"'; then
+    fail "streaming capacity failure was emitted as assistant content"
+fi
+kill "$CAPACITY_PID" 2>/dev/null || true
+wait "$CAPACITY_PID" 2>/dev/null || true
+pass "model-capacity failures are structured and retryable"
+
+python3 - "$ROOT" <<'PY' || fail "capacity classifier"
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location(
+    "codex_gate", sys.argv[1] + "/tools/codex-gate/codex_gate.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+assert m.capacity_metadata(
+    "Selected model is at capacity. Please try a different model.") == {
+        "reason": "model_capacity", "retryable": True}
+assert m.capacity_metadata("worker pool is at capacity") is None
+assert m.capacity_metadata("model returned a capacity report") is None
+PY
+pass "capacity classifier is narrow"
+
 # 9. The prompt-level tool protocol parses into OpenAI tool_calls
 python3 - "$ROOT" <<'PY' || fail "tool-reply parser"
 import sys, importlib.util

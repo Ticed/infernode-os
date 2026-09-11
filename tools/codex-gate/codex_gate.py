@@ -576,6 +576,12 @@ class UsageLimitError(CodexError):
         self.metadata = metadata or {}
 
 
+class ModelCapacityError(CodexError):
+    def __init__(self, message, metadata=None):
+        super().__init__(message)
+        self.metadata = metadata or {}
+
+
 def quota_metadata(message, now=None):
     """Return safe retry metadata for a Codex account limit, or None.
 
@@ -615,6 +621,19 @@ def quota_metadata(message, now=None):
     return metadata
 
 
+def capacity_metadata(message):
+    """Return safe retry metadata for a transient model-capacity failure.
+
+    Classification happens only on an error reported by the trusted Codex CLI
+    process. Assistant output is never passed here, so model prose cannot ask
+    callers to replay a request.
+    """
+    lower = message.lower()
+    if not re.search(r"\b(selected\s+)?model\s+is\s+at\s+capacity\b", lower):
+        return None
+    return {"reason": "model_capacity", "retryable": True}
+
+
 def quota_error_body(error):
     metadata = dict(getattr(error, "metadata", {}) or {})
     metadata.setdefault("reason", "usage_limit")
@@ -623,6 +642,18 @@ def quota_error_body(error):
         "message": "codex-gate: account usage limit reached",
         "type": "usage_limit",
         "code": "usage_limit",
+        **metadata,
+    }}
+
+
+def capacity_error_body(error):
+    metadata = dict(getattr(error, "metadata", {}) or {})
+    metadata.setdefault("reason", "model_capacity")
+    metadata.setdefault("retryable", True)
+    return {"error": {
+        "message": "codex-gate: selected model is temporarily at capacity",
+        "type": "model_capacity",
+        "code": "model_capacity",
         **metadata,
     }}
 
@@ -1002,6 +1033,10 @@ async def chat_completions(request):
         log.error("turn failed: %s", e)
         metadata = quota_metadata(str(e))
         quota = UsageLimitError(str(e), metadata) if metadata else None
+        capacity = None
+        if quota is None:
+            metadata = capacity_metadata(str(e))
+            capacity = ModelCapacityError(str(e), metadata) if metadata else None
         if stream_response is not None:
             if quota is not None:
                 await stream_response.write(
@@ -1009,10 +1044,18 @@ async def chat_completions(request):
                     b"\n\ndata: [DONE]\n\n")
                 await stream_response.write_eof()
                 return stream_response
+            if capacity is not None:
+                await stream_response.write(
+                    b"data: " + json.dumps(capacity_error_body(capacity)).encode() +
+                    b"\n\ndata: [DONE]\n\n")
+                await stream_response.write_eof()
+                return stream_response
             return await respond(request, model, "ERROR: codex-gate: %s" % e,
                                  [], 0, True, stream_response)
         if quota is not None:
             return web.json_response(quota_error_body(quota), status=429)
+        if capacity is not None:
+            return web.json_response(capacity_error_body(capacity), status=503)
         return web.json_response(
             {"error": {"message": "codex-gate: %s" % e, "type": "gate_error"}},
             status=502)
