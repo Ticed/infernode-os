@@ -209,8 +209,6 @@ Linux/amd64/bin/*
 benchmarks/_build/
 benchmarks/_results/
 
-# GoDis compiled binary
-tools/godis/godis
 
 # Inferno temp files and runtime data
 tmp/*.pdfi*

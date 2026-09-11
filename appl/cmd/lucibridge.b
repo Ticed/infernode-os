@@ -71,6 +71,11 @@ MAX_TOOL_FAILURES: con 3;
 lb_failstreak_tool := "";
 lb_failstreak_count := 0;
 
+# A native tool is a 9P request and may block on a faulty backend or special
+# file. Keep the bridge responsive so it can record the failed result and
+# drive the activity to a signed terminal state.
+TOOL_TIMEOUT: con 60000;
+
 # Tool tracking: raw string from /tool/tools; updated when tool set changes
 currenttoolsraw := "";
 toolmount := "/tool";	# "/tool" for activity 0, "/tool.N" for child N
@@ -535,17 +540,54 @@ readuserinput(): string
 }
 
 # Determine if a tool call needs user approval.
+shellword(args, want: string): int
+{
+	(nil, toks) := sys->tokenize(args, " \t\n;|&{}()");
+	for(; toks != nil; toks = tl toks)
+		if(hd toks == want)
+			return 1;
+	return 0;
+}
+
+recursiveRmOutsideTmp(args: string): int
+{
+	(nil, toks) := sys->tokenize(args, " \t\n;|&{}()");
+	sawrm := 0;
+	recursive := 0;
+	tmptarget := 0;
+	outsidetarget := 0;
+	for(; toks != nil; toks = tl toks) {
+		tok := hd toks;
+		if(tok == "rm") {
+			sawrm = 1;
+			continue;
+		}
+		if(!sawrm)
+			continue;
+		if(len tok > 1 && tok[0] == '-') {
+			if(agentlib->contains(tok[1:], "r"))
+				recursive = 1;
+			continue;
+		}
+		if(len tok > 0 && tok[0] == '/') {
+			if(tok == "/tmp" || agentlib->hasprefix(tok, "/tmp/"))
+				tmptarget = 1;
+			else
+				outsidetarget = 1;
+		}
+	}
+	return sawrm && recursive && (outsidetarget || !tmptarget);
+}
+
 needsapproval(toolname, args: string): int
 {
 	if(toolname != "exec" && toolname != "write" && toolname != "edit")
 		return 0;
 	if(toolname == "exec") {
-		if(agentlib->contains(args, "rm") && agentlib->contains(args, "-r")) {
-			if(!agentlib->hasprefix(args, "rm") || !agentlib->contains(args, "/tmp"))
-				return 1;
-		}
-		if(agentlib->contains(args, "bind ") || agentlib->contains(args, "mount ") ||
-		   agentlib->contains(args, "unmount "))
+		if(recursiveRmOutsideTmp(args))
+			return 1;
+		if(shellword(args, "bind") || shellword(args, "mount") ||
+		   shellword(args, "unmount"))
 			return 1;
 	}
 	if(toolname == "write" || toolname == "edit") {
@@ -616,11 +658,54 @@ toolresultstatus(name, content: string): string
 	lower := str->tolower(content);
 	if(agentlib->hasprefix(lower, "error:") ||
 	   agentlib->hasprefix(lower, "error —") ||
-	   agentlib->contains(lower, "(exit:") ||
-	   agentlib->contains(lower, "... (timeout") ||
+	   (name == "exec" && (agentlib->contains(lower, "(exit:") ||
+		agentlib->contains(lower, "... (timeout"))) ||
 	   (name == "limbo" && agentlib->contains(lower, "status: failed")))
 		return "error";
 	return "success";
+}
+
+calltoolworker(name, args: string, resultch: chan of string)
+{
+	resultch <-= agentlib->calltool(name, args);
+}
+
+tooltimer(timeoutch: chan of int, ms: int)
+{
+	sys->sleep(ms);
+	timeoutch <-= 1;
+}
+
+calltoolbounded(name, args: string): string
+{
+	# Buffered channels let whichever sender loses the alt complete rather than
+	# leaving a timer or a late tool response blocked on its one-shot send.
+	resultch := chan[1] of string;
+	timeoutch := chan[1] of int;
+	spawn calltoolworker(name, args, resultch);
+	spawn tooltimer(timeoutch, TOOL_TIMEOUT);
+	alt {
+	result := <-resultch =>
+		return result;
+	<-timeoutch =>
+		return sys->sprint("error: tool '%s' timed out after %d seconds",
+			name, TOOL_TIMEOUT / 1000);
+	}
+}
+
+# lucibridge is a trusted process outside the activity namespace. The read
+# tool sees this backing directory mounted at AgentLib->SCRATCH_PATH, so write
+# there but return the path visible to the agent.
+writescratch(content: string, step: int): string
+{
+	path := sys->sprint("%s/%d/step%d.txt", AgentLib->SCRATCH_PATH, actid, step);
+	fd := sys->create(path, Sys->OWRITE, 8r600);
+	if(fd == nil)
+		return "(cannot create activity scratch file)";
+	b := array of byte content;
+	if(sys->write(fd, b, len b) != len b)
+		return "(cannot write activity scratch file)";
+	return sys->sprint("%s/step%d.txt", AgentLib->SCRATCH_PATH, step);
 }
 
 # Track consecutive tool failures with UI notification.
@@ -1808,7 +1893,7 @@ agentturn(input: string)
 				}
 				setstatus(nm);
 				log("tool " + name + ": calling with " + string len eargs + " bytes");
-				result := agentlib->calltool(name, eargs);
+				result := calltoolbounded(name, eargs);
 				prov("toolres", sys->sprint("activity=%d agent=%s step=%d tool=%s status=%s",
 					actid, sessionid, step + 1, name, toolresultstatus(nm, result)), array of byte result);
 				agentlib->deduprecord(nm, eargs, result, step);
@@ -1828,7 +1913,7 @@ agentturn(input: string)
 						result = result[0:AgentLib->STREAM_THRESHOLD] +
 							"\n... (truncated — content continues in " + eargs + ")";
 					} else {
-						scratch := agentlib->writescratch(result, step);
+						scratch := writescratch(result, step);
 						# Keep first 3 lines inline so LLM has examples to act on immediately.
 						# IMPORTANT: stay small — TOOL_RESULTS must fit in one 9P Write (~8KB).
 						# 3 lines x ~80 bytes x 20 parallel tools < 5KB, safely under msize.

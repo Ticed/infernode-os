@@ -25,7 +25,9 @@ implement Tools9p;
 #   ├── ctl          (rw)  trusted control plane (user/UI only)
 #   ├── provision    (rw)  child-task provisioning (narrowing only)
 #   ├── _registry    (r)   Space-separated tool names
-#   ├── paths        (r)   Bound namespace paths
+#   ├── paths        (r)   Effective namespace capabilities
+#   ├── activity     (r)   Activity identifier
+#   ├── meta/        (dir) Audit metadata scalars
 #   └── <tool>/      (dir) Per-tool directory
 #       ├── ctl      (rw)  Write args, read result
 #       ├── run      (rw)  Write args, read result (alias of ctl, per INFR-2)
@@ -87,7 +89,7 @@ stderr: ref Sys->FD;
 user: string;
 tools: list of ref ToolInfo;     # active (exposed) tools; mutated by serveloop, read by asyncexec (snapshot-safe)
 alltools: list of ref ToolInfo;  # pre-loaded inactive tools (available for ctl-add)
-extpaths: list of string;  # Extra paths from -p flags (e.g. "/dis/wm")
+extpaths: list of string;  # Legacy untyped path grants (kept for callers)
 
 # Bound namespace paths with per-path permissions.
 # Each entry is "path perm" where perm is "ro" or "rw".
@@ -96,7 +98,7 @@ BoundPath: adt {
 	path: string;
 	perm: string;  # "ro" or "rw"
 };
-boundpaths: list of ref BoundPath;  # Paths registered via bindpath ctl command
+boundpaths: list of ref BoundPath;  # Explicit ordinary path capabilities
 budget: list of string;    # Tools delegatable to child tasks (-b flag)
 activityid := 0;           # Activity ID this tools9p serves (-a flag)
 mountpt_g := "/tool";      # This instance's mount point (set from -m flag)
@@ -118,7 +120,6 @@ cleanupchan: chan of int;
 # `activity create` plus the following activity-list read is one allocation
 # transaction. The long-lived dispatcher owns its serialization (INFR-362).
 taskcreatelock: chan of int;
-provisiondelay := 0;
 ProvisionState: adt {
 	id: int;
 	state: string;
@@ -201,13 +202,12 @@ TOOL_PATHS := array[] of {
 
 usage()
 {
-	sys->fprint(stderr, "Usage: tools9p [-DvN] [-a activityid] [-r role] [-m mountpoint] [-b tool,tool,...] [-p path[:ro|:rw]] [-z ms] ... tool [tool ...]\n");
+	sys->fprint(stderr, "Usage: tools9p [-DvN] [-a activityid] [-r role] [-m mountpoint] [-b tool,tool,...] [-p path[:ro|:rw]] ... tool [tool ...]\n");
 	sys->fprint(stderr, "  -D            Enable 9P debug tracing\n");
 	sys->fprint(stderr, "  -v            Verbose logging (forwarded to child lucibridge)\n");
 	sys->fprint(stderr, "  -r role       Agent role for /tool/meta: toplevel (default) or child\n");
 	sys->fprint(stderr, "  -N            Agent namespace has NODEVS applied (/tool/meta/nodevs=set)\n");
 	sys->fprint(stderr, "  -m mountpoint Mount point (default: /tool)\n");
-	sys->fprint(stderr, "  -z ms         Delay child namespace setup (test harness only)\n");
 	sys->fprint(stderr, "  -b tools      Delegation budget: the maximum tool set a child/subagent\n");
 	sys->fprint(stderr, "                may ever be granted (comma-separated; children narrow, never expand)\n");
 	sys->fprint(stderr, "  -p path       Expose extra path to agent namespace (repeatable; :ro/:rw\n");
@@ -277,11 +277,6 @@ init(nil: ref Draw->Context, args: list of string)
 			agentrole = rarg;
 		'N' =>	agentnodevs = "set";
 		'm' =>	mountpt = arg->earg();
-		'z' =>
-			(zarg, nil) := str->toint(arg->earg(), 10);
-			if(zarg < 0 || zarg > 10000)
-				usage();
-			provisiondelay = zarg;
 		'p' =>
 			parg := arg->earg();
 			explicitperm := "";
@@ -297,13 +292,14 @@ init(nil: ref Draw->Context, args: list of string)
 				sys->fprint(stderr, "tools9p: privileged -p path not grantable: %s\n", ppath);
 				raise "fail:usage";
 			}
-			# Explicit :ro/:rw grants are permission-bearing capabilities.
-			# Keep them in boundpaths only so raw exec cannot inherit a
-			# read-only grant through the untyped extpaths list.
-			if(explicitperm == "")
-				extpaths = ppath :: extpaths;
-			else if(findboundpath(ppath) == nil)
-				boundpaths = ref BoundPath(ppath, pperm) :: boundpaths;
+			# Scratch is an implicit per-activity cowfs capability. Feeding it
+			# back through generic path staging recursively overlays the mount.
+			if(ppath != "/tmp/veltro/scratch") {
+				if(explicitperm == "")
+					extpaths = ppath :: extpaths;
+				else if(findboundpath(ppath) == nil)
+					boundpaths = ref BoundPath(ppath, pperm) :: boundpaths;
+			}
 		'a' =>
 			aarg := arg->earg();
 			(aid, nil) := str->toint(aarg, 10);
@@ -319,7 +315,6 @@ init(nil: ref Draw->Context, args: list of string)
 	args = arg->argv();
 	arg = nil;
 	mountpt_g = mountpt;
-
 	# Remaining args are tool names to register
 	if(args == nil)
 		usage();  # Need at least one tool
@@ -334,7 +329,6 @@ init(nil: ref Draw->Context, args: list of string)
 		sys->fprint(stderr, "tools9p: no valid tools specified\n");
 		raise "fail:no tools";
 	}
-
 	# Clean shadow dirs left by previous session (crash or kill).
 	# Current-session dirs are cleaned per-invocation via shadowcleanloop.
 	cleanupchan = chan[32] of int;
@@ -398,8 +392,6 @@ init(nil: ref Draw->Context, args: list of string)
 	# restrictns + emitmanifest — its namespace is discarded after.
 	# Each tools9p writes to its own manifest path so activities don't
 	# overwrite each other's namespace descriptions.
-	if(agentrole == "child" && provisiondelay > 0)
-		sys->sleep(provisiondelay);
 	spawn emitmanifestnow(manifestpath(mountpt));
 }
 
@@ -634,16 +626,20 @@ validtooltoken(name: string): int
 	return 1;
 }
 
-# Generate list of bound paths (newline-separated for /tool/paths).
-# Format: "path perm" per line (e.g. "/n/local/Users/pdfinn/tmp rw").
+# Generate the effective path capability list. Scratch is constructed by
+# nsconstruct for every activity and is never an ordinary caller grant.
 genpathlist(): string
 {
-	result := "";
+	result := "/tmp/veltro/scratch cow";
+	for(ep := extpaths; ep != nil; ep = tl ep) {
+		if(hd ep == "/tmp/veltro/scratch")
+			continue;
+		result += "\n" + hd ep + " ro";
+	}
 	for(p := boundpaths; p != nil; p = tl p) {
 		bp := hd p;
-		if(result != "")
-			result += "\n";
-		result += bp.path + " " + bp.perm;
+		if(bp.path != "/tmp/veltro/scratch")
+			result += "\n" + bp.path + " " + bp.perm;
 	}
 	return result;
 }
@@ -968,6 +964,8 @@ fixedservicecontrolpath(path: string): int
 
 pathperm(path: string): string
 {
+	if(path == "/tmp/veltro/scratch")
+		return "cow";
 	# The narrowest grant controls. Otherwise a broad rw grant can override a
 	# more specific ro grant solely because of command-line/list ordering.
 	best := "";
@@ -1535,10 +1533,6 @@ provisionparse(args: string): (int, string, list of string, string)
 	rargs = "child" :: rargs;
 	rargs = "-r" :: rargs;
 	rargs = "-N" :: rargs;
-	if(provisiondelay > 0) {
-		rargs = string provisiondelay :: rargs;
-		rargs = "-z" :: rargs;
-	}
 	if(verbose)
 		rargs = "-v" :: rargs;
 	rargs = "tools9p" :: rargs;
@@ -2024,6 +2018,10 @@ Serve:
 						srv.reply(ref Rmsg.Error(m.tag, "privileged path not bindable: " + bpath));
 						break;
 					}
+					if(bpath == "/tmp/veltro/scratch") {
+						srv.reply(ref Rmsg.Error(m.tag, "activity scratch is an implicit cow capability"));
+						break;
+					}
 					existing := findboundpath(bpath);
 					if(existing != nil)
 						existing.perm = bperm;  # update perm on re-bind
@@ -2342,8 +2340,8 @@ navigator(navops: chan of ref Navop)
 
 			case qtype {
 			Qroot =>
-				# Root contains: tools, grantable, help, _registry, ctl, paths, budget,
-				# activity, optional provision, and tool directories.
+				# Root contains the audit/control scalars, optional provision,
+				# and the active tool directories.
 				i := n.offset;
 				count := n.count;
 

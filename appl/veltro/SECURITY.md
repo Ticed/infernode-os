@@ -2,7 +2,7 @@
 
 ## Overview
 
-Veltro uses Inferno OS namespace isolation to create secure environments for AI agents. The core primitive is `restrictdir(target, allowed, writable)`: create a shadow directory containing only allowed items, then bind-replace the target. Anything not in the allowlist becomes invisible. The `writable` flag adds `MCREATE` to the final bind, needed for `/tmp` so agents can create files there.
+Veltro uses Inferno OS namespace isolation to create secure environments for AI agents. The core primitive is `restrictdir(target, allowed, writable)`: create a shadow directory containing only allowed items, then bind-replace the target. Anything not in the allowlist becomes invisible. A non-writable view uses `MREADONLY`; a writable view uses `MCREATE`, needed for `/tmp` so agents can create files there. Internal service filtering is separate because hiding names in a writable 9P protocol is not the same property as making its visible files immutable.
 
 ### Terminology
 
@@ -115,15 +115,21 @@ every model-requested tool effect.
 1. Create unique trusted shadow dir: /tmp/.veltro-ns/shadow/{pid}-{seq}/
 2. For each item in allowed:
    - Create mount point in shadow (dir or file matching source type)
-   - bind(target/item, shadow/item, MREPL)
-3. flags = MREPL | (writable ? MCREATE : 0)
+   - bind(target/item, shadow/item, MREPL | (writable ? 0 : MREADONLY))
+3. flags = MREPL | (writable ? MCREATE : MREADONLY)
    bind(shadow, target, flags)  -- replace entire target
 4. Result: target shows only allowed items; everything else is gone
 ```
 
 `writable=1` adds `MCREATE` to the final and inner binds so file creation is
-permitted. It is used only for explicit writable views such as `/tmp`, activity
-scratch, wallet proposal files, message draft/flag endpoints, and cowfs staging.
+permitted. Otherwise `MREADONLY` rejects write opens, truncation, create,
+remove, remove-on-close, and metadata changes. Read-only attenuation survives
+rebinding and exporting the view through Inferno's 9P export service. A deeper
+explicit writable mount can still grant mutation within that subtree. Existing
+open descriptors are not revoked by a later read-only bind, so Veltro also
+constructs an explicit descriptor group. Writable protocol services use an
+internal allowlist-only filter instead of `restrictdir`; visibility and
+mutability are deliberately separate.
 
 Special handling for `target == "/"`:
 - Skips `stat()` on each item to avoid deadlock on 9P self-mounts (e.g., `/tool`)
@@ -342,7 +348,7 @@ The subagent's system prompt comes from `/lib/veltro/agents/{type}.txt`, loaded 
 | No ambient child FDs | Spawn uses `NEWFD`; exec keeps only I/O and its private wait FD |
 | Safe FD 0-2 | `verifysafefds()` redirects nil FDs to `/dev/null` |
 | Empty srv registry | NEWPGRP first (child) |
-| Truthful namespace | bind-replace shows only allowed items; no "access denied" on visible paths |
+| Truthful namespace | bind-replace shows only allowed items; `MREADONLY` enforces paths reported read-only |
 | Capability attenuation | Child forks restricted parent, can only narrow |
 | Bounded process visibility | `/prog` is self-only for non-exec tools and empty for exec, with or without `shellcmds` |
 | Shadow cleanup | tools9p reclaims per-call physical shadows and sweeps crash leftovers at startup |
@@ -350,10 +356,19 @@ The subagent's system prompt comes from `/lib/veltro/agents/{type}.txt`, loaded 
 | No cross-window access | `/chan` hidden unless `caps.xenith` is set; REPL opens FDs before restriction |
 | exec grants sh.dis only | `sh.dis` bound when `exec` is in caps.tools; named commands require `shellcmds` |
 | Shell access controlled | `sh.dis` + named command `.dis` files only bound if `shellcmds` is non-nil |
-| Writable views explicit | `MCREATE` appears only on `/tmp`, proposal endpoints, activity scratch, and cowfs staging |
+| Writable views explicit | `MREADONLY` protects code/source views; `MCREATE` appears only on `/tmp`, proposal endpoints, activity scratch, and cowfs staging |
 | Host path control | `/n/local` hidden unless `caps.paths` grants specific subpaths (`-p` flag) |
 | Speech preserved | `/n/speech` auto-detected and included in `/n` allowlist |
 | 9P self-mount safe | Root restriction skips `stat()` to avoid deadlock on `/tool` |
+
+The baseline paths above are retained capabilities, not declarations that an
+entire subtree is harmless. `/dev/cons` is an input/output channel, `/prog`
+reveals the current tool process, and `/lib/veltro` contains agent-visible
+prompts and configuration. Installation secrets must never be placed in that
+tree; credentials belong in factotum. The deterministic security suite pins the
+exact `/dev`, `/dis`, `/prog`, and `/lib` top-level views, the granted tool
+module set, protected-key exclusion, and read-only attenuation. Escape-room
+campaign results supplement those checks but do not prove these paths safe.
 
 ## Shell and Exec Access
 
@@ -504,12 +519,15 @@ Tests cover:
 - `restrictns()` full policy (/dis, /dev, /n, /lib, /tmp, /)
 - `restrictns()` shell access via shellcmds
 - `/prog` is empty for exec both with and without shellcmds
-- `restrictns()` concurrent (race safety)
+- baseline `/dev`, `/dis`, `/prog`, and `/lib` surface and read-only attenuation
+- concurrent live-shadow containment while restricted namespaces coexist
 - `verifyns()` violation detection
 - Audit logging
 - Missing items handled gracefully
 - `/tmp` writable after restriction (MCREATE on shadow bind)
 - `exec` in tools grants `sh.dis` without `shellcmds`
+- `sh.dis` and other read-only grants reject write, truncation, remove, and wstat
+- rebinding and 9P export cannot strip read-only attenuation; explicit deeper writable mounts work
 - `caps.paths` exposes granted `/n/local/` subtree
 
 Concurrency tests in `tests/veltro_concurrent_test.b`:
@@ -577,7 +595,7 @@ parser in `appl/cmd/ndb/`.
 exposes at `/tool/`):
 
     /tool/tools       one tool name per line
-    /tool/paths       one `path ro|rw` grant per line (legacy fixtures imply rw)
+    /tool/paths       one `path ro|rw|cow` effective capability per line
     /tool/meta/role   "toplevel" or "child"
     /tool/meta/xenith "1" or "0"
     /tool/meta/actid  integer or "-1"
@@ -691,15 +709,18 @@ Current fixtures under `tests/nsaudit-fixtures/`:
 - `profile-messaging` — base profile plus the message read/proposal surface
   (`/mnt/msg`, `/mnt/msg/draft`). Trusted message controls remain excluded.
 - `profile-payments` — base profile plus wallet proposal authority
-  (`/n/wallet`) and a declared `walletbudget`. Trusted wallet controls remain
-  excluded.
+  (`/n/wallet`) and a declared `walletbudget`. The declaration is exactly a
+  positive uint256 integer in base units followed by `ETH`, `USDC`, or `USD`
+  (for example, `1000000 USDC`). Missing, zero, negative, overflowing, or
+  malformed declarations fail closed as unbounded spend. Trusted wallet
+  controls remain excluded.
 
 The important design rule is additive composition. Start with a small base
 namespace, then overlay only the capability layer required for the job:
 messaging, payments, local GUI, or future remote administration. This is a
 natural Plan 9/Inferno shape: profile layers can later be implemented with
-ordinary namespace operations, including union binds where appropriate, without
-turning the audit model into a separate policy engine.
+ordinary namespace operations, including union binds where appropriate,
+without turning the audit model into a separate policy engine.
 
 Headless and desktop are distinct because `/mnt/ui` is authority. A headless
 container should not receive `/mnt/ui` or `/chan` just because a UI service is
