@@ -101,6 +101,38 @@ if {~ $narrowed 0} {
 	exit
 }
 
+#
+# The remote-desktop listener: cpu(1) from another InferNode runs
+# programs here that draw on the caller's screen (docs/REMOTE-DESKTOP.md).
+# OFF unless the card asks for it with a file /n/dos/cpulisten, whose
+# contents, if any, are the address to listen on (default tcp!*!rstyx,
+# port 6668). It is started HERE, in the desktop's narrowed namespace,
+# so a remote session has a desktop's powers and no more: no raw card,
+# no pins, no sysctl -- it cannot rewrite the card or stop the machine.
+# And before the screen check below, so a headless board gets it too.
+#
+# Two rules it does not bend. It needs this machine's own certificate
+# in /usr/<user>/keyring/default (the user is /dev/user's; $user is not
+# set in this shell), signed by the signer the callers'
+# certificates come from, and without one it does not start at all. And
+# every session is encrypted AND integrity-protected: -a aes_256_cbc
+# -a sha256, and with both in the policy a caller must ask for both.
+# AES-CBC alone hides the bytes but lets anyone on the path flip or cut
+# them undetected (a red-team pass found exactly that, 2026-09-29); the
+# SHA-256 MAC is what makes tampering an error. Cleartext, cipher-only
+# and MAC-only callers are all refused during the handshake.
+#
+if {ftest -f /n/dos/cpulisten} {
+	cpuaddr=`{cat /n/dos/cpulisten}
+	if {~ $#cpuaddr 0} {cpuaddr='tcp!*!rstyx'}
+	cpukey=/usr/^`{cat /dev/user}^/keyring/default
+	if {ftest -f $cpukey} {
+		listen -a aes_256_cbc -a sha256 $cpuaddr auxi/rstyxd &
+		echo 'boot: cpu listener on' $cpuaddr '(AES-256 + SHA-256, certificate' $cpukey^')'
+	} {
+		echo 'boot: /n/dos/cpulisten is set but' $cpukey 'is missing; NOT starting the cpu listener'
+	}
+}
 # Let the boot settle: this races USB enumeration and service
 # startup, and logon's first act is to attach the draw device.
 sleep 3

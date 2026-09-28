@@ -88,9 +88,12 @@ init(nil: ref Context, argv: list of string)
 		}
 	}
 
-	# To make visible remotely
+	# To make visible remotely: the remote end binds our /dev over its
+	# own, and a program there draws on /dev/draw. The draw device is
+	# #i in this tree (devdraw.c), not upstream's #d; with #d this bind
+	# did nothing and every caller had to bind '#i' by hand first.
 	if(!exists("/dev/draw/new"))
-		sys->bind("#d", "/dev", Sys->MBEFORE);
+		sys->bind("#i", "/dev", Sys->MBEFORE);
 
 	(ok, c) := sys->dial(netmkaddr(mach, "net", "rstyx"), nil);
 	if(ok < 0){
@@ -100,8 +103,15 @@ init(nil: ref Context, argv: list of string)
 
 	ai := kr->readauthinfo(cert);
 
+	# Encrypt and authenticate every record unless told otherwise. The
+	# session carries keystrokes and the caller's whole namespace;
+	# upstream's default was "none", which authenticates the peers and
+	# then sends everything in clear. AES-CBC alone would hide the bytes
+	# but let anyone on the path alter them undetected, so the SHA-256
+	# MAC comes with it. A bare-metal node's listener requires both.
+	# -C none still asks for cleartext, for a server offering nothing else.
 	if (alg == nil)
-		alg = "none";
+		alg = "aes_256_cbc sha256";
 	err := au->init();
 	if(err != nil) {
 		sys->fprint(stderr, "cpu: cannot initialise auth module: %s\n", err);
