@@ -3339,8 +3339,8 @@ fi
 CPUL=()
 while IFS= read -r l; do CPUL+=("$l"); done \
     < <(sed -n '/^if {ftest -f \/n\/dos\/cpulisten} {$/,/^}$/p' "$BOOTSH" | sed 's/^[[:space:]]*//')
-if [[ ${#CPUL[@]} -ge 8 ]] && printf '%s\n' "${CPUL[@]}" | grep -q 'listen -a aes_256_cbc \$cpuaddr auxi/rstyxd &'; then
-    pass "boot-baremetal.sh gates the cpu listener on /n/dos/cpulisten and requires AES-256"
+if [[ ${#CPUL[@]} -ge 8 ]] && printf '%s\n' "${CPUL[@]}" | grep -q 'listen -a aes_256_cbc -a sha256 \$cpuaddr auxi/rstyxd &'; then
+    pass "boot-baremetal.sh gates the cpu listener on /n/dos/cpulisten and requires AES-256 + SHA-256"
 else
     fail "could not read the cpu listener block out of boot-baremetal.sh (${#CPUL[@]} lines)"
 fi
