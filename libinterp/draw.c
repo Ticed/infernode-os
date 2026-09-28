@@ -1155,6 +1155,8 @@ Display_colormix(void *fp)
 	i = allocimagemix(disp, f->c1, f->c2);
 	if(locked)
 		unlockdisplay(disp);
+	if(i == nil)		/* the display has gone: a remote one hung up, say */
+		return;
 	*f->ret = mkdrawimage(i, H, f->d, nil);
 }
 
@@ -1909,6 +1911,18 @@ mkdrawimage(Image *i, Draw_Screen *screen, Draw_Display *display, void *ref)
 {
 	Heap *h;
 	DImage *di;
+
+	/*
+	 * No image, no Draw->Image. Every allocation below can fail once
+	 * the display has gone -- a remote /dev/draw whose connection hung
+	 * up (cpu(1) from a desktop, then the desktop closes) fails every
+	 * request -- and a caller that forgets to check hands nil in here.
+	 * On the bare-metal kernel page zero is mapped, so i->r would not
+	 * fault: it read kernel text as a pointer and the dereference of
+	 * that took the machine down (Display_colormix, 2026-09-29).
+	 */
+	if(i == nil)
+		return H;
 
 	h = heap(TImage);
 	if(h == H)
