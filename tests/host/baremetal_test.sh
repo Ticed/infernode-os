@@ -473,6 +473,18 @@ build_kernel() {
             "/dis/ns.dis=$ROOT/dis/ns.dis"
             "/dis/bind.dis=$ROOT/dis/bind.dis"
             "/dis/mount.dis=$ROOT/dis/mount.dis"
+
+            # An authenticated 9P connection, both ends on this kernel:
+            # listen serves export / after Keyring->auth, mount takes it
+            # after the same handshake on the client side. The
+            # certificate is the tree's test one (tests/test-cross-host.sh
+            # uses it too); every Limbo builtin here runs on a 16KB kernel
+            # stack, which the handshake's ML-KEM material used to overrun
+            # (#725).
+            "/dis/listen.dis=$ROOT/dis/listen.dis"
+            "/dis/export.dis=$ROOT/dis/export.dis"
+            "/dis/lib/ssl.dis=$ROOT/dis/lib/ssl.dis"
+            "/usr/inferno/keyring/default=$ROOT/usr/inferno/keyring/default"
             # unmount is how a namespace is narrowed -- boot-baremetal.sh
             # takes the card and the pins out of the desktop's /dev with
             # it -- and a recovery shell that can bind but not unbind is
@@ -1776,7 +1788,9 @@ SHOUT="$(shell_session "$BUILD/$PLAT-kernel.img" \
         "cat '#G/gpio/128/level'" \
         "echo 0 > '#G/gpio/129/level'" \
         "echo function out > '#G/gpio/128/ctl'" \
-        "cat '#G/gpio/129/ctl'")"
+        "cat '#G/gpio/129/ctl'" \
+        "listen 'tcp!*!17030' export / &" \
+        'sleep 1; mount tcp!127.0.0.1!17030 /n/remote; echo AUTHMOUNT-$status; ls /n/remote/dis/sh.dis')"
 
 # Strip carriage returns once, here.
 #
@@ -1800,6 +1814,23 @@ if grep -q "/dis/sh.dis" <<<"$SHOUT"; then
     pass "ls lists the in-kernel root filesystem"
 else
     fail "ls did not list /dis"
+fi
+
+# An authenticated 9P connection between two processes of this kernel:
+# listen (Keyring->auth as the server) serving export /, mount
+# (typed last, because the two ML-KEM handshakes take seconds under
+# emulation and the session types on a fixed cadence: anything typed
+# after them would wait in the line discipline and miss its check)
+# (Keyring->auth as the client) taking it, on the loopback interface,
+# with the test certificate. Both handshakes run on 16KB kernel stacks;
+# the first authenticated connection a Pi 3 ever took overran one and
+# took the machine down (#725). "AUTHMOUNT-" with nothing after it is
+# sh's $status for a mount that succeeded; the ls proves the export is
+# served through it.
+if grep -q '^AUTHMOUNT-$' <<<"$SHOUT" && grep -q '^/n/remote/dis/sh.dis' <<<"$SHOUT"; then
+    pass "an authenticated 9P mount (Keyring->auth both ends, ML-KEM + ed25519) works on the kernel (#725)"
+else
+    fail "authenticated 9P mount failed -- $(grep -a -E 'AUTHMOUNT|mount:|listen:|auth' <<<"$SHOUT" | head -2 | tr '\n' ' ')"
 fi
 
 # The interface lock after an unanswerable IPv6 datagram (#721).
@@ -4489,6 +4520,8 @@ try:
     typed("cat /net/ether0/addr; echo")
     typed("cat /net/ether0/ifstats")
     typed("iplocktest", 3)
+    typed("listen 'tcp!*!17030' export / &")
+    typed("sleep 1; mount tcp!127.0.0.1!17030 /n/remote; echo AUTHMOUNT-$status; ls /n/remote/dis/sh.dis", 4)
     typed("cat /dev/sdctl")
     typed("echo VIRT-DATE `{date}")
 
@@ -4547,6 +4580,9 @@ vcheck "the card's FAT partition is read through #S and dossrv" "hello from the 
 vcheck "a file written through virtio-blk reads back" "written-through-virtio"
 vcheck "the network card is ether0"                "is #l (ether0)"
 vcheck "init finds the kernel link driver"         "init: ether0 is a kernel link driver"
+# an authenticated 9P mount, both ends on this kernel (#725; the bcm2837
+# check tells the story)
+vcheck "os/ip + keyring: an authenticated 9P mount works on the kernel (#725)" "/n/remote/dis/sh.dis"
 # os/init/iplocktest.b, typed at the shell: the interface lock is balanced
 # after an ICMPv6 unreachable reply (#721; see the bcm2837 check for the story)
 vcheck "os/ip: the interface lock is balanced after an unanswerable IPv6 datagram (#721)" "iplocktest: PASS"
