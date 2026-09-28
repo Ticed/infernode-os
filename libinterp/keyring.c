@@ -1844,6 +1844,30 @@ cnsamode(void)
 	return m;
 }
 
+/*
+ * The ML-KEM material of one authentication, in one heap block. It was
+ * seven arrays on Keyring_auth's C stack, 9,440 bytes of them, which the
+ * hosted emulator's 32KB thread stacks carried and the native kernel's
+ * 16KB kernel stacks do not: every Limbo program on bare metal runs on
+ * the Dis VM kproc's kernel stack, and this builtin overran it on the
+ * first authenticated connection a Raspberry Pi 3 ever took -- a
+ * scheduler panic, a corrupted heap, and a fault loop that needed the
+ * power switch (#725). libsec's ML-KEM already keeps its polynomials on
+ * the heap for the same reason (mlkem.c); this is the same rule one
+ * level up. Wiped and freed at out:, on every path.
+ */
+typedef struct Kembuf Kembuf;
+struct Kembuf
+{
+	uchar	myek[MLKEM1024_PKLEN];
+	uchar	mydk[MLKEM1024_SKLEN];
+	uchar	hisek[MLKEM1024_PKLEN];
+	uchar	myct[MLKEM1024_CTLEN];
+	uchar	hisct[MLKEM1024_CTLEN];
+	uchar	ss_local[MLKEM_SSLEN];
+	uchar	ss_remote[MLKEM_SSLEN];
+};
+
 void
 Keyring_auth(void *fp)
 {
@@ -1858,10 +1882,10 @@ Keyring_auth(void *fp)
 	long now;
 	/* hybrid post-quantum key agreement material. Buffers are sized for the
 	 * larger ML-KEM-1024 (CNSA 2.0 strict); pklen/ctlen select the in-use
-	 * parameter set at runtime. */
-	uchar myek[MLKEM1024_PKLEN], mydk[MLKEM1024_SKLEN];
-	uchar hisek[MLKEM1024_PKLEN], myct[MLKEM1024_CTLEN], hisct[MLKEM1024_CTLEN];
-	uchar ss_local[MLKEM_SSLEN], ss_remote[MLKEM_SSLEN];
+	 * parameter set at runtime. They live on the heap, not the stack:
+	 * see Kembuf. */
+	Kembuf *kem;
+	uchar *myek, *mydk, *hisek, *myct, *hisct, *ss_local, *ss_remote;
 	uchar *kss_lo, *kss_hi, *ek_lo, *ek_hi;
 	int cmp;
 	int cnsa = cnsamode();
@@ -1893,6 +1917,19 @@ Keyring_auth(void *fp)
 		retstr(exNomem, &f->ret->t0);
 		return;
 	}
+	kem = malloc(sizeof(Kembuf));
+	if(kem == nil){
+		free(buf);
+		retstr(exNomem, &f->ret->t0);
+		return;
+	}
+	myek = kem->myek;
+	mydk = kem->mydk;
+	hisek = kem->hisek;
+	myct = kem->myct;
+	hisct = kem->hisct;
+	ss_local = kem->ss_local;
+	ss_remote = kem->ss_remote;
 
 	/* send auth protocol version number (2 = hybrid PQ; required) */
 	if(sendmsg(fd, "2", 1) <= 0){
@@ -2279,9 +2316,8 @@ out:
 		destroy(alphacert);
 	}
 	/* scrub ML-KEM secret key and shared secrets from the stack */
-	memset(mydk, 0, sizeof(mydk));
-	memset(ss_local, 0, sizeof(ss_local));
-	memset(ss_remote, 0, sizeof(ss_remote));
+	secureZero(kem, sizeof(Kembuf));
+	free(kem);
 	/* scrub the combiner buffer: it held the DH secret and both ML-KEM shared secrets */
 	memset(buf, 0, Maxbuf);
 	free(buf);
