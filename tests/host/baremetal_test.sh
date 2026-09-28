@@ -327,6 +327,13 @@ build_kernel() {
         "$LIMBO" -I"$ROOT/module" -o "$BUILD/isotest.dis" \
             "$ROOT/os/init/isotest.b" 2>>"$BUILD/cc.log" || return 1
 
+        # The interface lock after an unanswerable IPv6 datagram (#721):
+        # one datagram to a closed port over a loopback interface of its
+        # own, then a "remove" with a watchdog on it. The remove returns
+        # or the read lock was leaked by the unreachable reply.
+        "$LIMBO" -I"$ROOT/module" -o "$BUILD/iplocktest.dis" \
+            "$ROOT/os/init/iplocktest.b" 2>>"$BUILD/cc.log" || return 1
+
         rootmanifest=(
             "/osinit.dis=$BUILD/osinit.dis"
             "/dis/etherusb.dis=$BUILD/etherusb.dis"
@@ -337,6 +344,7 @@ build_kernel() {
             "/dis/drawtest.dis=$BUILD/drawtest.dis"
             "/dis/tktest.dis=$BUILD/tktest.dis"
             "/dis/isotest.dis=$BUILD/isotest.dis"
+            "/dis/iplocktest.dis=$BUILD/iplocktest.dis"
 
             # The FAT filesystem, as a program. Imported from upstream
             # Inferno (appl/cmd/dossrv.b) -- MIT, the same provenance as
@@ -1750,6 +1758,7 @@ SHOUT="$(shell_session "$BUILD/$PLAT-kernel.img" \
         'cat /net/ipifc/stats' \
         'cat /net/iproute' \
         'cat /net/tcp/stats' \
+        'iplocktest' \
         'cd /dis; pwd; cd /' \
         'date' \
         'basename /a/b/see-me' \
@@ -1791,6 +1800,19 @@ if grep -q "/dis/sh.dis" <<<"$SHOUT"; then
     pass "ls lists the in-kernel root filesystem"
 else
     fail "ls did not list /dis"
+fi
+
+# The interface lock after an unanswerable IPv6 datagram (#721).
+# os/init/iplocktest.b: a loopback interface of its own, ::1, one UDP
+# datagram to ::1!9, and a "remove ::1" written from a process of its
+# own with a five-second watchdog. icmphostunr (os/ip/icmp6.c) used to
+# return with the interface's read lock held, so the remove never came
+# back -- the Wi-Fi that authenticated and never got an address, and a
+# wired interface that went silent when anything wrote to its ctl.
+if grep -q "iplocktest: PASS" <<<"$SHOUT"; then
+    pass "os/ip: the interface lock is balanced after an unanswerable IPv6 datagram (#721)"
+else
+    fail "os/ip: interface lock leaked by the ICMPv6 unreachable reply -- $(grep -a 'iplocktest:' <<<"$SHOUT" | tail -1)"
 fi
 
 # The exception handler's search, in the kernel's own interpreter: an
@@ -4466,6 +4488,7 @@ try:
     typed("echo written-through-virtio > /n/dos/virt.txt; cat /n/dos/virt.txt", 2.5)
     typed("cat /net/ether0/addr; echo")
     typed("cat /net/ether0/ifstats")
+    typed("iplocktest", 3)
     typed("cat /dev/sdctl")
     typed("echo VIRT-DATE `{date}")
 
@@ -4524,6 +4547,9 @@ vcheck "the card's FAT partition is read through #S and dossrv" "hello from the 
 vcheck "a file written through virtio-blk reads back" "written-through-virtio"
 vcheck "the network card is ether0"                "is #l (ether0)"
 vcheck "init finds the kernel link driver"         "init: ether0 is a kernel link driver"
+# os/init/iplocktest.b, typed at the shell: the interface lock is balanced
+# after an ICMPv6 unreachable reply (#721; see the bcm2837 check for the story)
+vcheck "os/ip: the interface lock is balanced after an unanswerable IPv6 datagram (#721)" "iplocktest: PASS"
 vcheck "DHCP answers over virtio-net"              "etherusb: 10.0.2.15 mask"
 vcheck "a default route is installed"              "etherusb: default route via 10.0.2.2"
 vcheck "the framebuffer is configured through fw_cfg" "fb:   ramfb 1280x720x32"

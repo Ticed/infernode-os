@@ -492,6 +492,23 @@ icmpna(Fs *f, uchar* src, uchar* dst, uchar* targ, uchar* mac, uchar flags)
 	ipoput6(f, nbp, 0, MAXTTL, DFLTTOS, nil);
 }
 
+/*
+ * Destination or port unreachable, in answer to bp. With free set the
+ * answer is delivered locally and bp is consumed; without it the answer
+ * goes out and bp is still the caller's.
+ *
+ * Both callers -- udpiput for a datagram nobody listens for, rxmitsols
+ * for a neighbour that never answered -- already hold ifc's read lock,
+ * so this one is taken with canrlock: a plain rlock inside a held rlock
+ * deadlocks the moment a writer is queued (wlock holds the outer lock
+ * while it waits for the last reader, and that reader is us). The lock
+ * covers only the walk of ifc->lifc for a source address, and is
+ * released on every path: the original returned with it held whenever
+ * free was 0, and unlocked without having locked when the source was
+ * multicast, so one stray IPv6 datagram to a closed port during DHCP
+ * left the interface's read count high for ever and the next "add" or
+ * "remove" hung the interface (#721).
+ */
 extern void
 icmphostunr(Fs *f, Ipifc *ifc, Block *bp, int code, int free)
 {
@@ -502,27 +519,32 @@ icmphostunr(Fs *f, Ipifc *ifc, Block *bp, int code, int free)
 	int sz = MIN(sizeof(IPICMP) + osz, v6MINTU);
 	Proto	*icmp = f->t2p[ICMPv6];
 	Icmppriv6 *ipriv = icmp->priv;
+	int local;
 
 	p = (Ip6hdr *) bp->rp;
 
-	if(isv6mcast(p->src)) 
-		goto clean;
+	if(isv6mcast(p->src)){
+		if(free)
+			freeblist(bp);
+		return;
+	}
 
 	nbp = newIPICMP(sz);
 	np = (IPICMP *) nbp->rp;
 
-	rlock(&ifc->rwl);
-	if(ipv6anylocal(ifc, np->src)) {
-		netlog(f, Logicmp, "send icmphostunr -> s%I d%I\n", p->src, p->dst);
+	local = 0;
+	if(canrlock(&ifc->rwl)){
+		local = ipv6anylocal(ifc, np->src);
+		runlock(&ifc->rwl);
 	}
-	else {
+	if(!local){
 		netlog(f, Logicmp, "icmphostunr fail -> s%I d%I\n", p->src, p->dst);
 		freeblist(nbp);
-		if(free) 
-			goto clean;
-		else
-			return;
+		if(free)
+			freeblist(bp);
+		return;
 	}
+	netlog(f, Logicmp, "send icmphostunr -> s%I d%I\n", p->src, p->dst);
 
 	memmove(np->dst, p->src, IPaddrlen);
 	np->type = UnreachableV6;
@@ -533,16 +555,11 @@ icmphostunr(Fs *f, Ipifc *ifc, Block *bp, int code, int free)
 	np->vcf[0] = 0x06 << 4;
 	ipriv->out[UnreachableV6]++;
 
-	if(free)
+	if(free){
 		ipiput6(f, ifc, nbp);
-	else {
+		freeblist(bp);
+	}else
 		ipoput6(f, nbp, 0, MAXTTL, DFLTTOS, nil);
-		return;
-	}
-
-clean:
-	runlock(&ifc->rwl);
-	freeblist(bp);
 }
 
 extern void
@@ -766,13 +783,22 @@ err:
 	return 0;
 }
 
+/*
+ * What the target of a neighbour solicitation is to this interface.
+ * Called from icmpiput6, so ifc's read lock is already held by the
+ * reader that delivered the packet: canrlock, not rlock, for the reason
+ * given at icmphostunr. When the lock cannot be had the interface is
+ * being changed, and the answer is "nothing", which drops the
+ * solicitation; the neighbour asks again.
+ */
 static int
 targettype(Fs *f, Ipifc *ifc, uchar *target)
 {
 	Iplifc *lifc;
 	int t;
 
-	rlock(&ifc->rwl);
+	if(!canrlock(&ifc->rwl))
+		return 0;
 	if(ipproxyifc(f, ifc, target)) {
 		runlock(&ifc->rwl);
 		return t_uniproxy;
