@@ -26,7 +26,11 @@ Tetris: module {
 	init: fn(ctxt: ref Draw->Context, argv: list of string);
 };
 
-SCORETABLE: con "/lib/scores/tetris";
+# The high-score table is the player's, in their own home: /lib is the
+# system's, and on a hosted install it is inside the application, which
+# a game has no business writing to. It used to be /lib/scores/tetris,
+# a file this tree stopped shipping, so the table could never be opened.
+SCOREDIR: con "lib/scores";	# under /usr/<user>
 LOCKPORT: con 18343;
 
 # number of pieces across and down board.
@@ -369,7 +373,9 @@ scoresrvwait(ch: chan of int)
 		ch <-= 0;
 		return;
 	}
-	(ok, err) := scoretab->init(LOCKPORT, readfile("/dev/user"), "tetris", SCORETABLE);
+	user := readfile("/dev/user");
+	scoretable := mkscoredir(user) + "/tetris";
+	(ok, err) := scoretab->init(LOCKPORT, user, "tetris", scoretable);
 	if (ok != -1)
 		ch <-= 1;
 	else {
@@ -822,3 +828,19 @@ Shape(
 ),
 };
 
+# /usr/<user>/lib/scores, made if it is not there yet
+mkscoredir(user: string): string
+{
+	d := "/usr/" + user;
+	(hok, nil) := sys->stat(d);
+	if(hok < 0)
+		sys->create(d, Sys->OREAD, Sys->DMDIR | 8r755);
+	(nil, parts) := sys->tokenize(SCOREDIR, "/");
+	for(; parts != nil; parts = tl parts){
+		d += "/" + hd parts;
+		(ok, nil) := sys->stat(d);
+		if(ok < 0)
+			sys->create(d, Sys->OREAD, Sys->DMDIR | 8r755);
+	}
+	return d;
+}
