@@ -36,6 +36,7 @@ RImagefile: module
 WImagefile: module 
 {
 	WRITEGIFPATH:	con "/dis/lib/writegif.dis";
+	WRITEPNGPATH:	con "/dis/lib/writepng.dis";
 
 	init:	fn(bufio: Bufio);
 #	write:	fn(fd: ref Bufio->Iobuf, ref RImagefile->Rawimage): string;

@@ -483,6 +483,7 @@ dis/lib/wmsrv.dis
 dis/lib/workdir.dis
 dis/lib/wpakey.dis
 dis/lib/writegif.dis
+dis/lib/writepng.dis
 dis/lib/x402.dis
 dis/lib/xenithwin.dis
 dis/lib/xml.dis
