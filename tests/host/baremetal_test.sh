@@ -477,6 +477,8 @@ build_kernel() {
             "/dis/ns.dis=$ROOT/dis/ns.dis"
             "/dis/bind.dis=$ROOT/dis/bind.dis"
             "/dis/mount.dis=$ROOT/dis/mount.dis"
+            # a TCP client for the network-console interface check
+            "/dis/dial.dis=$ROOT/dis/dial.dis"
 
             # An authenticated 9P connection, both ends on this kernel:
             # listen serves export / after Keyring->auth, mount takes it
@@ -3404,6 +3406,110 @@ if grep -q '^boot: /n/dos/cpulisten is set but /usr/.*/keyring/default is missin
     pass "cpu listener: with cpulisten but no certificate it refuses to start, and says why"
 else
     fail "cpu listener: without a certificate it did not refuse -- $(grep -a 'boot: cpu\|cpulisten' <<<"$CLNOKEY" | head -1)"
+fi
+
+#
+#     The network console, and keeping it to one interface.
+#
+#     osinit starts it when the card has /n/dos/netconsole: the first
+#     line a token, and a later line "interface ether0" restricting it
+#     to connections that arrive at that interface's own addresses --
+#     the documented posture is wired only, because the token crosses
+#     the network in clear (docs/BAREMETAL.md, section 7). The file is
+#     read at boot, so this is three boots on one card image:
+#
+#       1  the file is created, token only, through the running system
+#       2  token only: a connection over loopback is served, as every
+#          card before this change expects, and the boot line warns that
+#          the console answers on every interface
+#       3  "interface ether0" added: a connection to the guest's own
+#          Ethernet address is served, one over loopback is closed
+#          before the token is asked for, and the refusal is logged
+#
+#     "Served" is proven the only way that does not need the host: the
+#     client sends the token and one command, and the command writes a
+#     marker to /dev/cons, the kernel console the harness reads.
+#
+NCIMG="$BUILD/$PLAT-netcons.img"
+cp "$SDIMG" "$NCIMG"
+QEMUARGS="$SAVEDARGS -drive file=$NCIMG,if=sd,format=raw"
+NC1="$(shell_session "$BUILD/$PLAT-kernel.img" \
+        "echo t0k > /n/dos/netconsole" \
+        'cat /n/dos/netconsole; echo NC1-END')"
+NC2="$(shell_session "$BUILD/$PLAT-kernel.img" \
+        'path=(/dis .)' \
+        'sleep 2' \
+        "dial -A tcp!127.0.0.1!17010 {echo t0k; echo 'echo NETCONS-LO-SERVED > /dev/cons'; sleep 3}" \
+        'sleep 4' \
+        "echo 'interface ether0' >> /n/dos/netconsole" \
+        'echo NC2-END')"
+# The "served" case comes from the host, through a port forward to the
+# guest's Ethernet address, as a real wired client would: a guest cannot
+# test it by dialling its own 10.0.2.15, because the stack sends traffic
+# for its own non-loopback address out on the wire and QEMU's user
+# network does not reflect it (a stack quirk of its own, not this check's).
+# A host loop waits for the console to answer, sends the token and one
+# command, and goes.
+NCFWD=17110
+QEMUARGS="${SAVEDARGS/user,id=n0/user,id=n0,hostfwd=tcp:127.0.0.1:$NCFWD-:17010} -drive file=$NCIMG,if=sd,format=raw"
+NCHOSTOUT="$BUILD/$PLAT-netcons-host.txt"; rm -f "$NCHOSTOUT"
+python3 - "$NCFWD" "$NCHOSTOUT" <<'PYEOF' &
+import socket, sys, time
+port = int(sys.argv[1]); deadline = time.time() + 150
+while time.time() < deadline:
+    try:
+        c = socket.create_connection(("127.0.0.1", port), timeout=5)
+        c.settimeout(5)
+        got = c.recv(64)                   # the token prompt proves it was served
+        if b"token" in got:
+            open(sys.argv[2], "w").write("HOST-GOT-TOKEN-PROMPT\n")
+            c.sendall(b"t0k\necho NETCONS-ETHER0-SERVED > /dev/cons\n")
+            time.sleep(3)
+            c.close()
+            break
+        c.close()
+    except OSError:
+        pass
+    time.sleep(3)
+PYEOF
+NCHOST=$!
+# The session must outlive the host client's wait for DHCP and the
+# console (about 20 s after boot) and the guest's own dial: the drain
+# budget after the last typed line is raised for this one session.
+export SESSION_DRAIN=75
+NC3="$(shell_session "$BUILD/$PLAT-kernel.img" \
+        'path=(/dis .)' \
+        'sleep 20' \
+        "dial -A tcp!127.0.0.1!17010 {echo t0k; echo 'echo NETCONS-LO3-SERVED > /dev/cons'; sleep 3}" \
+        'sleep 4' \
+        'rm -f /n/dos/netconsole' \
+        'echo NC3-END')"
+unset SESSION_DRAIN
+kill $NCHOST 2>/dev/null; wait $NCHOST 2>/dev/null
+NC2="$(tr -d '\r' <<<"$NC2")"; NC3="$(tr -d '\r' <<<"$NC3")"
+[[ "$VERBOSE" -eq 1 ]] && { echo "  --- network console, boot 2 ---"; echo "$NC2"; echo "  --- boot 3 ---"; echo "$NC3"; }
+if grep -q 'init: network console on tcp!\*!17010 (every interface), token required' <<<"$NC2" \
+   && grep -q 'NETCONS-LO-SERVED$' <<<"$NC2" \
+   && grep -q 'add "interface ether0"' <<<"$NC2"; then
+    pass "network console: a token-only card file still serves every interface, and the boot line says so"
+else
+    fail "network console: token-only file -- $(grep -a -E 'network console|NETCONS' <<<"$NC2" | head -2 | tr '\n' ' ')"
+fi
+if grep -q 'init: network console on tcp!\*!17010 (/net/ether0 only), token required' <<<"$NC3" \
+   && grep -q 'init: network console: refused 127.0.0.1!' <<<"$NC3" \
+   && ! grep -q 'NETCONS-LO3-SERVED$' <<<"$NC3"; then
+    pass "network console: with \"interface ether0\" a connection over loopback is refused before the token"
+else
+    fail "network console: loopback was not refused -- $(grep -a -E 'network console|NETCONS-LO3' <<<"$NC3" | head -3 | tr '\n' ' ')"
+fi
+if grep -q 'etherusb: 10.0.2.15 mask' <<<"$NC3"; then
+    if grep -q 'HOST-GOT-TOKEN-PROMPT' "$NCHOSTOUT" 2>/dev/null; then
+        pass "network console: with \"interface ether0\" a wired client (host, via ether0's address) is served the token prompt"
+    else
+        fail "network console: a connection to ether0's own address was not served -- $(grep -a -E 'network console|NETCONS-ETHER0' <<<"$NC3" | head -2 | tr '\n' ' ')"
+    fi
+else
+    skip "network console: ether0 got no address under this QEMU (unpatched usb-net; BAREMETAL_QEMU_PATCHED)"
 fi
 
 #
