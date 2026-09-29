@@ -1368,10 +1368,19 @@ loadcolors()
 	}
 }
 
+# Ticks keep to a deadline, every tickms from the last, rather than
+# sleeping tickms after each: a sleep runs a few ms over, and at a
+# video pane's 40 ms that alone held 25 fps down to 20.
 updatetimer()
 {
+	next := sys->millisec();
 	for(;;) {
-		sys->sleep(tickms);
+		next += tickms;
+		d := next - sys->millisec();
+		if(d > 0)
+			sys->sleep(d);
+		else
+			next = sys->millisec();	# behind: carry on, don't burst to catch up
 		alt {
 		updatech <-= 1 =>
 			;
