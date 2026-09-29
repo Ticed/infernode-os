@@ -348,6 +348,8 @@ aaellipse(Aapath *p, Point c, int a, int b)
  *	L p		line
  *	Q c p		quadratic curve
  *	C c1 c2 p	cubic curve
+ *	E c a b		ellipse: centre c, semi-axes a and b (plain values,
+ *			not differences), a closed subpath
  *	Z		close
  */
 static uchar*
@@ -375,7 +377,7 @@ aadecode(Aapath *p, uchar *a, int n)
 	uchar *e;
 	Point q[3];
 	int i, np, verb;
-	int x, y;
+	int x, y, ax, bx;
 
 	e = a + n;
 	x = y = 0;
@@ -395,6 +397,19 @@ aadecode(Aapath *p, uchar *a, int n)
 		case 'Z':
 			np = 0;
 			break;
+		case 'E':
+			if((a = getcoord(a, e, &x)) == nil || (a = getcoord(a, e, &y)) == nil)
+				return -1;
+			q[0] = Pt(x, y);
+			ax = bx = 0;
+			if((a = getcoord(a, e, &ax)) == nil || (a = getcoord(a, e, &bx)) == nil)
+				return -1;
+			if(!okpt(q[0]) || ax < 0 || bx < 0 || ax >= Aamaxcoord || bx >= Aamaxcoord)
+				return -1;
+			aaellipse(p, q[0], ax, bx);
+			if(p->err)
+				return -1;
+			continue;
 		default:
 			return -1;
 		}
@@ -764,6 +779,122 @@ aastroke(Aapoly *poly, Aapath *p, int width, int cap0, int cap1, int join, int m
 	free(pts);
 	free(u);
 	free(l);
+}
+
+/*
+ * Draw's lines and polygons (line(2), poly): points on pixel centres,
+ * 1+2*radius pixels wide.  Endsquare stops half a pixel past the point
+ * (so a line touches both its points, and a thick one with square ends
+ * is a rectangle), Enddisc is a disc on the point, Endarrow an
+ * arrowhead whose tip is where a square end would stop.  Joins are
+ * round, as the discs Draw's poly puts there; a one-pixel line joins
+ * mitred, so a corner on pixel centres is a sharp pixel, not a blur.
+ * The stroke is added to poly, to be filled non-zero.
+ */
+static Point
+centre(Point p)
+{
+	return Pt((p.x << Aashift) + Aaone/2, (p.y << Aashift) + Aaone/2);
+}
+
+/* the arrowhead on the end at tip, pointing along u, as memimageline's */
+static void
+arrowhead(Aapoly *poly, Point tip, Vec u, int radius, int end)
+{
+	Vec n;
+	Point q[5];
+	vlong x1, x2, x3, w, area;
+	int i;
+
+	if(end == Endarrow){
+		x1 = Arrow1;
+		x2 = Arrow2;
+		x3 = Arrow3;
+	}else{
+		x1 = (end>>5) & 0x1FF;	/* along the line from the end of the shaft to the tip */
+		x2 = (end>>14) & 0x1FF;	/* along the line from the barbs to the tip */
+		x3 = (end>>23) & 0x1FF;	/* across, from the edge of the shaft to a barb */
+	}
+	n = normal(u);
+	w = (2*radius+1)*Aaone/2;
+	q[0] = off(off(tip, u, -x1*Aaone), n, w);
+	q[1] = off(off(tip, u, -x2*Aaone), n, w + x3*Aaone);
+	q[2] = tip;
+	q[3] = off(off(tip, u, -x2*Aaone), n, -(w + x3*Aaone));
+	q[4] = off(off(tip, u, -x1*Aaone), n, -w);
+	/* wound as the stroke outlines are, so the union fills */
+	area = 0;
+	for(i = 0; i < 5; i++)
+		area += (vlong)q[i].x*q[(i+1)%5].y - (vlong)q[(i+1)%5].x*q[i].y;
+	for(i = 0; i < 5; i++)
+		if(area < 0)
+			aapolyedge(poly, q[i], q[(i+1)%5]);
+		else
+			aapolyedge(poly, q[(i+1)%5], q[i]);
+}
+
+/*
+ * One end of Draw's line: the point p, the stroke leaving it along u
+ * (outwards).  Returns where the stroke itself should end, and the cap.
+ */
+static Point
+drawend(Aapoly *poly, Point p, Vec u, int radius, int end, int *cap)
+{
+	Point tip;
+	int x1;
+
+	switch(end & 0x1F){
+	case Enddisc:
+		*cap = Capround;
+		return p;
+	case Endarrow:
+		tip = off(p, u, Aaone/2);
+		arrowhead(poly, tip, u, radius, end);
+		x1 = end == Endarrow ? Arrow1 : (end>>5) & 0x1FF;
+		*cap = Capbutt;
+		return off(tip, u, -(vlong)x1*Aaone);
+	default:	/* Endsquare */
+		*cap = Capbutt;
+		return off(p, u, Aaone/2);
+	}
+}
+
+void
+aadrawlines(Aapoly *poly, Point *pix, int n, int radius, int end0, int end1)
+{
+	Aapath p;
+	Point *q, a, b;
+	int i, m, cap0, cap1, join;
+
+	if(n < 1)
+		return;
+	q = malloc(n*sizeof(Point));
+	if(q == nil){
+		poly->err = 1;
+		return;
+	}
+	m = 0;
+	for(i = 0; i < n; i++)
+		if(m == 0 || !eqpt(pix[i], pix[i-1]))
+			q[m++] = centre(pix[i]);
+	aapathinit(&p);
+	if(m == 1){
+		aamoveto(&p, q[0]);
+		aalineto(&p, q[0]);
+		cap0 = (end0 & 0x1F) == Enddisc || (end1 & 0x1F) == Enddisc ? Capround : Capsquare;
+		aastroke(poly, &p, (2*radius+1)*Aaone, cap0, cap0, Joinround, 0);
+	}else{
+		a = drawend(poly, q[0], unit(q[1], q[0]), radius, end0, &cap0);
+		b = drawend(poly, q[m-1], unit(q[m-2], q[m-1]), radius, end1, &cap1);
+		aamoveto(&p, a);
+		for(i = 1; i < m-1; i++)
+			aalineto(&p, q[i]);
+		aalineto(&p, b);
+		join = radius == 0 ? Joinmiter : Joinround;
+		aastroke(poly, &p, (2*radius+1)*Aaone, cap0, cap1, join, 2*Aaone);
+	}
+	aapathfree(&p);
+	free(q);
 }
 
 /*

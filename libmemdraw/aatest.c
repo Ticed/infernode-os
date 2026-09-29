@@ -26,6 +26,10 @@ void	poolsetcompact(Pool *p, void (*f)(void*, void*)) { USED(p); USED(f); }
 void*	mallocz(ulong n, int clr) { void *v = malloc(n); if(v != nil && clr) memset(v, 0, n); return v; }
 void	_assert(char *s) { sysfatal("assert failed: %s", s); }
 int	_tas(int *p) { int v = *p; *p = 1; return v; }
+/* libdraw/path.c is built in to test its encoding; nothing is sent */
+uchar*	bufimage(Display *d, int n) { USED(d); USED(n); return nil; }
+void	_setdrawop(Display *d, Drawop op) { USED(d); USED(op); }
+int	_drawprint(int fd, char *fmt, ...) { USED(fd); USED(fmt); return 0; }
 
 #define	RND()	(seed = seed*1103515245 + 12345, (seed >> 8) & 0xFFFF)
 #define	F(x)	((int)((x)*Aaone))	/* pixels to fixed point */
@@ -475,6 +479,45 @@ testdecode(void)
 	aapathfree(&p);
 }
 
+/* libdraw's encoder (the client) against aadecode (the draw device) */
+static void
+testroundtrip(void)
+{
+	Path *w;
+	Aapath p, q;
+	Point pts[] = {{-300000, 7}, {1, -1}, {123456, 654321}, {0, 0}, {-5, 90000}};
+	int i;
+
+	w = allocpath();
+	pathmove(w, pts[0]);
+	pathline(w, pts[1]);
+	pathquad(w, pts[2], pts[3]);
+	pathcurve(w, pts[4], pts[0], pts[1]);
+	pathclose(w);
+	pathellipse(w, Pt(F(40), F(40)), F(10), F(5));
+	aapathinit(&p);
+	if(aadecode(&p, w->buf, w->n) < 0)
+		fail("round trip: decode failed");
+	aapathinit(&q);
+	aamoveto(&q, pts[0]);
+	aalineto(&q, pts[1]);
+	aaquadto(&q, pts[2], pts[3]);
+	aacurveto(&q, pts[4], pts[0], pts[1]);
+	aaclosepath(&q);
+	aaellipse(&q, Pt(F(40), F(40)), F(10), F(5));
+	if(p.np != q.np || p.nsub != q.nsub)
+		fail("round trip: %d points %d subpaths, want %d %d", p.np, p.nsub, q.np, q.nsub);
+	else
+		for(i = 0; i < p.np; i++)
+			if(!eqpt(p.p[i], q.p[i])){
+				fail("round trip: point %d is %P, want %P", i, p.p[i], q.p[i]);
+				break;
+			}
+	aapathfree(&p);
+	aapathfree(&q);
+	freepath(w);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -489,6 +532,7 @@ main(int argc, char **argv)
 	testreference();
 	testtiles();
 	testdecode();
+	testroundtrip();
 	if(failed){
 		print("aatest: %d failed\n", failed);
 		return 1;

@@ -44,6 +44,7 @@ enum
 #define	CLIENT(q)	CLIENTPATH((q).path)
 
 #define	NHASH		(1<<5)
+#define	Maxpath		(1<<20)	/* bytes of path one client may send for one fill or stroke */
 #define	HASHMASK	(NHASH-1)
 #define	IOUNIT	(64*1024)
 
@@ -100,6 +101,8 @@ struct Client
 	int		refreshme;
 	int		infoid;
 	int		op;
+	uchar*		path;	/* a path arriving in pieces ('U'), for the next 'G' or 'g' */
+	int		npath;
 };
 
 struct Refresh
@@ -1075,6 +1078,7 @@ drawclose(Chan *c)
 		}
 		sdraw.client[cl->slot] = 0;
 		drawflush();	/* to erase visible, now dead windows */
+		free(cl->path);
 		free(cl);
 	}
 	qunlock(&sdraw.l);
@@ -1911,6 +1915,61 @@ drawmesg1(Client *client, void *av, int n)
 			client->op = a[1];
 			continue;
 
+		/* path, more of: 'U' n[2] path[n] */
+		case 'U':
+			m = 1+2;
+			if(n < m)
+				error(Eshortdraw);
+			c = BGSHORT(a+1);
+			if(n < m+c)
+				error(Eshortdraw);
+			if(client->npath+c > Maxpath)
+				error("path too long");
+			u = realloc(client->path, client->npath+c);
+			if(u == nil && c > 0)
+				error(Enomem);
+			client->path = u;
+			memmove(client->path+client->npath, a+m, c);
+			client->npath += c;
+			m += c;
+			continue;
+
+		/* fill path: 'G' dstid[4] srcid[4] sp[2*4] wind[4] n[2] path[n] */
+		/* stroke path: 'g' dstid[4] srcid[4] sp[2*4] width[4] cap[4] join[4] miter[4] n[2] path[n] */
+		case 'G':
+		case 'g':
+			m = 1+4+4+2*4+4+2;
+			if(*a == 'g')
+				m += 3*4;
+			if(n < m)
+				error(Eshortdraw);
+			dst = drawimage(client, a+1);
+			src = drawimage(client, a+5);
+			drawpoint(&sp, a+9);
+			c = BGSHORT(a+m-2);
+			if(n < m+c)
+				error(Eshortdraw);
+			if(client->npath+c > Maxpath)
+				error("path too long");
+			u = realloc(client->path, client->npath+c);
+			if(u == nil && client->npath+c > 0)
+				error(Enomem);
+			client->path = u;
+			memmove(client->path+client->npath, a+m, c);
+			ni = client->npath+c;
+			client->npath = 0;
+			op = drawclientop(client);
+			if(*a == 'G')
+				fmt = memfillpath(dst, client->path, ni, BGLONG(a+17), src, sp, op, &r);
+			else
+				fmt = memstrokepath(dst, client->path, ni, BGLONG(a+17), BGLONG(a+21),
+					BGLONG(a+25), BGLONG(a+29), src, sp, op, &r);
+			if(fmt != nil)
+				error(fmt);
+			dstflush(dst, r);
+			m += c;
+			continue;
+
 		/* filled polygon: 'P' dstid[4] n[2] wind[4] ignore[2*4] srcid[4] sp[2*4] p0[2*4] dp[2*2*n] */
 		/* polygon: 'p' dstid[4] n[2] end0[4] end1[4] radius[4] srcid[4] sp[2*4] p0[2*4] dp[2*2*n] */
 		case 'p':
@@ -1952,7 +2011,7 @@ drawmesg1(Client *client, void *av, int n)
 				ox = p.x;
 				oy = p.y;
 				if(doflush){
-					esize = j;
+					esize = j+1;	/* +1: the anti-aliased edge of a diagonal */
 					if(*a == 'p'){
 						if(y == 0){
 							c = memlineendsize(e0);

@@ -166,17 +166,14 @@ extern void	memimageinit(void);
  */
 enum
 {
-	Aashift	= 8,
+	Aashift	= 8,		/* Pathunit in draw.h */
 	Aaone	= 1<<Aashift,
 	Aamaxcoord	= 1<<28,	/* |coordinate| limit, fixed point */
 
-	/* stroke ends and joins */
-	Capbutt	= 0,
-	Capround,
-	Capsquare,
-	Joinmiter	= 0,
-	Joinround,
-	Joinbevel,
+	/* Draw's default arrowhead (see arrow in draw-image(2)), in pixels */
+	Arrow1	= 8,	/* from the end of the shaft to the tip */
+	Arrow2	= 10,	/* from the barbs to the tip */
+	Arrow3	= 3,	/* from the edge of the shaft to a barb */
 };
 
 typedef struct Aapath	Aapath;
@@ -224,6 +221,7 @@ extern void	aapolyfree(Aapoly*);
 extern void	aapolyedge(Aapoly*, Point, Point);
 extern void	aafill(Aapoly*, Aapath*);
 extern void	aastroke(Aapoly*, Aapath*, int, int, int, int, int);
+extern void	aadrawlines(Aapoly*, Point*, int, int, int, int);
 extern Rectangle	aapixels(Aapoly*);
 extern void	_memaadraw(Memimage*, Aapoly*, Point, int, Memimage*, Point, Rectangle, int);
 extern void	memaadraw(Memimage*, Aapoly*, int, Memimage*, Point, int);
