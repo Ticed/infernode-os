@@ -28,6 +28,57 @@ authrate := 8;
 ratewindow := 0;
 ratecount := 0;
 
+# Pre-auth slots per source address, as in listen(1) (#729): one host
+# may hold at most perlimit of the authlimit slots. -P 0 turns it off.
+perlimit := 4;
+Srccount: adt {
+	host:	string;
+	n:	int;
+};
+srccounts: list of ref Srccount;
+srclock: chan of int;
+
+srcacquire(host: string): int
+{
+	srclock <-= 1;
+	for(l := srccounts; l != nil; l = tl l)
+		if((hd l).host == host){
+			if(perlimit > 0 && (hd l).n >= perlimit){
+				<-srclock;
+				return 0;
+			}
+			(hd l).n++;
+			<-srclock;
+			return 1;
+		}
+	srccounts = ref Srccount(host, 1) :: srccounts;
+	<-srclock;
+	return 1;
+}
+
+srcrelease(host: string)
+{
+	srclock <-= 1;
+	nl: list of ref Srccount;
+	for(l := srccounts; l != nil; l = tl l){
+		c := hd l;
+		if(c.host == host)
+			c.n--;
+		if(c.n > 0)
+			nl = c :: nl;
+	}
+	srccounts = nl;
+	<-srclock;
+}
+
+srchost(dir: string): string
+{
+	(nil, f) := sys->tokenize(readfile(dir + "/remote"), "!\n");
+	if(f == nil)
+		return "?";
+	return hd f;
+}
+
 init(ctxt: ref Draw->Context, argv: list of string)
 {
 	sys = load Sys Sys->PATH;
@@ -45,7 +96,7 @@ init(ctxt: ref Draw->Context, argv: list of string)
 		badmodule(Arg->PATH);
 
 	arg->init(argv);
-	arg->setusage("styxlisten [-a alg]... [-Atsv] [-L maxauth] [-R authrate] [-T ms] [-k keyfile] address cmd [arg...]");
+	arg->setusage("styxlisten [-a alg]... [-Atsv] [-L maxauth] [-P persource] [-R authrate] [-T ms] [-k keyfile] address cmd [arg...]");
 
 	algs: list of string;
 	doauth := 1;
@@ -80,6 +131,10 @@ init(ctxt: ref Draw->Context, argv: list of string)
 			authrate = int arg->earg();
 			if(authrate < 1)
 				arg->usage();
+		'P' =>
+			perlimit = int arg->earg();
+			if(perlimit < 0)
+				arg->usage();
 		's' =>
 			synchronous = 1;
 		'A' =>
@@ -102,6 +157,7 @@ init(ctxt: ref Draw->Context, argv: list of string)
 	authinfo: ref Keyring->Authinfo;
 	if (doauth) {
 		authslots = chan[authlimit] of int;
+		srclock = chan[1] of int;
 		if (keyfile == nil)
 			keyfile = "/usr/" + user() + "/keyring/default";
 		authinfo = keyring->readauthinfo(keyfile);
@@ -155,11 +211,18 @@ listener(c: Sys->Connection, mfd: ref Sys->FD, authinfo: ref Keyring->Authinfo, 
 					nethangup(nc.cfd);
 					dfd = nil;
 					nc.cfd = nil;
+				} else if(!srcacquire(src := srchost(nc.dir))) {
+					if(verbose)
+						sys->fprint(stderr(), "styxlisten: pre-auth limit per source (%d) reached for %s\n", perlimit, src);
+					nethangup(nc.cfd);
+					dfd = nil;
+					nc.cfd = nil;
 				} else
 				alt {
 				authslots <-= 1 =>
-					spawn authenticator(dfd, nc.cfd, authinfo, mfd, algs, hostname);
+					spawn authenticator(dfd, nc.cfd, authinfo, mfd, algs, hostname, src);
 				* =>
+					srcrelease(src);
 					if(verbose)
 						sys->fprint(stderr(), "styxlisten: pre-auth limit reached\n");
 					nethangup(nc.cfd);
@@ -185,11 +248,11 @@ rateallow(): int
 
 # authenticate a connection and set the user id.
 authenticator(dfd, cfd: ref Sys->FD, authinfo: ref Keyring->Authinfo, mfd: ref Sys->FD,
-		algs: list of string, hostname: string)
+		algs: list of string, hostname: string, src: string)
 {
 	# authenticate and change user id appropriately
 	cancel := chan[1] of int;
-	spawn authwatchdog(cancel, sys->pctl(0, nil), cfd, authtimeout);
+	spawn authwatchdog(cancel, sys->pctl(0, nil), cfd, authtimeout, src);
 	(fd, err) := auth->server(algs, authinfo, dfd, 1);
 	cancel <-= 1;
 	if (fd == nil) {
@@ -216,16 +279,18 @@ nethangup(cfd: ref Sys->FD)
 		sys->fprint(cfd, "hangup");
 }
 
-authwatchdog(cancel: chan of int, pid: int, cfd: ref Sys->FD, ms: int)
+authwatchdog(cancel: chan of int, pid: int, cfd: ref Sys->FD, ms: int, src: string)
 {
 	tmo := chan[1] of int;
 	spawn timerproc(tmo, ms);
 	alt {
 	<-cancel =>
 		<-authslots;
+		srcrelease(src);
 		return;
 	<-tmo =>
 		<-authslots;
+		srcrelease(src);
 		nethangup(cfd);
 		kill(pid, "kill");
 	}
