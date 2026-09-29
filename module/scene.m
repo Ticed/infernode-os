@@ -165,7 +165,7 @@ Scene: module
 		n, head: int;
 	};
 
-	# Load the Draw-side state (colour cache, theme, aadraw).  Must be
+	# Load the Draw-side state (colour cache, theme).  Must be
 	# called before any rendering; the model and camera work without it.
 	init:	fn(d: ref Draw->Display, f: ref Draw->Font);
 	retheme: fn();

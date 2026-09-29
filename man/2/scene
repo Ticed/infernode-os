@@ -116,8 +116,12 @@ and zoom buttons
 .RB ( RCHIPS ,
 located by
 .BR chiprects ).
-Shapes are anti-aliased with
-.BR aadraw .
+Shapes are anti-aliased: they are paths, filled and stroked by
+.B Image.fillpath
+and
+.B Image.strokepath
+(see
+.IR draw-image (2)).
 .B Hit
 returns the entity nearest
 .IR p ,
