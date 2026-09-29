@@ -379,6 +379,17 @@ restrictnsx(caps: ref Capabilities, hidemetadata: int): string
 		if(matrixok >= 0 && !inlist("matrix", mntpaths))
 			mntpaths = "matrix" :: mntpaths;
 	}
+	# /mnt/wsys — the window manager's window pictures (wmsrv(2) wsys), one
+	# tree per Lucifer activity at /mnt/wsys/<actid>.  Fixed-function: only
+	# the window tool, and only its own activity's tree, which is bound over
+	# /mnt/wsys itself so no other activity is even nameable.
+	if(inlist("window", caps.tools) && caps.actid >= 0) {
+		own := "/mnt/wsys/" + string caps.actid;
+		(wok, nil) := sys->stat(own);
+		if(wok >= 0 && sys->bind(own, "/mnt/wsys", Sys->MREPL) >= 0 &&
+		   !inlist("wsys", mntpaths))
+			mntpaths = "wsys" :: mntpaths;
+	}
 	# GPU inference is fixed-function service authority. The gpu and vision
 	# tools receive it per-invocation; generic path grants cannot.
 	if(inlist("gpu", caps.tools) || inlist("vision", caps.tools)) {
@@ -1206,6 +1217,7 @@ calendarcontrolpath(path: string): int
 fixedservicecontrolpath(path: string): int
 {
 	return path == "/mnt/matrix" || prefix(path, "/mnt/matrix/") ||
+		path == "/mnt/wsys" || prefix(path, "/mnt/wsys/") ||
 		path == "/mnt/git" || prefix(path, "/mnt/git/") ||
 		path == "/n/git" || prefix(path, "/n/git/") ||
 		path == "/mnt/gpu" || prefix(path, "/mnt/gpu/") ||
@@ -1401,6 +1413,7 @@ emitmanifest(caps: ref Capabilities, mpath: string)
 		("/mnt/ui",   "UI Service",       "rw"),
 		("/mnt/mcp",  "MCP Providers",    "rw"),
 		("/mnt/matrix", "Matrix Runtime", "rw"),
+		("/mnt/wsys", "Window Pictures", "ro"),
 		("/mnt/gpu", "GPU Service", "rw"),
 		("/mnt/git", "Git", "rw"),
 		("/mnt/web", "Web Service", "rw"),
