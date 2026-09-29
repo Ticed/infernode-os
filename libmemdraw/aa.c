@@ -416,18 +416,6 @@ maskrow(Acc *a, int r, uchar *m, int evenodd, Span **spans, int *nspan, int *asp
 enum
 {
 	Spangap	= 16,	/* runs closer than this are drawn as one rectangle */
-	Nmask	= 2,	/* masks used in turn, so hardware can draw one while the next is made */
-};
-
-/* a band's mask, and the runs written in it, to clear before it is used again */
-typedef struct Bandmask Bandmask;
-struct Bandmask
-{
-	Memimage	*m;
-	Span	*s;
-	int	*row;
-	int	n;
-	int	a;
 };
 
 void
@@ -435,12 +423,11 @@ _memaadraw(Memimage *dst, Aapoly *poly, Point off, int wind, Memimage *src, Poin
 {
 	Rectangle r, br, oclipr;
 	Memimage *mask;
-	Bandmask bm[Nmask], *b;
 	Acc a;
 	Aaedge *e, **act, *sorted;
 	Span *spans, *rows[Band];
 	int i, j, k, n, nact, next, y, y0, y1, evenodd, nspan, aspan, nrow[Band], arow[Band];
-	int sx0, sx1, band;
+	int sx0, sx1;
 
 	if(poly->err)
 		return;
@@ -460,7 +447,6 @@ _memaadraw(Memimage *dst, Aapoly *poly, Point off, int wind, Memimage *src, Poin
 		}
 	}
 	memset(&a, 0, sizeof a);
-	memset(bm, 0, sizeof bm);
 	memset(rows, 0, sizeof rows);
 	memset(nrow, 0, sizeof nrow);
 	memset(arow, 0, sizeof arow);
@@ -473,22 +459,17 @@ _memaadraw(Memimage *dst, Aapoly *poly, Point off, int wind, Memimage *src, Poin
 	a.area = mallocz(n*sizeof(int), 1);
 	act = malloc((poly->ne+1)*sizeof(Aaedge*));
 	sorted = malloc((poly->ne+1)*sizeof(Aaedge));
-	for(i = 0; i < Nmask; i++){
-		bm[i].m = allocmemimage(Rect(0, 0, a.w, Band), GREY8);
-		if(bm[i].m == nil)
-			goto Out;
-		memfillcolor(bm[i].m, DTransparent);
-	}
-	if(a.cover == nil || a.area == nil || act == nil || sorted == nil)
+	mask = allocmemimage(Rect(0, 0, a.w, Band), GREY8);
+	if(a.cover == nil || a.area == nil || act == nil || sorted == nil || mask == nil)
 		goto Out;
+	memfillcolor(mask, DTransparent);
 	sortedges(poly->e, sorted, poly->ne);
 
 	oclipr = dst->clipr;
 	dst->clipr = clipr;
 	nact = 0;
 	next = 0;
-	band = 0;
-	for(y0 = r.min.y; y0 < r.max.y && !a.err; y0 = y1, band++){
+	for(y0 = r.min.y; y0 < r.max.y && !a.err; y0 = y1){
 		y1 = y0 + Band;
 		if(y1 > r.max.y)
 			y1 = r.max.y;
@@ -506,17 +487,7 @@ _memaadraw(Memimage *dst, Aapoly *poly, Point off, int wind, Memimage *src, Poin
 			i++;
 		}
 
-		/*
-		 * The mask: the one used Nmask bands ago, cleared of what it
-		 * held once the hardware (if any) has drawn it.
-		 */
-		b = &bm[band % Nmask];
-		mask = b->m;
-		memhwwrite(mask->data);
-		for(i = 0; i < b->n; i++)
-			memset(mask->data->bdata + mask->zero + sizeof(ulong)*b->row[i]*mask->width + b->s[i].x0,
-				0, b->s[i].x1 - b->s[i].x0);
-		b->n = 0;
+		/* the mask, and each row's runs */
 		for(y = y0; y < y1; y++){
 			k = y - y0;
 			nrow[k] = 0;
@@ -549,22 +520,10 @@ _memaadraw(Memimage *dst, Aapoly *poly, Point off, int wind, Memimage *src, Poin
 			memimagedraw(dst, br, src, addpt(br.min, d), mask, Pt(sx0, 0), op);
 		}
 
-		/* what the band wrote to the mask, to clear when it is next used */
+		/* clear what the band wrote to the mask */
 		for(k = 0; k < y1-y0; k++)
-			for(j = 0; j < nrow[k]; j++){
-				if(b->n == b->a){
-					b->a = 2*b->a + 32;
-					b->s = realloc(b->s, b->a*sizeof(Span));
-					b->row = realloc(b->row, b->a*sizeof(int));
-					if(b->s == nil || b->row == nil){
-						a.err = 1;
-						b->n = 0;
-						break;
-					}
-				}
-				b->s[b->n] = rows[k][j];
-				b->row[b->n++] = k;
-			}
+			for(j = 0; j < nrow[k]; j++)
+				memset(byteaddr(mask, Pt(rows[k][j].x0, k)), 0, rows[k][j].x1 - rows[k][j].x0);
 	}
 	dst->clipr = oclipr;
 
@@ -587,11 +546,7 @@ _memaadraw(Memimage *dst, Aapoly *poly, Point off, int wind, Memimage *src, Poin
 	free(a.area);
 	free(act);
 	free(sorted);
-	for(i = 0; i < Nmask; i++){
-		free(bm[i].s);
-		free(bm[i].row);
-		freememimage(bm[i].m);
-	}
+	freememimage(mask);
 }
 
 /*

@@ -11,7 +11,6 @@ memimagemove(void *from, void *to)
 	Memdata *md;
 
 	md = *(Memdata**)to;
-	memhwsync();	/* the hardware must not be using what moves */
 	if(md->base != from){
 		print("compacted data not right: #%p\n", md->base);
 		abort();
@@ -81,8 +80,6 @@ allocmemimage(Rectangle r, ulong chan)
 		return nil;
 
 	md->ref = 1;
-	md->hwread = 0;
-	md->hwwrite = 0;
 	md->base = poolalloc(imagmem, (2+nw)*sizeof(ulong));
 	if(md->base == nil){
 		free(md);
@@ -113,7 +110,6 @@ freememimage(Memimage *i)
 	if(i == nil)
 		return;
 	if(i->data->ref-- == 1 && i->data->allocd){
-		memhwwrite(i->data);	/* not while the hardware uses it */
 		if(i->data->base)
 			poolfree(imagmem, i->data->base);
 		free(i->data);
@@ -135,7 +131,6 @@ byteaddr(Memimage *i, Point p)
 {
 	uchar *a;
 
-	memhwread(i->data);	/* not while the hardware writes it */
 	a = i->data->bdata+i->zero+sizeof(ulong)*p.y*i->width;
 
 	if(i->depth < 8){
