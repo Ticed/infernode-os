@@ -47,6 +47,8 @@ fail(char *fmt, ...)
 	failed++;
 }
 
+static ulong	rgbatocolour(Memimage*, ulong);
+
 static Memimage*
 canvas(int w, int h)
 {
@@ -585,6 +587,83 @@ testfastpath(void)
 	freememimage(mask);
 }
 
+/*
+ * The blending fast path (blenddraw) against alphadraw: random
+ * premultiplied images with alpha, unmasked, onto every layout.
+ */
+static void
+testblendpath(void)
+{
+	ulong dchans[] = {XRGB32, ARGB32, RGBA32, ABGR32, XBGR32, RGB24, BGR24};
+	ulong schans[] = {RGBA32, ARGB32, ABGR32};
+	Memimage *a, *b, *src;
+	Rectangle r;
+	Point sp;
+	int c, sc, trial, i, n, x, y, al;
+	ulong seed, v;
+	uchar *pa, *pb;
+
+	seed = 4242;
+	for(sc = 0; sc < nelem(schans); sc++){
+		src = allocmemimage(Rect(0, 0, 40, 30), schans[sc]);
+		for(c = 0; c < nelem(dchans); c++){
+			a = allocmemimage(Rect(-5, -3, 56, 34), dchans[c]);
+			b = allocmemimage(a->r, dchans[c]);
+			for(trial = 0; trial < 20; trial++){
+				n = Dy(a->r)*a->width*sizeof(ulong);
+				pa = (uchar*)a->data->bdata;
+				pb = (uchar*)b->data->bdata;
+				for(i = 0; i < n; i++)
+					pa[i] = pb[i] = RND();
+				/* premultiplied: no channel above alpha */
+				for(y = 0; y < 30; y++)
+					for(x = 0; x < 40; x++){
+						switch(RND()%4){
+						case 0:	al = 0; break;
+						case 1:	al = 255; break;
+						default: al = RND()&0xFF; break;
+						}
+						v = (RND()%(al+1))<<24 | (RND()%(al+1))<<16 | (RND()%(al+1))<<8 | al;
+						v = rgbatocolour(src, v);
+						pa = byteaddr(src, Pt(x, y));
+						pa[0] = v; pa[1] = v>>8; pa[2] = v>>16; pa[3] = v>>24;
+					}
+				r = Rect(RND()%10 - 5, RND()%8 - 3, 10 + RND()%30, 8 + RND()%22);
+				sp = Pt(RND()%5, RND()%5);
+				memdrawfast = 1;
+				memimagedraw(a, r, src, sp, memopaque, ZP, SoverD);
+				memdrawfast = 0;
+				memimagedraw(b, r, src, sp, memopaque, ZP, SoverD);
+				memdrawfast = 1;
+				pa = (uchar*)a->data->bdata;
+				pb = (uchar*)b->data->bdata;
+				for(i = 0; i < n; i++)
+					if(pa[i] != pb[i]){
+						fail("blend path: source %d onto layout %d, trial %d: byte %d is %d, general path %d",
+							sc, c, trial, i, pa[i], pb[i]);
+						break;
+					}
+			}
+			freememimage(a);
+			freememimage(b);
+		}
+		freememimage(src);
+	}
+}
+
+/* an rgba value (r<<24 | g<<16 | b<<8 | a) as a pixel of m's channels */
+static ulong
+rgbatocolour(Memimage *m, ulong rgba)
+{
+	ulong v;
+
+	v = ((rgba>>24)&0xFF) << m->shift[CRed];
+	v |= ((rgba>>16)&0xFF) << m->shift[CGreen];
+	v |= ((rgba>>8)&0xFF) << m->shift[CBlue];
+	v |= (rgba&0xFF) << m->shift[CAlpha];
+	return v;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -601,6 +680,7 @@ main(int argc, char **argv)
 	testdecode();
 	testroundtrip();
 	testfastpath();
+	testblendpath();
 	if(failed){
 		print("aatest: %d failed\n", failed);
 		return 1;

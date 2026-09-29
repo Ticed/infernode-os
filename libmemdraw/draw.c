@@ -32,7 +32,7 @@ static int	tablesbuilt;
 
 static void mktables(void);
 typedef int Subdraw(Memdrawparam*);
-static Subdraw chardraw, alphadraw, memoptdraw, coverdraw;
+static Subdraw chardraw, alphadraw, memoptdraw, coverdraw, blenddraw;
 
 /*
  * memdrawfast 0 sends everything the special cases below would take to
@@ -196,6 +196,13 @@ DBG print("memopt handled\n");
 	 * anti-aliased shape and glyph is drawn.
 	 */
 	if(memdrawfast && coverdraw(&par))
+		return;
+
+	/*
+	 * Blending: an image with alpha drawn S over D with no mask, as
+	 * icons, overlays and translucent windows are.
+	 */
+	if(memdrawfast && blenddraw(&par))
 		return;
 
 	/*
@@ -680,6 +687,86 @@ coverdraw(Memdrawparam *par)
 			u = dr<<shr | dg<<shg | db<<shb;
 			if(hasalpha)
 				u |= da<<sha;
+			d[0] = u;
+			d[1] = u>>8;
+			d[2] = u>>16;
+			if(nb == 4)
+				d[3] = u>>24;
+		}
+	}
+	return 1;
+}
+
+/*
+ * An image of 8-bit channels with alpha (32 bits a pixel) drawn S over
+ * D, with no mask, onto a 24- or 32-bit image of 8-bit channels, as
+ * alphadraw's alphacalc11 would with the mask 255 everywhere:
+ *	fd = 255 - sa
+ *	c = sc + MUL(fd, dc)	each channel, alpha with sa
+ * clearing the unused byte of a 32-bit pixel without alpha as
+ * writebyte does.  The same bits (tested).
+ */
+static int
+blenddraw(Memdrawparam *par)
+{
+	Memimage *dst, *src;
+	Rectangle r;
+	int x, y, dx, nb, fd, hasalpha;
+	int dshr, dshg, dshb, dsha, sshr, sshg, sshb, ssha;
+	ulong u, t, sr, sg, sb, sa, dr, dg, db, da;
+	uchar *d, *sp;
+
+	dst = par->dst;
+	src = par->src;
+	if(par->op != SoverD || (par->state & Fullmask) == 0)
+		return 0;
+	if(src->flags & Frepl)
+		return 0;
+	if((src->flags & (Fbytes|Falpha|Fgrey|Fcmap)) != (Fbytes|Falpha) || src->depth != 32)
+		return 0;
+	if((dst->flags & (Fbytes|Fgrey|Fcmap)) != Fbytes || (dst->depth != 32 && dst->depth != 24))
+		return 0;
+	if(src->data == dst->data || dst->layer != nil || src->layer != nil)
+		return 0;
+
+	sshr = src->shift[CRed];
+	sshg = src->shift[CGreen];
+	sshb = src->shift[CBlue];
+	ssha = src->shift[CAlpha];
+	dshr = dst->shift[CRed];
+	dshg = dst->shift[CGreen];
+	dshb = dst->shift[CBlue];
+	hasalpha = (dst->flags & Falpha) != 0;
+	dsha = hasalpha ? dst->shift[CAlpha] : 0;
+	nb = dst->depth/8;
+	r = par->r;
+	dx = Dx(r);
+	for(y = 0; y < Dy(r); y++){
+		d = byteaddr(dst, Pt(r.min.x, r.min.y+y));
+		sp = byteaddr(src, Pt(par->sr.min.x, par->sr.min.y+y));
+		for(x = 0; x < dx; x++, d += nb, sp += 4){
+			u = sp[0] | sp[1]<<8 | sp[2]<<16 | (ulong)sp[3]<<24;
+			sr = (u >> sshr) & 0xFF;
+			sg = (u >> sshg) & 0xFF;
+			sb = (u >> sshb) & 0xFF;
+			sa = (u >> ssha) & 0xFF;
+			if(nb == 4)
+				u = d[0] | d[1]<<8 | d[2]<<16 | (ulong)d[3]<<24;
+			else
+				u = d[0] | d[1]<<8 | d[2]<<16;
+			dr = (u >> dshr) & 0xFF;
+			dg = (u >> dshg) & 0xFF;
+			db = (u >> dshb) & 0xFF;
+			da = hasalpha ? (u >> dsha) & 0xFF : 0;
+			fd = 255 - sa;
+			dr = sr + MUL(fd, dr, t);
+			dg = sg + MUL(fd, dg, t);
+			db = sb + MUL(fd, db, t);
+			if(hasalpha)
+				da = sa + MUL(fd, da, t);
+			u = dr<<dshr | dg<<dshg | db<<dshb;
+			if(hasalpha)
+				u |= da<<dsha;
 			d[0] = u;
 			d[1] = u>>8;
 			d[2] = u>>16;
