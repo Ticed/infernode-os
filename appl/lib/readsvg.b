@@ -17,11 +17,11 @@ implement RImagefile;
 #   - Use/defs references
 #   - Style attributes (inline)
 #
-# Uses Inferno's XML parser for SVG parsing and a software rasterizer
-# for rendering to pixel buffers.
-#
-# The rasterizer uses scanline rendering with sub-pixel anti-aliasing
-# for smooth edges.
+# Uses Inferno's XML parser for SVG parsing.  Shapes are drawn as
+# anti-aliased paths by the draw device (Image.fillpath and
+# Image.strokepath in draw-image(2)) into an off-screen image, whose
+# pixels are then returned: the decoder needs /dev/draw in its
+# namespace.
 #
 
 include "sys.m";
@@ -29,7 +29,7 @@ include "sys.m";
 
 include "draw.m";
 	draw: Draw;
-	Point: import Draw;
+	Display, Image, Path, Point, Rect: import draw;
 
 include "bufio.m";
 	bufio: Bufio;
@@ -44,18 +44,6 @@ include "xml.m";
 # Default canvas size when viewBox is not specified
 DEFAULT_WIDTH:	con 300;
 DEFAULT_HEIGHT:	con 150;
-
-# Anti-aliasing sub-pixel resolution (4x4 = 16 samples)
-AA_SHIFT:	con 2;
-AA_SCALE:	con 1 << AA_SHIFT;	# 4
-AA_SAMPLES:	con AA_SCALE * AA_SCALE;	# 16
-
-# Fixed-point precision for path coordinates
-FP_SHIFT:	con 8;
-FP_SCALE:	con 1 << FP_SHIFT;
-
-# Maximum path segments
-MAX_SEGMENTS:	con 65536;
 
 # Color values
 Color: adt {
@@ -102,6 +90,9 @@ Style: adt {
 	fill_opacity:	real;
 	stroke_opacity:	real;
 	font_size:	real;
+	fill_rule:	int;	# as fillpath's: ~0 non-zero, 1 even-odd
+	cap:		int;	# Draw->Capbutt ...
+	join:		int;	# Draw->Joinmiter ...
 };
 
 # Gradient stop
@@ -125,7 +116,7 @@ Gradient: adt {
 Canvas: adt {
 	width:		int;
 	height:		int;
-	pixels:		array of byte;	# RGBA, 4 bytes per pixel
+	img:		ref Image;	# drawn into by the draw device
 	viewbox_x:	real;
 	viewbox_y:	real;
 	viewbox_w:	real;
@@ -134,10 +125,13 @@ Canvas: adt {
 	transform:	ref Matrix;
 };
 
+display: ref Display;
+
 init(iomod: Bufio)
 {
 	if(sys == nil)
 		sys = load Sys Sys->PATH;
+	draw = load Draw Draw->PATH;
 	bufio = iomod;
 	xml = load Xml Xml->PATH;
 	if(xml != nil)
@@ -164,6 +158,10 @@ readarray(fd: ref Iobuf): (array of ref Rawimage, string)
 {
 	if(xml == nil)
 		return (nil, "SVG: cannot load XML parser");
+	if(display == nil)
+		display = Display.allocate(nil);
+	if(display == nil)
+		return (nil, sys->sprint("SVG: cannot open the draw device: %r"));
 
 	# Parse SVG XML
 	(parser, perr) := xml->fopen(fd, "svg", nil, nil);
@@ -174,6 +172,8 @@ readarray(fd: ref Iobuf): (array of ref Rawimage, string)
 	(canvas, svgerr) := parse_svg(parser);
 	if(svgerr != nil)
 		return (nil, svgerr);
+	if(canvas.img == nil)
+		return (nil, sys->sprint("SVG: cannot make a %dx%d image: %r", canvas.width, canvas.height));
 
 	# Convert canvas to Rawimage
 	raw := canvas_to_rawimage(canvas);
@@ -222,15 +222,8 @@ new_canvas(attrs: Attributes): ref Canvas
 	if(c.width > 4096) c.width = 4096;
 	if(c.height > 4096) c.height = 4096;
 
-	c.pixels = array[c.width * c.height * 4] of { * => byte 0 };
-
-	# Fill with white background (Wikipedia SVGs expect this)
-	for(i := 0; i < c.width * c.height; i++) {
-		c.pixels[i*4] = byte 255;
-		c.pixels[i*4+1] = byte 255;
-		c.pixels[i*4+2] = byte 255;
-		c.pixels[i*4+3] = byte 255;
-	}
+	# a white background (Wikipedia SVGs expect this)
+	c.img = display.newimage(Rect((0, 0), (c.width, c.height)), Draw->RGB24, 0, Draw->White);
 
 	c.viewbox_x = 0.0;
 	c.viewbox_y = 0.0;
@@ -663,7 +656,7 @@ render_text_string(canvas: ref Canvas, text: string, tx, ty: real, xform: ref Ma
 			ref Segment(SEG_LINETO, x + charw * 0.8, ty, 0.0, 0.0, 0.0, 0.0) ::
 			ref Segment(SEG_LINETO, x, ty, 0.0, 0.0, 0.0, 0.0) ::
 			ref Segment(SEG_CLOSE, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) :: nil;
-		fill_path_color(canvas, segs, xform, color);
+		fill_path_color(canvas, segs, xform, color, ~0);
 		x += charw;
 	}
 }
@@ -697,6 +690,8 @@ parse_path_data(d: string): list of ref Segment
 
 		case cmd {
 		'M' or 'm' =>
+			# pairs after the first are implicit lines
+			stype := SEG_MOVETO;
 			for(;;) {
 				(x, ni) := parse_path_number(d, i, n);
 				if(ni == i) break;
@@ -704,10 +699,12 @@ parse_path_data(d: string): list of ref Segment
 				(y, ni2) := parse_path_number(d, i, n);
 				i = ni2;
 				if(cmd == 'm') { x += cx; y += cy; }
-				segs = ref Segment(SEG_MOVETO, x, y, 0.0, 0.0, 0.0, 0.0) :: segs;
+				segs = ref Segment(stype, x, y, 0.0, 0.0, 0.0, 0.0) :: segs;
 				cx = x; cy = y;
-				mx = x; my = y;
-				cmd = if_upper(cmd, 'L', 'l');
+				if(stype == SEG_MOVETO) {
+					mx = x; my = y;
+				}
+				stype = SEG_LINETO;
 			}
 		'L' or 'l' =>
 			for(;;) {
@@ -835,13 +832,16 @@ parse_path_data(d: string): list of ref Segment
 }
 
 # Parse a number from path data
+# A number at i, and where it ends; where there is none, i itself, so
+# the caller sees nothing was read (not the whitespace before a command).
 parse_path_number(d: string, i, n: int): (real, int)
 {
+	orig := i;
 	# Skip whitespace and commas
 	while(i < n && (d[i] == ' ' || d[i] == '\t' || d[i] == '\n' || d[i] == '\r' || d[i] == ','))
 		i++;
 	if(i >= n)
-		return (0.0, i);
+		return (0.0, orig);
 
 	start := i;
 	if(i < n && (d[i] == '-' || d[i] == '+'))
@@ -863,261 +863,83 @@ parse_path_number(d: string, i, n: int): (real, int)
 	}
 
 	if(i == start)
-		return (0.0, start);
+		return (0.0, orig);
 
 	return (real d[start:i], i);
 }
 
 # ==================== Rasterizer ====================
 
-# Fill a path using the even-odd rule
+# The path, transformed, as a Draw path
+topath(path: list of ref Segment, m: ref Matrix): ref Path
+{
+	p := Path.new();
+	for(; path != nil; path = tl path) {
+		seg := hd path;
+		case seg.stype {
+		SEG_MOVETO =>
+			(x, y) := transform_point(m, seg.x1, seg.y1);
+			p.moveto(x, y);
+		SEG_LINETO =>
+			(x, y) := transform_point(m, seg.x1, seg.y1);
+			p.lineto(x, y);
+		SEG_CUBICTO =>
+			(x1, y1) := transform_point(m, seg.x1, seg.y1);
+			(x2, y2) := transform_point(m, seg.x2, seg.y2);
+			(x3, y3) := transform_point(m, seg.x3, seg.y3);
+			p.curveto(x1, y1, x2, y2, x3, y3);
+		SEG_QUADTO =>
+			(x1, y1) := transform_point(m, seg.x1, seg.y1);
+			(x2, y2) := transform_point(m, seg.x2, seg.y2);
+			p.quadto(x1, y1, x2, y2);
+		SEG_CLOSE =>
+			p.close();
+		}
+	}
+	return p;
+}
+
+# A colour as a source image: Draw's colours are premultiplied
+paint(c: ref Color): ref Image
+{
+	a := c.a;
+	if(a <= 0)
+		return nil;
+	if(a > 255)
+		a = 255;
+	v := (c.r*a/255) << 24 | (c.g*a/255) << 16 | (c.b*a/255) << 8 | a;
+	return display.newimage(Rect((0, 0), (1, 1)), Draw->RGBA32, 1, v);
+}
+
 fill_path(canvas: ref Canvas, path: list of ref Segment, xform: ref Matrix, style: ref Style)
 {
 	if(style.fill == nil)
 		return;
-	fill_path_color(canvas, path, xform, style.fill);
+	fill_path_color(canvas, path, xform, style.fill, style.fill_rule);
 }
 
-fill_path_color(canvas: ref Canvas, path: list of ref Segment, xform: ref Matrix, color: ref Color)
+fill_path_color(canvas: ref Canvas, path: list of ref Segment, xform: ref Matrix, color: ref Color, rule: int)
 {
-	# Flatten path to line segments
-	lines := flatten_path(path, xform);
-	if(lines == nil)
+	if(path == nil || (src := paint(color)) == nil)
 		return;
-
-	# Find bounding box
-	(minx, miny, maxx, maxy) := path_bounds(lines);
-	if(minx >= maxx || miny >= maxy)
-		return;
-
-	iy0 := int miny;
-	iy1 := int maxy + 1;
-	if(iy0 < 0) iy0 = 0;
-	if(iy1 > canvas.height) iy1 = canvas.height;
-
-	# Scanline fill
-	for(y := iy0; y < iy1; y++) {
-		# Find intersections with this scanline
-		fy := real y + 0.5;
-		crossings := scanline_intersect(lines, fy);
-		if(crossings == nil)
-			continue;
-
-		# Sort crossings
-		crossings = sort_reals(crossings);
-
-		# Fill between pairs (even-odd rule)
-		for(cl := crossings; cl != nil; ) {
-			x0 := hd cl;
-			cl = tl cl;
-			if(cl == nil)
-				break;
-			x1 := hd cl;
-			cl = tl cl;
-
-			ix0 := int x0;
-			ix1 := int x1 + 1;
-			if(ix0 < 0) ix0 = 0;
-			if(ix1 > canvas.width) ix1 = canvas.width;
-
-			for(x := ix0; x < ix1; x++)
-				blend_pixel(canvas, x, y, color);
-		}
-	}
+	canvas.img.fillpath(topath(path, xform), rule, src, (0, 0));
 }
 
-# Stroke a path
+# Stroke a path, the width scaled as the transform scales area
 stroke_path(canvas: ref Canvas, path: list of ref Segment, xform: ref Matrix, style: ref Style)
 {
-	if(style.stroke == nil || style.stroke_width <= 0.0)
+	if(style.stroke == nil || style.stroke_width <= 0.0 || path == nil)
 		return;
-
-	# Expand stroke to filled path by offsetting
-	# For simplicity, use thick line drawing
-	lines := flatten_path(path, xform);
-	if(lines == nil)
+	src := paint(style.stroke);
+	if(src == nil)
 		return;
-
-	sw := style.stroke_width;
-	# Scale stroke width by transform
-	sx := xform.a;
-	if(sx < 0.0) sx = -sx;
-	sw *= sx;
-	if(sw < 1.0)
-		sw = 1.0;
-
-	half := sw / 2.0;
-	color := style.stroke;
-
-	for(ll := lines; ll != nil; ll = tl ll) {
-		seg := hd ll;
-		if(seg.stype != SEG_LINETO)
-			continue;
-		# Draw thick line from (x1,y1) to current point
-		draw_thick_line(canvas, seg.x1, seg.y1, seg.x3, seg.y3, half, color);
-	}
-}
-
-# Draw a thick line
-draw_thick_line(canvas: ref Canvas, x0, y0, x1, y1, half_width: real, color: ref Color)
-{
-	dx := x1 - x0;
-	dy := y1 - y0;
-	length := sqrt(dx*dx + dy*dy);
-	if(length < 0.001)
+	det := xform.a*xform.e - xform.b*xform.d;
+	if(det < 0.0)
+		det = -det;
+	sw := style.stroke_width * sqrt(det);
+	if(sw <= 0.0)
 		return;
-
-	# Normal vector
-	nx := -dy / length * half_width;
-	ny := dx / length * half_width;
-
-	# Create a rectangle path along the line
-	segs := ref Segment(SEG_MOVETO, x0+nx, y0+ny, 0.0, 0.0, 0.0, 0.0) ::
-		ref Segment(SEG_LINETO, x1+nx, y1+ny, 0.0, 0.0, 0.0, 0.0) ::
-		ref Segment(SEG_LINETO, x1-nx, y1-ny, 0.0, 0.0, 0.0, 0.0) ::
-		ref Segment(SEG_LINETO, x0-nx, y0-ny, 0.0, 0.0, 0.0, 0.0) ::
-		ref Segment(SEG_CLOSE, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) :: nil;
-
-	# Flatten (already flat, but transform identity)
-	ident := ref Matrix(1.0, 0.0, 0.0, 0.0, 1.0, 0.0);
-	fill_path_color(canvas, segs, ident, color);
-}
-
-# Flatten curves to line segments and apply transform
-flatten_path(path: list of ref Segment, xform: ref Matrix): list of ref Segment
-{
-	result: list of ref Segment;
-	cx := 0.0;
-	cy := 0.0;
-
-	for(p := path; p != nil; p = tl p) {
-		seg := hd p;
-		case seg.stype {
-		SEG_MOVETO =>
-			(tx, ty) := transform_point(xform, seg.x1, seg.y1);
-			result = ref Segment(SEG_MOVETO, tx, ty, 0.0, 0.0, 0.0, 0.0) :: result;
-			cx = tx; cy = ty;
-		SEG_LINETO =>
-			(tx, ty) := transform_point(xform, seg.x1, seg.y1);
-			result = ref Segment(SEG_LINETO, cx, cy, 0.0, 0.0, tx, ty) :: result;
-			cx = tx; cy = ty;
-		SEG_CUBICTO =>
-			(tx1, ty1) := transform_point(xform, seg.x1, seg.y1);
-			(tx2, ty2) := transform_point(xform, seg.x2, seg.y2);
-			(tx3, ty3) := transform_point(xform, seg.x3, seg.y3);
-			flat := flatten_cubic(cx, cy, tx1, ty1, tx2, ty2, tx3, ty3, 0);
-			for(fl := flat; fl != nil; fl = tl fl)
-				result = hd fl :: result;
-			cx = tx3; cy = ty3;
-		SEG_QUADTO =>
-			(tx1, ty1) := transform_point(xform, seg.x1, seg.y1);
-			(tx2, ty2) := transform_point(xform, seg.x2, seg.y2);
-			# Convert quadratic to cubic
-			cx1 := cx + 2.0/3.0*(tx1-cx);
-			cy1 := cy + 2.0/3.0*(ty1-cy);
-			cx2 := tx2 + 2.0/3.0*(tx1-tx2);
-			cy2 := ty2 + 2.0/3.0*(ty1-ty2);
-			flat := flatten_cubic(cx, cy, cx1, cy1, cx2, cy2, tx2, ty2, 0);
-			for(fl := flat; fl != nil; fl = tl fl)
-				result = hd fl :: result;
-			cx = tx2; cy = ty2;
-		SEG_CLOSE =>
-			result = ref Segment(SEG_CLOSE, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) :: result;
-		}
-	}
-
-	return reverse_segments(result);
-}
-
-# Flatten a cubic bezier to line segments using recursive subdivision
-flatten_cubic(x0, y0, x1, y1, x2, y2, x3, y3: real, depth: int): list of ref Segment
-{
-	if(depth > 8)
-		return ref Segment(SEG_LINETO, x0, y0, 0.0, 0.0, x3, y3) :: nil;
-
-	# Check if flat enough
-	dx := x3 - x0;
-	dy := y3 - y0;
-	d1 := abs_real((x1 - x3) * dy - (y1 - y3) * dx);
-	d2 := abs_real((x2 - x3) * dy - (y2 - y3) * dx);
-
-	if((d1 + d2) * (d1 + d2) < 0.25 * (dx*dx + dy*dy))
-		return ref Segment(SEG_LINETO, x0, y0, 0.0, 0.0, x3, y3) :: nil;
-
-	# Subdivide at t=0.5
-	mx0 := (x0 + x1) / 2.0;
-	my0 := (y0 + y1) / 2.0;
-	mx1 := (x1 + x2) / 2.0;
-	my1 := (y1 + y2) / 2.0;
-	mx2 := (x2 + x3) / 2.0;
-	my2 := (y2 + y3) / 2.0;
-	mmx0 := (mx0 + mx1) / 2.0;
-	mmy0 := (my0 + my1) / 2.0;
-	mmx1 := (mx1 + mx2) / 2.0;
-	mmy1 := (my1 + my2) / 2.0;
-	midx := (mmx0 + mmx1) / 2.0;
-	midy := (mmy0 + mmy1) / 2.0;
-
-	left := flatten_cubic(x0, y0, mx0, my0, mmx0, mmy0, midx, midy, depth + 1);
-	right := flatten_cubic(midx, midy, mmx1, mmy1, mx2, my2, x3, y3, depth + 1);
-
-	# Concatenate
-	result: list of ref Segment;
-	for(r := right; r != nil; r = tl r)
-		result = hd r :: result;
-	for(l := left; l != nil; l = tl l)
-		result = hd l :: result;
-	return reverse_segments(result);
-}
-
-# Find scanline intersections
-scanline_intersect(lines: list of ref Segment, y: real): list of real
-{
-	crossings: list of real;
-	for(l := lines; l != nil; l = tl l) {
-		seg := hd l;
-		if(seg.stype != SEG_LINETO)
-			continue;
-		y0 := seg.y1;
-		y1 := seg.y3;
-		x0 := seg.x1;
-		x1 := seg.x3;
-
-		# Check if scanline crosses this edge
-		if((y0 <= y && y1 > y) || (y1 <= y && y0 > y)) {
-			# Linear interpolation
-			t := (y - y0) / (y1 - y0);
-			x := x0 + t * (x1 - x0);
-			crossings = x :: crossings;
-		}
-	}
-	return crossings;
-}
-
-# Blend a pixel onto the canvas
-blend_pixel(canvas: ref Canvas, x, y: int, color: ref Color)
-{
-	if(x < 0 || x >= canvas.width || y < 0 || y >= canvas.height)
-		return;
-
-	off := (y * canvas.width + x) * 4;
-	sa := color.a;
-	if(sa == 0)
-		return;
-	if(sa == 255) {
-		canvas.pixels[off] = byte color.r;
-		canvas.pixels[off+1] = byte color.g;
-		canvas.pixels[off+2] = byte color.b;
-		canvas.pixels[off+3] = byte 255;
-		return;
-	}
-
-	# Alpha blend
-	da := 255 - sa;
-	canvas.pixels[off] = byte ((color.r * sa + int canvas.pixels[off] * da) / 255);
-	canvas.pixels[off+1] = byte ((color.g * sa + int canvas.pixels[off+1] * da) / 255);
-	canvas.pixels[off+2] = byte ((color.b * sa + int canvas.pixels[off+2] * da) / 255);
-	canvas.pixels[off+3] = byte 255;
+	canvas.img.strokepath(topath(path, xform), sw, style.cap, style.join, src, (0, 0));
 }
 
 # ==================== Transform Functions ====================
@@ -1245,7 +1067,10 @@ default_style(): ref Style
 		1.0,				# opacity
 		1.0,				# fill_opacity
 		1.0,				# stroke_opacity
-		12.0				# font_size
+		12.0,				# font_size
+		~0,				# fill_rule: nonzero
+		Draw->Capbutt,			# stroke-linecap: butt
+		Draw->Joinmiter			# stroke-linejoin: miter
 	);
 }
 
@@ -1258,7 +1083,10 @@ parse_style(attrs: Attributes, parent: ref Style): ref Style
 		parent.opacity,
 		parent.fill_opacity,
 		parent.stroke_opacity,
-		parent.font_size
+		parent.font_size,
+		parent.fill_rule,
+		parent.cap,
+		parent.join
 	);
 
 	# Parse inline style attribute
@@ -1299,6 +1127,10 @@ parse_style(attrs: Attributes, parent: ref Style): ref Style
 	if(fs != nil)
 		s.font_size = parse_length(fs, s.font_size);
 
+	for(k := 0; k < len strokeprops; k++)
+		if((v := attrs.get(strokeprops[k])) != nil)
+			setstrokeprop(s, strokeprops[k], v);
+
 	# Apply opacity to colors
 	if(s.fill != nil && s.opacity < 1.0)
 		s.fill.a = int (real s.fill.a * s.opacity * s.fill_opacity);
@@ -1307,6 +1139,31 @@ parse_style(attrs: Attributes, parent: ref Style): ref Style
 		s.stroke.a = int (real s.stroke.a * s.opacity * s.stroke_opacity);
 
 	return s;
+}
+
+strokeprops := array[] of {"fill-rule", "stroke-linecap", "stroke-linejoin"};
+
+setstrokeprop(s: ref Style, name, value: string)
+{
+	case name {
+	"fill-rule" =>
+		case value {
+		"evenodd" =>	s.fill_rule = 1;
+		"nonzero" =>	s.fill_rule = ~0;
+		}
+	"stroke-linecap" =>
+		case value {
+		"butt" =>	s.cap = Draw->Capbutt;
+		"round" =>	s.cap = Draw->Capround;
+		"square" =>	s.cap = Draw->Capsquare;
+		}
+	"stroke-linejoin" =>
+		case value {
+		"miter" =>	s.join = Draw->Joinmiter;
+		"round" =>	s.join = Draw->Joinround;
+		"bevel" =>	s.join = Draw->Joinbevel;
+		}
+	}
 }
 
 apply_css_style(s: ref Style, css: string)
@@ -1340,6 +1197,8 @@ apply_css_style(s: ref Style, css: string)
 			s.fill_opacity = real value;
 		"font-size" =>
 			s.font_size = parse_length(value, s.font_size);
+		"fill-rule" or "stroke-linecap" or "stroke-linejoin" =>
+			setstrokeprop(s, name, value);
 		}
 	}
 }
@@ -1516,50 +1375,25 @@ arc_to_cubics(x0, y0, rx, ry, angle_deg: real, large_arc, sweep: int, x1, y1: re
 canvas_to_rawimage(canvas: ref Canvas): ref Rawimage
 {
 	raw := ref Rawimage;
-	raw.r = ((0,0), (canvas.width, canvas.height));
 	raw.r.min = Point(0, 0);
 	raw.r.max = Point(canvas.width, canvas.height);
 	raw.transp = 0;
 
+	# RGB24 is stored b, g, r; the background is opaque
 	npix := canvas.width * canvas.height;
-
-	# Check if we need alpha
-	has_alpha := 0;
+	buf := array[3*npix] of byte;
+	canvas.img.readpixels(canvas.img.r, buf);
+	raw.nchans = 3;
+	raw.chandesc = RImagefile->CRGB;
+	raw.chans = array[3] of array of byte;
+	raw.chans[0] = array[npix] of byte;
+	raw.chans[1] = array[npix] of byte;
+	raw.chans[2] = array[npix] of byte;
 	for(i := 0; i < npix; i++) {
-		if(canvas.pixels[i*4+3] != byte 255) {
-			has_alpha = 1;
-			break;
-		}
+		raw.chans[0][i] = buf[3*i+2];
+		raw.chans[1][i] = buf[3*i+1];
+		raw.chans[2][i] = buf[3*i];
 	}
-
-	if(has_alpha) {
-		raw.nchans = 4;
-		raw.chandesc = RImagefile->CRGBA;
-		raw.chans = array[4] of array of byte;
-		raw.chans[0] = array[npix] of byte;
-		raw.chans[1] = array[npix] of byte;
-		raw.chans[2] = array[npix] of byte;
-		raw.chans[3] = array[npix] of byte;
-		for(i = 0; i < npix; i++) {
-			raw.chans[0][i] = canvas.pixels[i*4];
-			raw.chans[1][i] = canvas.pixels[i*4+1];
-			raw.chans[2][i] = canvas.pixels[i*4+2];
-			raw.chans[3][i] = canvas.pixels[i*4+3];
-		}
-	} else {
-		raw.nchans = 3;
-		raw.chandesc = RImagefile->CRGB;
-		raw.chans = array[3] of array of byte;
-		raw.chans[0] = array[npix] of byte;
-		raw.chans[1] = array[npix] of byte;
-		raw.chans[2] = array[npix] of byte;
-		for(i = 0; i < npix; i++) {
-			raw.chans[0][i] = canvas.pixels[i*4];
-			raw.chans[1][i] = canvas.pixels[i*4+1];
-			raw.chans[2][i] = canvas.pixels[i*4+2];
-		}
-	}
-
 	return raw;
 }
 
@@ -1695,33 +1529,6 @@ reverse_segments(segs: list of ref Segment): list of ref Segment
 	return result;
 }
 
-sort_reals(l: list of real): list of real
-{
-	# Convert to array, sort, convert back
-	n := 0;
-	for(p := l; p != nil; p = tl p) n++;
-	a := array[n] of real;
-	i := 0;
-	for(p = l; p != nil; p = tl p)
-		a[i++] = hd p;
-
-	# Simple insertion sort
-	for(i = 1; i < n; i++) {
-		key := a[i];
-		j := i - 1;
-		while(j >= 0 && a[j] > key) {
-			a[j+1] = a[j];
-			j--;
-		}
-		a[j+1] = key;
-	}
-
-	result: list of real;
-	for(i = n - 1; i >= 0; i--)
-		result = a[i] :: result;
-	return result;
-}
-
 list_to_array(l: list of real): array of real
 {
 	n := 0;
@@ -1731,36 +1538,6 @@ list_to_array(l: list of real): array of real
 	for(p = l; p != nil; p = tl p)
 		a[i++] = hd p;
 	return a;
-}
-
-path_bounds(lines: list of ref Segment): (real, real, real, real)
-{
-	minx := 1.0e30;
-	miny := 1.0e30;
-	maxx := -1.0e30;
-	maxy := -1.0e30;
-
-	for(l := lines; l != nil; l = tl l) {
-		seg := hd l;
-		case seg.stype {
-		SEG_MOVETO =>
-			if(seg.x1 < minx) minx = seg.x1;
-			if(seg.y1 < miny) miny = seg.y1;
-			if(seg.x1 > maxx) maxx = seg.x1;
-			if(seg.y1 > maxy) maxy = seg.y1;
-		SEG_LINETO =>
-			if(seg.x1 < minx) minx = seg.x1;
-			if(seg.y1 < miny) miny = seg.y1;
-			if(seg.x1 > maxx) maxx = seg.x1;
-			if(seg.y1 > maxy) maxy = seg.y1;
-			if(seg.x3 < minx) minx = seg.x3;
-			if(seg.y3 < miny) miny = seg.y3;
-			if(seg.x3 > maxx) maxx = seg.x3;
-			if(seg.y3 > maxy) maxy = seg.y3;
-		}
-	}
-
-	return (minx, miny, maxx, maxy);
 }
 
 abs_real(v: real): real
