@@ -1,47 +1,162 @@
 # Remote desktop: using a headless InferNode from another one's screen
 
 A Raspberry Pi in a cupboard, a Jetson, a QEMU guest: InferNode machines
-often have no screen. From any InferNode that has one, `cpu(1)` runs
-programs **on** the headless machine that draw **on** your screen:
+often have no screen. From any InferNode that has one, you can run
+programs **on** the headless machine that draw **on** your screen, in
+either of two ways:
+
+- **The whole desktop** ([3a](#3a-the-whole-desktop-in-its-own-window)):
+  a window on your screen becomes the other machine's desktop, with its
+  own window manager.
+- **Single windows on your desktop** ([3b](#3b-single-windows-on-your-own-desktop)):
+  individual programs from the other machine open as ordinary windows
+  among your own.
+
+Both use only programs that ship with InferNode, and both run over the
+same authenticated, encrypted connection. This document takes you from
+nothing to a working session, and explains each step so you can repair
+it when it does not work. If Inferno or Plan 9 is new to you, read the
+next section first: the rest makes much more sense with it.
+
+**Words used here.** The **viewer** is the machine with the screen,
+where you type `cpu`. The **node** is the headless machine you want to
+use. The **signer** is one key, kept on the viewer, that vouches for
+every machine and person allowed in.
+
+| Step | Time | Where |
+|-|-|-|
+| [How this works](#how-this-works) | 5 min to read | |
+| [0. Before you start](#0-before-you-start) | 5 min | both |
+| [1. The signer and the certificates](#1-the-signer-and-the-certificates) | 5 min, once | viewer |
+| [2. Turn on the node](#2-turn-on-the-node) | 5 min, once | node |
+| [3. Connect: two ways](#3-connect-two-ways) | 1 min, each time | viewer |
+| [4. End a session cleanly](#4-end-a-session-cleanly) | | viewer |
+| [5. Adding another person](#5-adding-another-person) | | viewer |
+| [6. How it is protected](#6-how-it-is-protected) | | |
+| [7. When it does not work](#7-when-it-does-not-work) | | |
+| [8. Releases before these fixes](#8-releases-before-these-fixes) | | |
+
+---
+
+## How this works
+
+Three ideas carry everything below. They come from Plan 9, the
+operating system Inferno descends from, and they are what make a
+"remote desktop" possible without any remote-desktop software.
+
+**1. Devices are files.** Your screen, mouse and keyboard are not
+special interfaces a program asks the system for; they are files in a
+directory called `/dev`. A program draws by writing drawing commands to
+`/dev/draw`, reads the mouse from `/dev/pointer`, and reads keys from
+`/dev/keyboard`. Whatever files a program finds under those names are
+its screen, mouse and keyboard.
+
+**2. Each program sees its own view of the files (its "namespace").**
+In Inferno, what a name like `/dev/draw` refers to is decided per
+process, and you can change it: `bind` makes one directory appear at
+another's place, and `mount` puts a file service (local, or from
+another machine over the network) at a name. Two programs on the same
+machine can see different things at `/dev`.
+
+**3. Files can come from another machine.** Inferno's file protocol
+(called 9P, or Styx) works the same over a network as locally. A
+program reading a file that is really on another machine does not know
+or care.
+
+Put together: **to show a program's screen somewhere else, give it a
+`/dev` whose drawing files are somewhere else.** That is all `cpu` does:
+
+- `cpu` connects to the node, both sides prove who they are, and it
+  sends the node **your whole namespace** — your files, and your `/dev`.
+- On the node, a small program, `rstyxd`, puts your namespace at
+  `/n/client` and lays **your** `/dev` over the node's own `/dev`.
+- It then runs the command you gave. That command runs on the node's
+  CPU, reads the node's files and uses the node's network, but when it
+  opens `/dev/draw` it gets **yours** — so it draws on your screen, and
+  reads your mouse and keyboard.
+
+The two ways in step 3 differ only in *what* runs on the node:
+
+- **3a** runs the node's own **window manager** (`wm/wm`), which takes
+  over a whole screen: you give it a whole screen of its own.
+- **3b** runs single programs as **clients of your window manager**.
+  Your window manager can itself be offered as files (`wmexport`), and
+  a program on the node can ask it for a window through them
+  (`wmimport`). The program runs on the node; its window is one of
+  yours.
+
+One consequence to remember: inside a session, anything under `/dev` on
+the node is **your** machine's, not the node's. To see where a shell is
+really running, look at something outside `/dev` — `ps` lists the
+processes of the machine it runs on, and on a Raspberry Pi `ls /n/dos`
+lists its SD card.
+
+---
+
+## 0. Before you start
+
+**On the viewer** you need an InferNode with a screen. On a Mac this is
+the downloaded app, `/Applications/InferNode.app`. Two facts about it
+matter throughout:
+
+- Its emulator is `/Applications/InferNode.app/Contents/MacOS/emu`, and
+  its system files are in `/Applications/InferNode.app/Contents/Resources`.
+  Never write into that folder: it is replaced on every update, and
+  writing into a signed app can stop macOS opening it.
+- Your own InferNode files live in **`~/.infernode`** in your Mac home.
+  Inside InferNode, `~/.infernode/usr` appears as **`/usr`**, and your
+  InferNode user name is your Mac login name. So what InferNode calls
+  `/usr/alice/keyring` is `~/.infernode/usr/alice/keyring` on the Mac.
+  This only happens in a **login shell** (`sh -l`, or a shell inside the
+  Lucifer desktop); a plain `sh` sees the app's own `/usr` instead.
+
+**On the node** you need an InferNode that boots and is on a network the
+viewer can reach. For a Raspberry Pi, [BAREMETAL.md](BAREMETAL.md)
+section 4 covers making the card. You also need a way to see what it
+prints while you set it up: its serial console, or a monitor plugged
+into it.
+
+**Find the node's address.** A bare-metal node prints its addresses as
+it boots:
 
 ```
-cpu tcp!pi.local wm/wm wm/sh
+etherusb: DHCP gave 192.168.1.50 mask 255.255.255.0
+init: wifi: ip=192.168.4.23 ipmask=255.255.255.0 ipgw=192.168.4.1
 ```
 
-opens a window that is the other machine's desktop. The window manager
-and the shell in it run over there; your machine lends only its screen,
-mouse and keyboard.
+The first is the wired port, the second the Wi-Fi. Your router's list
+of connected devices shows them too.
 
-This is stock Inferno, not a new protocol. `cpu` exports your namespace
-to the other machine over an authenticated, encrypted 9P connection;
-`auxi/rstyxd` there binds your `/dev` over its own, so its programs open
-your `/dev/draw`, `/dev/pointer` and `/dev/keyboard`. Everything else it
-touches — files, network, CPU — is its own.
+**Check the viewer can reach it.** From a Mac terminal (not InferNode):
 
-The two machines are called the **viewer** (has the screen, runs `cpu`)
-and the **node** (headless, runs the listener). Either can be hosted
-(macOS, Linux, Windows) or bare metal, though a bare-metal node is the
-usual case.
+```sh
+nc -vz 192.168.1.50 6668
+```
 
-## What you need
+`succeeded` or `refused` both mean the machine is reachable (`refused`
+just means its listener is not on yet — that is step 2). `timed out`
+means the viewer cannot reach that address at all: typically a laptop
+on a guest Wi-Fi and a node on the wired network, which guest networks
+keep apart. Use the node's address on the viewer's network.
 
-- A **signer**: one key that certifies who is who. Every machine that
-  takes part gets a certificate from it, and a node accepts only
-  callers whose certificates it signed. Make it once, on a machine you
-  keep (your desktop InferNode), and never copy it anywhere.
-- A **certificate for you** on the viewer, and **one for the node** on
-  the node.
-- The node's **listener** turned on. It is off by default on every
-  install.
+---
 
-The whole setup is about ten minutes. Once done, each session is one
-command.
+## 1. The signer and the certificates
 
-## 1. Make the signer and the certificates (once, on your desktop)
+Once, on the viewer. Open a login shell in InferNode — the shell in the
+Lucifer desktop, or on a Mac from Terminal:
 
-In a shell in your desktop InferNode (Lucifer's shell, or `sh -l` in an
-emulator). `/usr/$user` there is durable: on a hosted install it is
-`~/.infernode/usr/<your login>` on the host, outside the app.
+```sh
+/Applications/InferNode.app/Contents/MacOS/emu -c1 -r/Applications/InferNode.app/Contents/Resources sh -l
+```
+
+First look at what is already there, so nothing gets overwritten:
+
+```
+ls -l /usr/$user/keyring
+```
+
+Then, **one line at a time**:
 
 ```
 auth/createsignerkey -f /usr/$user/keyring/signer $user-signer
@@ -49,122 +164,281 @@ auth/mkauthinfo -k 'key=signer' $user /usr/$user/keyring/default
 auth/mkauthinfo -k 'key=signer' mynode /usr/$user/keyring/node-mynode
 ```
 
-1. Creates the signer. It stays in your keyring, readable by you only.
-2. Issues your certificate as `keyring/default`, which is where `cpu`
-   looks. If you already have a `default` you use for something else,
-   give this one the name of the node's address instead (`cpu` tries
-   `keyring/<the address you dial>` first) — for example
-   `'/usr/'$user'/keyring/tcp!192.168.1.50'`.
-3. Issues the node's certificate. Use the node's name; this is the one
-   file that goes to the node.
+1. **The signer.** The one key that matters. It stays in your keyring,
+   readable by you only. Never copy it anywhere, and back it up as you
+   would a password manager's master password.
+2. **Your certificate**, as `keyring/default`, which is where `cpu`
+   looks. If the `ls` showed a `default` you already use for something
+   else, don't overwrite it: name this certificate after the address you
+   will dial instead, e.g. `'/usr/'$user'/keyring/tcp!192.168.1.50'`
+   (`cpu` tries `keyring/<the address you dial>` before `default`).
+3. **The node's certificate.** Replace `mynode` with the node's name.
+   This is the one file that goes to the node.
 
-Quote `'key=signer'`: unquoted, the Inferno shell reads it as a
-variable assignment. `mkauthinfo -e ddmmyyyy` sets an expiry.
+Two things that go wrong here:
+
+- `'key=signer'` **must be quoted**. Unquoted, the Inferno shell reads
+  it as a variable assignment and the command fails with a syntax
+  error.
+- Your certificate's name (`$user`) must be **the same as your user name
+  on the viewer**. Programs on the node that check who they are talking
+  to — acme is one — compare the two and refuse if they differ.
+
+To make certificates expire, add `-e ddmmyyyy` to `mkauthinfo`.
+
+---
 
 ## 2. Turn on the node
 
+The listener is **off by default** on every install. Turning it on
+takes the node's certificate and one setting.
+
 ### A bare-metal node (Raspberry Pi)
 
-Power it off and put its SD card in any computer. On the card's boot
-partition:
+Power the node off and put its SD card in any computer. On the card's
+boot partition (the one with `config.txt`):
 
-1. Copy the node's certificate to `usr/inferno/keyring/default`
-   (create the directories if they are not there). On a Mac with a
-   hosted InferNode, the file from step 1 is
-   `~/.infernode/usr/<you>/keyring/node-mynode`.
-2. Create a file `cpulisten`. Empty means the standard port,
-   `tcp!*!rstyx` (6668); or put an address on its first line, e.g.
-   `tcp!*!17030`.
+1. **The node's certificate.** Copy the file from step 1 to
+   `usr/inferno/keyring/default` on the card, creating the folders if
+   they are not there. On a Mac, the file is
+   `~/.infernode/usr/<your login>/keyring/node-mynode`.
+2. **The switch.** Create an empty file named `cpulisten`. Empty means
+   the standard port, 6668. To use another, put an address on its first
+   line, e.g. `tcp!*!17030`, and dial that port in step 3.
+3. **Recommended: keep the admin console to the wire.** If the card has
+   a `netconsole` file (the network console: a full-power shell behind a
+   plain-text password), add a line `interface ether0` to it, so it
+   answers only on the wired port and never over Wi-Fi. See
+   [BAREMETAL.md](BAREMETAL.md) section 7.
 
-Put the card back and boot. The console says
+Put the card back and boot. Check that the node prints:
 
 ```
 boot: cpu listener on tcp!*!rstyx (AES-256 + SHA-256, certificate /usr/inferno/keyring/default)
 ```
 
-or, if the certificate is missing, that it is **not** starting and why.
-Delete `cpulisten` to turn it off again.
+If it says `cpulisten is set but … is missing; NOT starting` instead,
+the certificate is not at `usr/inferno/keyring/default` on the card.
 
-### A hosted node
+### A hosted node (a machine running the InferNode app, used headless)
 
-Copy the node's certificate to `/usr/$user/keyring/default` on that
-machine (or keep it elsewhere and pass `-k file`), then in its shell:
+Copy the node's certificate to that machine's
+`~/.infernode/usr/<login>/keyring/default`, then in a login shell there:
 
 ```
 listen -a aes_256_cbc -a sha256 'tcp!*!rstyx' auxi/rstyxd &
 ```
 
-It lasts as long as that emulator. The host's firewall may ask to allow
-incoming connections on port 6668.
+It runs as long as that emulator does. The host's firewall may ask to
+allow incoming connections on port 6668.
 
-## 3. Connect (each time)
+---
 
-The viewer's own desktop is busy drawing itself, so use a **second
-emulator as the viewer window** — on macOS with the downloaded app:
+## 3. Connect: two ways
+
+| | [3a. The whole desktop](#3a-the-whole-desktop-in-its-own-window) | [3b. Single windows](#3b-single-windows-on-your-own-desktop) |
+|-|-|-|
+| What you get | A window that **is** the node's desktop, with its own window manager | The node's programs as **ordinary windows on your desktop**, mixed with your own |
+| Good for | Working "on" the node: a full session there, many programs, its own menus | Using one or two of the node's programs alongside your own work |
+| Needs | A second emulator on the viewer, as a screen for the node | A window manager running on the viewer (`wm/wm`) |
+| What runs on the node | Its window manager, and everything started from it | Only the programs you ask for |
+
+Both are started from the viewer, and both use the certificates from
+step 1. Whichever you use, the first connection takes a few seconds for
+the handshake, and everything is slower than local: every change on
+screen crosses the network, several times more slowly over Wi-Fi than
+over a cable.
+
+### 3a. The whole desktop, in its own window
+
+Your own desktop is busy drawing itself, so the node's desktop gets **a
+second emulator, as its own window**. On a Mac, in Terminal, from any
+folder:
 
 ```sh
-/Applications/InferNode.app/Contents/MacOS/emu -c1 -g1024x768 \
-    -r/Applications/InferNode.app/Contents/Resources \
-    sh -l -c 'cpu tcp!192.168.1.50 wm/wm wm/sh'
+/Applications/InferNode.app/Contents/MacOS/emu -c1 -g1024x768 -r/Applications/InferNode.app/Contents/Resources sh -l
 ```
 
-(the same from a source tree: `./emu/MacOSX/o.emu …` or
-`./emu/Linux/o.emu …` with `-r$PWD`). The window that opens is the
-node's desktop: its window manager, and a shell running on the node.
-The first connection takes a few seconds for the handshake. Closing
-the node's window manager ends the session.
+A window opens (empty for now), and Terminal shows the emulator's `;`
+prompt. At that prompt:
 
-The address must be one the viewer can reach: a laptop on guest Wi-Fi
-often cannot reach a wired address on another network, and the other
-way round. `cpu tcp!host!port` names a non-standard port; the default
-is `rstyx`.
+```
+cpu tcp!192.168.1.50 wm/wm wm/sh &
+```
 
-## What a session can and cannot do
+The window becomes the node's desktop: its window manager, with a shell
+that runs on the node.
 
-- **Authenticated both ways.** The node accepts only certificates from
-  your signer, and you know you reached the node you certified.
-  Programs on the node run as your certificate's name, which is also
-  what your `/dev/user` says — keep them the same (step 1 does), or
-  programs that check, like acme, refuse to work.
-- **Encrypted and tamper-evident.** AES-256 for the whole session, and
-  a SHA-256 MAC on every record, so bytes altered or cut on the way are
-  an error rather than a surprise. `cpu` asks for both by default; a
-  bare-metal node's listener requires both and refuses cleartext,
-  cipher-only and MAC-only callers.
-- **A desktop's powers, no more** (bare metal). The listener starts in
-  the desktop's narrowed namespace: a session can run programs and use
-  the node's files, but has no raw card, no GPIO pins and no
-  `/dev/sysctl` — it cannot rewrite the card or reboot the machine.
-  That is what the serial and network consoles are for
-  ([BAREMETAL.md](BAREMETAL.md) section 7).
-- **Revoking** means a new signer and new certificates; there is no
-  revocation list. Treat the signer like the master key it is.
+What happens: `cpu` sends your namespace to the node, including this
+emulator's `/dev` — its window. On the node, `wm/wm` opens `/dev/draw`,
+gets this window, and treats it as its whole screen.
 
-## When it does not work
+- **`sh -l`, not `sh`.** Only a login shell sees your keyring in
+  `~/.infernode`; without it `cpu` says it cannot find a certificate.
+- **A non-standard port** (step 2.2) goes on the address:
+  `cpu tcp!192.168.1.50!17030 wm/wm wm/sh &`.
+- **Keep working locally at the same time.** The trailing `&` runs the
+  session in the background, so the `;` prompt in Terminal stays yours:
+  commands you type there run on your own machine while the node's
+  desktop runs in the window. Ordinary shell job control applies — `&`
+  for any number of background jobs, `ps` to list them, `kill` to stop
+  one.
+- **One desktop per emulator.** An emulator's window is one screen, and
+  a second window manager (another node's, or a local `wm/wm`) would
+  fight the first for it. For two desktops, start a second emulator in
+  another Terminal tab: one window per desktop.
 
-| message | meaning |
+### 3b. Single windows, on your own desktop
+
+Here the node's programs open as windows in **your** window manager.
+Start a viewer emulator as in 3a, then give it a window manager of its
+own:
+
+```
+wm/wm
+```
+
+A shell window appears inside it. **In that shell window**, one line at
+a time:
+
+```
+mkdir /tmp/wmx
+mount {wmexport} /tmp/wmx
+cpu tcp!192.168.1.50 wmimport -w /n/client/tmp/wmx wm/sh &
+```
+
+A new window opens among your own, and the shell in it runs on the
+node. Each further `cpu … wmimport … &` line adds another window; put
+any program in place of `wm/sh`: `wm/clock`, `acme`, `wm/tetris`.
+
+What each line does:
+
+1. **`mkdir /tmp/wmx`** makes an empty directory to hang something on.
+2. **`mount {wmexport} /tmp/wmx`** runs the stock program `wmexport`,
+   which **serves your window manager as files**: opening
+   `/tmp/wmx/clone` creates a new window in it, and each window's
+   keyboard, mouse and window-control files appear beside it. The
+   braces mean "the files served by this command", and `mount` puts
+   them at `/tmp/wmx`. It must be typed in a shell *inside* the window
+   manager — that is where it learns which window manager to serve.
+3. **`cpu … wmimport -w /n/client/tmp/wmx wm/sh &`** runs `wmimport` on
+   the node. Your namespace, including `/tmp/wmx`, arrives there under
+   `/n/client`, so `/n/client/tmp/wmx` is your window manager, seen from
+   the node. `wmimport` asks it for a window through those files and
+   runs `wm/sh` in it. The program runs on the node; it draws into a
+   window of yours, on your screen (your `/dev/draw`, laid over the
+   node's), and your window manager gives it your keyboard and mouse
+   when its window is in front.
+
+This needs no `bind -a '#i' /dev` on any release: your window manager
+already has the display in `/dev`. It has been checked with the stock
+`wm/wm` as the viewer's window manager; whether it works from a shell
+inside the Lucifer desktop is untested.
+
+---
+
+## 4. End a session cleanly
+
+**3a:** quit the programs you started, then close the node's window
+manager (its menu, or `exit` in its shell), then close the emulator.
+
+**3b:** quit each remote program in its window (for a shell, `exit`)
+before closing your window manager. Closing it, or the emulator, takes
+their windows away, but the programs may keep running on the node, as
+below.
+
+Closing the window alone is not enough today: programs you started in
+the session keep running on the node, as you, after you disconnect, and
+nothing stops them
+([#732](https://github.com/infernode-os/infernode/issues/732)). A
+forgotten demo will quietly use the node's CPU for hours and make
+everything slow, your next session included. Restarting the node clears
+them.
+
+---
+
+## 5. Adding another person
+
+Issue them **their own** certificate from your signer, never a copy of
+yours, and make it expire:
+
+```
+auth/mkauthinfo -e 31122026 -k 'key=signer' bob /usr/$user/keyring/bob
+```
+
+Send them that one file. They put it in their own keyring as `default`
+(step 1.2), and their InferNode user name must be `bob` too. There is no
+way to withdraw one certificate early: its expiry is the limit, and the
+only other way is a new signer and new certificates for everyone.
+
+---
+
+## 6. How it is protected
+
+- **Nothing listens unless you turned it on** (step 2), per node.
+- **Both ends prove who they are.** The node accepts only certificates
+  from your signer, and you know you reached the node you certified.
+- **Encrypted and tamper-evident.** The session key comes from a hybrid
+  exchange — classical Diffie-Hellman plus **ML-KEM-768**, a post-quantum
+  key agreement — so recorded traffic stays private even against a
+  future quantum computer. Every record is then encrypted (AES-256) and
+  carries a SHA-256 MAC, so altered or cut traffic is an error, not a
+  surprise. `cpu` asks for both by default; a bare-metal node refuses
+  anything less.
+- **The certificates themselves are ed25519**, which is not
+  post-quantum: a future quantum computer could forge one. Post-quantum
+  signatures (`createsignerkey -a mldsa87`, with `CNSAMODE=1` on both
+  ends, which also raises the exchange to ML-KEM-1024) exist, but have
+  not yet been verified on a bare-metal node.
+- **A desktop's powers, no more** (bare-metal node). A session can run
+  programs and use the node's files, but has no raw card, no GPIO pins
+  and no `/dev/sysctl`: it cannot rewrite the card or restart the
+  machine. That is what the consoles are for.
+- **One host cannot lock others out** by opening many connections: each
+  address may hold at most four handshakes in progress (`listen -P`).
+
+---
+
+## 7. When it does not work
+
+| What you see | What it means, and the fix |
 |-|-|
-| `cpu: cannot find certificate in /usr/…/keyring/` | No `default` and no file named for the address you dialled (step 1). |
+| `cpu: cannot find certificate in /usr/…/keyring/` | No `default` and no file named for the address you dialled. Or the shell is not a login shell (`sh -l`), so `/usr` is not your `~/.infernode`. |
 | `cpu: authentication failed: pk doesn't match certificate` | Your certificate and the node's come from different signers — often a node still holding an old key. |
-| `unsupported client algorithm: none` (on the node) | The viewer asked for cleartext; drop `-C none`. |
-| `client omitted required integrity algorithm` (on the node) | The viewer asked for encryption without the SHA-256 MAC: an older release's `cpu -C aes_256_cbc`. Use `cpu -C 'aes_256_cbc sha256'`. |
-| `cpu: dial: … timed out` | The viewer cannot reach that address and port: network, firewall, or the listener is not running. |
-| `boot: /n/dos/cpulisten is set but …/keyring/default is missing` | Step 2.1 not done, or the file is in the wrong directory. |
-| acme: `can't mount /mnt/acme` | Your certificate's name differs from your user name on the viewer (step 1). |
-| a blank window, slow to paint | Every screen update is a network round trip; Wi-Fi is several times slower than a cable. |
+| `cpu: dial: … timed out` | The viewer cannot reach that address: another network, a firewall, or the listener is off. Check with `nc -vz` (step 0). |
+| `cpu` returns to the prompt with no message | The node refused the session; the reason is on the node's console ([#733](https://github.com/infernode-os/infernode/issues/733)). Most often `client omitted required integrity algorithm` — see section 8. |
+| The window stays black, and **the node's own monitor** shows a desktop | The viewer's `/dev` had no display in it, so the node's own display showed through. See section 8, `bind -a '#i' /dev`. |
+| A grey window that fills in slowly | Normal over Wi-Fi. If it is very slow, something left on the node is using its CPU (section 4). |
+| `wmexport: no window manager context` (3b) | `mount {wmexport}` was typed in a shell that is not inside a window manager (for example Terminal's `;` prompt). Type it in the shell window inside `wm/wm`. |
+| `wmimport: no wm at /n/client/tmp/wmx` (3b) | The `mount {wmexport} /tmp/wmx` step was skipped or failed, or the path in the `cpu` line differs from the one mounted. |
+| acme says `can't mount /mnt/acme` | Your certificate's name differs from your user name on the viewer (step 1). |
+| Starting the viewer closes your Lucifer desktop | Section 8. |
+| `boot: /n/dos/cpulisten is set but … missing; NOT starting` | The node's certificate is not at `usr/inferno/keyring/default` on the card. |
 
-## Releases before this document
+The node's console (serial, monitor, or network console) logs every
+refused connection with its reason — the first place to look.
 
-**Starting the viewer stops your running InferNode.** Before the fix
-for this, the login profile (`sh -l`) killed whatever held the
-secstore port, which is your other InferNode: opening a viewer this
-way closed your Lucifer desktop. On such a release, quit the desktop
-before starting a viewer.
+---
 
-Older releases also need three things done by hand: `bind -a '#i' /dev`
-before `cpu` (its draw-device bind named the wrong device); `cpu -C
-'aes_256_cbc sha256'` (it defaulted to cleartext); and `mkauthinfo … > file`
-instead of a file argument (it ignored it). Bare-metal kernels before
-the `cpulisten` card file need the listener started by hand from the
-serial or network console:
-`mkdir /tmp/client; bind -a /tmp /n; listen -a aes_256_cbc -a sha256 'tcp!*!rstyx' auxi/rstyxd &`.
+## 8. Releases before these fixes
+
+The steps above assume a release with the fixes from September 2026
+(pull requests #728, #730, #731 and #739). On an older one:
+
+- **Before running `cpu`**, type `bind -a '#i' /dev` in the viewer.
+  Older `cpu` bound the wrong device for the display, so without this
+  the node draws on its own monitor and your window stays black.
+- **Name the ciphers**, in both 3a and 3b: `cpu -C 'aes_256_cbc sha256' tcp!…`,
+  quoted exactly so. Older `cpu` defaulted to no encryption, and a node that
+  requires both refuses encryption without the MAC (`client omitted
+  required integrity algorithm`).
+- **`mkauthinfo` ignored its file argument**: write
+  `auth/mkauthinfo -k 'key=signer' $user > /usr/$user/keyring/default`.
+- **Starting the viewer's emulator closed your Lucifer desktop** (its
+  login shell stopped the other instance's key server). Quit the
+  desktop before starting a viewer.
+- **A bare-metal node without `cpulisten` support** needs its listener
+  started by hand, from its serial or network console, after every
+  boot:
+  `mkdir /tmp/client; bind -a /tmp /n; listen -a aes_256_cbc -a sha256 'tcp!*!rstyx' auxi/rstyxd &`.
+  Started that way it has the console's full powers, not a desktop's.
