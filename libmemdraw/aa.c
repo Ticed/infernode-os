@@ -219,10 +219,40 @@ edgerows(Acc *a, Aaedge *e, int r0, int r1)
 	}
 }
 
-static int
-edgecmp(void *a, void *b)
+/*
+ * Sort the edges by their tops: a merge sort, stable, through t (as
+ * many as e).  The library qsort swaps a byte at a time.
+ */
+static void
+sortedges(Aaedge *e, Aaedge *t, int n)
 {
-	return ((Aaedge*)a)->y0 - ((Aaedge*)b)->y0;
+	int w, lo, mid, hi, i, j, k;
+	Aaedge *s, *d, *x;
+
+	s = e;
+	d = t;
+	for(w = 1; w < n; w *= 2){
+		for(lo = 0; lo < n; lo += 2*w){
+			mid = lo + w;
+			if(mid > n)
+				mid = n;
+			hi = lo + 2*w;
+			if(hi > n)
+				hi = n;
+			i = lo;
+			j = mid;
+			for(k = lo; k < hi; k++)
+				if(i < mid && (j >= hi || s[i].y0 <= s[j].y0))
+					d[k] = s[i++];
+				else
+					d[k] = s[j++];
+		}
+		x = s;
+		s = d;
+		d = x;
+	}
+	if(s != e)
+		memmove(e, s, n*sizeof(Aaedge));
 }
 
 /*
@@ -255,7 +285,7 @@ _memaadraw(Memimage *dst, Aapoly *poly, Point off, int wind, Memimage *src, Poin
 	Rectangle r, br, oclipr;
 	Memimage *mask;
 	Acc a;
-	Aaedge *e, **act;
+	Aaedge *e, **act, *sorted;
 	int i, n, nact, next, row, x, y, y0, y1, v, bx0, bx1, evenodd;
 	vlong acc;
 	uchar *m;
@@ -277,17 +307,19 @@ _memaadraw(Memimage *dst, Aapoly *poly, Point off, int wind, Memimage *src, Poin
 			e->y1 += off.y << Aashift;
 		}
 	}
-	qsort(poly->e, poly->ne, sizeof(Aaedge), edgecmp);
-
 	a.w = Dx(r);
 	a.x0 = r.min.x;
 	n = Band*(a.w+1);
+	sorted = nil;
+	act = nil;
 	a.cover = malloc(n*sizeof(int));
 	a.area = malloc(n*sizeof(int));
 	act = malloc((poly->ne+1)*sizeof(Aaedge*));
+	sorted = malloc((poly->ne+1)*sizeof(Aaedge));
 	mask = allocmemimage(Rect(0, 0, a.w, Band), GREY8);
-	if(a.cover == nil || a.area == nil || act == nil || mask == nil)
+	if(a.cover == nil || a.area == nil || act == nil || sorted == nil || mask == nil)
 		goto Out;
+	sortedges(poly->e, sorted, poly->ne);
 
 	oclipr = dst->clipr;
 	dst->clipr = clipr;
@@ -351,6 +383,7 @@ _memaadraw(Memimage *dst, Aapoly *poly, Point off, int wind, Memimage *src, Poin
 	free(a.cover);
 	free(a.area);
 	free(act);
+	free(sorted);
 	freememimage(mask);
 }
 
