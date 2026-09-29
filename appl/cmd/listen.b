@@ -30,6 +30,64 @@ authrate := 8;
 ratewindow := 0;
 ratecount := 0;
 
+#
+# Pre-auth slots per source address (#729). authslots bounds how many
+# handshakes are in flight in all; without a per-source bound one host
+# could open authlimit silent connections and hold every slot until the
+# auth timeout, locking everyone else out. A source at perlimit has its
+# next connection hung up at once, so it holds at most perlimit of the
+# slots and the rest stay available. -P 0 turns the bound off.
+#
+perlimit := 4;
+Srccount: adt {
+	host:	string;
+	n:	int;
+};
+srccounts: list of ref Srccount;
+srclock: chan of int;
+
+srcacquire(host: string): int
+{
+	srclock <-= 1;
+	for(l := srccounts; l != nil; l = tl l)
+		if((hd l).host == host){
+			if(perlimit > 0 && (hd l).n >= perlimit){
+				<-srclock;
+				return 0;
+			}
+			(hd l).n++;
+			<-srclock;
+			return 1;
+		}
+	srccounts = ref Srccount(host, 1) :: srccounts;
+	<-srclock;
+	return 1;
+}
+
+srcrelease(host: string)
+{
+	srclock <-= 1;
+	nl: list of ref Srccount;
+	for(l := srccounts; l != nil; l = tl l){
+		c := hd l;
+		if(c.host == host)
+			c.n--;
+		if(c.n > 0)
+			nl = c :: nl;
+	}
+	srccounts = nl;
+	<-srclock;
+}
+
+# the host part of /net/tcp/N/remote ("10.0.2.2!40312\n")
+srchost(dir: string): string
+{
+	(nil, f) := sys->tokenize(readfile(dir + "/remote"), "!\n");
+	if(f == nil)
+		return "?";
+	return hd f;
+}
+
 init(drawctxt: ref Draw->Context, argv: list of string)
 {
 	sys = load Sys Sys->PATH;
@@ -51,7 +109,7 @@ init(drawctxt: ref Draw->Context, argv: list of string)
 	doauth := 1;
 	synchronous := 0;
 	trusted := 0;
-	arg->setusage("listen [-i {initscript}] [-Ast] [-L maxauth] [-R authrate] [-T ms] [-k keyfile] [-a alg]... addr command [arg...]");
+	arg->setusage("listen [-i {initscript}] [-Ast] [-L maxauth] [-P persource] [-R authrate] [-T ms] [-k keyfile] [-a alg]... addr command [arg...]");
 	while ((opt := arg->opt()) != 0) {
 		case opt {
 		'a' =>
@@ -83,6 +141,10 @@ init(drawctxt: ref Draw->Context, argv: list of string)
 			authrate = int arg->earg();
 			if(authrate < 1)
 				arg->usage();
+		'P' =>
+			perlimit = int arg->earg();
+			if(perlimit < 0)
+				arg->usage();
 		* =>
 			arg->usage();
 		}
@@ -95,6 +157,7 @@ init(drawctxt: ref Draw->Context, argv: list of string)
 	}
 	if (algs != nil) {
 		authslots = chan[authlimit] of int;
+		srclock = chan[1] of int;
 		if (keyfile == nil)
 			keyfile = "/usr/" + user() + "/keyring/default";
 		serverkey = keyring->readauthinfo(keyfile);
@@ -188,10 +251,19 @@ listen1(drawctxt: ref Draw->Context, addr: string, argv: list of string,
 					c.dfd = c.cfd = nil;
 					continue;
 				}
+				host := srchost(c.dir);
+				if(!srcacquire(host)) {
+					if(verbose)
+						sys->fprint(stderr(), "listen: pre-auth limit per source (%d) reached for %s on %s\n", perlimit, host, addr);
+					nethangup(c.cfd);
+					c.dfd = c.cfd = nil;
+					continue;
+				}
 				alt {
 				authslots <-= 1 =>
-					spawn authenticatedcommand(c, algs, addr, ctxt.copy(1), cmd);
+					spawn authenticatedcommand(c, algs, addr, ctxt.copy(1), cmd, host);
 				* =>
+					srcrelease(host);
 					if(verbose)
 						sys->fprint(stderr(), "listen: pre-auth limit reached on %s\n", addr);
 					nethangup(c.cfd);
@@ -254,11 +326,11 @@ listener(listench: chan of (int, Sys->Connection), c: Sys->Connection, addr: str
 }
 
 authenticatedcommand(c: Sys->Connection, algs: list of string, addr: string,
-		ctxt: ref Context, cmd: list of ref Sh->Listnode)
+		ctxt: ref Context, cmd: list of ref Sh->Listnode, host: string)
 {
 	err: string;
 	cancel := chan[1] of int;
-	spawn authwatchdog(cancel, sys->pctl(0, nil), c.cfd, authtimeout);
+	spawn authwatchdog(cancel, sys->pctl(0, nil), c.cfd, authtimeout, host);
 	(c.dfd, err) = auth->server(algs, serverkey, c.dfd, 1);
 	cancel <-= 1;
 	if (c.dfd == nil) {
@@ -296,16 +368,18 @@ kill(pid: int, how: string)
 		sys->fprint(fd, "%s", how);
 }
 
-authwatchdog(cancel: chan of int, pid: int, cfd: ref Sys->FD, ms: int)
+authwatchdog(cancel: chan of int, pid: int, cfd: ref Sys->FD, ms: int, host: string)
 {
 	tmo := chan[1] of int;
 	spawn timerproc(tmo, ms);
 	alt {
 	<-cancel =>
 		<-authslots;
+		srcrelease(host);
 		return;
 	<-tmo =>
 		<-authslots;
+		srcrelease(host);
 		nethangup(cfd);
 		kill(pid, "kill");
 	}
