@@ -8,6 +8,14 @@ Wmsrv: module{
 	find:	fn(p: Draw->Point): ref Client;
 	top:	fn(): ref Client;
 
+	# Serve this window manager's windows as a read-only file tree,
+	#	<id>/window	the image of client <id>'s main (oldest) window
+	# (the format of /dev/screen), on the returned descriptor.  Nothing
+	# is mounted: the caller decides whose namespace gets it, e.g.
+	#	sys->mount(wmsrv->wsys(), nil, "/mnt/wsys", Sys->MREPL, nil);
+	# nil and %r on error.
+	wsys:	fn(): ref Sys->FD;
+
 	Window: adt {
 		tag:	string;
 		r:	Draw->Rect;
