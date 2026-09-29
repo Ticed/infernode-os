@@ -386,6 +386,10 @@ build_kernel() {
             "/n="
             "/n/dos="
             "/n/remote="
+            # ...where auxi/rstyxd mounts a cpu(1) caller's namespace
+            # (the listener boot-baremetal.sh starts when the card has
+            # cpulisten; docs/REMOTE-DESKTOP.md)
+            "/n/client="
             # ...and where diskusb mounts a USB disk's FAT: one per disk
             "/n/usb0="
             "/n/usb1="
@@ -485,6 +489,11 @@ build_kernel() {
             # (#725).
             "/dis/listen.dis=$ROOT/dis/listen.dis"
             "/dis/export.dis=$ROOT/dis/export.dis"
+            # ...and cpu(1), both ends: the listener boot-baremetal.sh
+            # starts when the card has cpulisten, checked below
+            "/dis/cpu.dis=$ROOT/dis/cpu.dis"
+            "/dis/auxi/rstyxd.dis=$ROOT/dis/auxi/rstyxd.dis"
+            "/dis/auxi/cpuslave.dis=$ROOT/dis/auxi/cpuslave.dis"
             "/dis/lib/ssl.dis=$ROOT/dis/lib/ssl.dis"
             "/usr/inferno/keyring/default=$ROOT/usr/inferno/keyring/default"
             # unmount is how a namespace is narrowed -- boot-baremetal.sh
@@ -3309,6 +3318,94 @@ if grep -q '^/dev/gpio/21/level$' <<<"$NSLEAF" \
     pass "stat of a GPIO leaf file (/dev/gpio/21/level) succeeds"
 else
     fail "stat of /dev/gpio/21/level failed: devgpio's gen does not answer for a leaf"
+fi
+
+#
+#     The remote-desktop listener (docs/REMOTE-DESKTOP.md). boot-baremetal.sh
+#     starts auxi/rstyxd under listen -a aes_256_cbc when, and only when,
+#     the card has /n/dos/cpulisten and this machine has a certificate.
+#     Its block is read out of the script, as the narrowing above is, and
+#     typed three times into child shells:
+#
+#       no cpulisten        nothing is started and nothing is said
+#       cpulisten, a key    it listens; an encrypted cpu(1) session from
+#                           this same kernel runs a command through it,
+#                           and a cleartext one (-C none) is refused
+#       cpulisten, no key   it refuses to start, and says why
+#
+#     The first is the one that matters for every card in the field: the
+#     listener is off by default, and a boot without the file must not
+#     differ at all. The certificate is the tree's test one, which the
+#     root image carries for the authenticated-mount check.
+#
+CPUL=()
+while IFS= read -r l; do CPUL+=("$l"); done \
+    < <(sed -n '/^if {ftest -f \/n\/dos\/cpulisten} {$/,/^}$/p' "$BOOTSH" | sed 's/^[[:space:]]*//')
+if [[ ${#CPUL[@]} -ge 8 ]] && printf '%s\n' "${CPUL[@]}" | grep -q 'listen -a aes_256_cbc -a sha256 \$cpuaddr auxi/rstyxd &'; then
+    pass "boot-baremetal.sh gates the cpu listener on /n/dos/cpulisten and requires AES-256 + SHA-256"
+else
+    fail "could not read the cpu listener block out of boot-baremetal.sh (${#CPUL[@]} lines)"
+fi
+QEMUARGS="$SAVEDARGS -drive file=$SDIMG,if=sd,format=raw"
+CLOUT="$(shell_session "$BUILD/$PLAT-kernel.img" \
+        'path=(/dis .)' \
+        'load std' \
+        'rm -f /n/dos/cpulisten' \
+        'echo CPUL-OFF' \
+        'sh' \
+        'load std' \
+        "${CPUL[@]}" \
+        'exit' \
+        'echo CPUL-NOKEY' \
+        "echo 'tcp!*!17032' > /n/dos/cpulisten" \
+        'sh' \
+        'load std' \
+        'mkdir /tmp/nokey; bind /tmp/nokey /usr/inferno/keyring' \
+        "${CPUL[@]}" \
+        'exit' \
+        'echo CPUL-ON' \
+        "echo 'tcp!*!17031' > /n/dos/cpulisten" \
+        'mkdir /tmp/client; bind -a /tmp /n' \
+        'sh' \
+        'load std' \
+        "${CPUL[@]}" \
+        'exit' \
+        'sleep 1' \
+        "cpu -C none tcp!127.0.0.1!17031 echo CLEAR-GOT-IN; echo CLEAR-DONE" \
+        "cpu -C aes_256_cbc tcp!127.0.0.1!17031 echo CIPHERONLY-GOT-IN; echo CIPHERONLY-DONE" \
+        "cpu tcp!127.0.0.1!17031 echo CPU-RAN-REMOTELY &" \
+        'sleep 8' \
+        'rm -f /n/dos/cpulisten' \
+        'echo CPUL-END')"
+CLOUT="$(tr -d '\r' <<<"$CLOUT")"
+[[ "$VERBOSE" -eq 1 ]] && { echo "  --- cpu listener session ---"; echo "$CLOUT"; }
+CLOFF="$(sed -n '/^CPUL-OFF$/,/^CPUL-NOKEY$/p' <<<"$CLOUT")"
+CLNOKEY="$(sed -n '/^CPUL-NOKEY$/,/^CPUL-ON$/p' <<<"$CLOUT")"
+CLON="$(sed -n '/^CPUL-ON$/,/^CPUL-END$/p' <<<"$CLOUT")"
+if grep -q '^CPUL-NOKEY$' <<<"$CLOUT" && ! grep -q '^boot: cpu listener\|^boot: /n/dos/cpulisten' <<<"$CLOFF"; then
+    pass "cpu listener: with no /n/dos/cpulisten nothing is started (off by default)"
+else
+    fail "cpu listener: started, or spoke, without /n/dos/cpulisten"
+fi
+if grep -q '^boot: cpu listener on tcp!\*!17031 (AES-256 + SHA-256' <<<"$CLON" && grep -q '^CPU-RAN-REMOTELY$' <<<"$CLON"; then
+    pass "cpu listener: with cpulisten and a certificate, an encrypted and MAC'd cpu(1) session runs a command"
+else
+    fail "cpu listener: no encrypted session -- $(grep -a -E 'boot: cpu|cpu:|CPU-RAN' <<<"$CLON" | head -2 | tr '\n' ' ')"
+fi
+if grep -q '^CLEAR-DONE$' <<<"$CLON" && ! grep -q '^CLEAR-GOT-IN$' <<<"$CLON"; then
+    pass "cpu listener: a cleartext session (-C none) is refused"
+else
+    fail "cpu listener: cleartext was not refused -- $(grep -a -E 'CLEAR|cpu:' <<<"$CLON" | head -2 | tr '\n' ' ')"
+fi
+if grep -q '^CIPHERONLY-DONE$' <<<"$CLON" && ! grep -q '^CIPHERONLY-GOT-IN$' <<<"$CLON"; then
+    pass "cpu listener: a cipher-only session (AES without the SHA-256 MAC) is refused"
+else
+    fail "cpu listener: cipher-only was not refused -- $(grep -a -E 'CIPHERONLY|cpu:' <<<"$CLON" | head -2 | tr '\n' ' ')"
+fi
+if grep -q '^boot: /n/dos/cpulisten is set but /usr/.*/keyring/default is missing; NOT starting' <<<"$CLNOKEY"; then
+    pass "cpu listener: with cpulisten but no certificate it refuses to start, and says why"
+else
+    fail "cpu listener: without a certificate it did not refuse -- $(grep -a 'boot: cpu\|cpulisten' <<<"$CLNOKEY" | head -1)"
 fi
 
 #
