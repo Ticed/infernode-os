@@ -3376,13 +3376,18 @@ while time.time() < deadline:
     time.sleep(3)
 PYEOF
 NCHOST=$!
+# The session must outlive the host client's wait for DHCP and the
+# console (about 20 s after boot) and the guest's own dial: the drain
+# budget after the last typed line is raised for this one session.
+export SESSION_DRAIN=75
 NC3="$(shell_session "$BUILD/$PLAT-kernel.img" \
         'path=(/dis .)' \
-        'sleep 40' \
+        'sleep 20' \
         "dial -A tcp!127.0.0.1!17010 {echo t0k; echo 'echo NETCONS-LO3-SERVED > /dev/cons'; sleep 3}" \
         'sleep 4' \
         'rm -f /n/dos/netconsole' \
         'echo NC3-END')"
+unset SESSION_DRAIN
 kill $NCHOST 2>/dev/null; wait $NCHOST 2>/dev/null
 NC2="$(tr -d '\r' <<<"$NC2")"; NC3="$(tr -d '\r' <<<"$NC3")"
 [[ "$VERBOSE" -eq 1 ]] && { echo "  --- network console, boot 2 ---"; echo "$NC2"; echo "  --- boot 3 ---"; echo "$NC3"; }
