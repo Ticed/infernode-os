@@ -1,25 +1,22 @@
 # Remote desktop: using a headless InferNode from another one's screen
 
 A Raspberry Pi in a cupboard, a Jetson, a QEMU guest: InferNode machines
-often have no screen. From any InferNode that has one, `cpu(1)` runs
-programs **on** the headless machine that draw **on** your screen. One
-command opens a window that is the other machine's desktop:
+often have no screen. From any InferNode that has one, you can run
+programs **on** the headless machine that draw **on** your screen, in
+either of two ways:
 
-```
-cpu tcp!192.168.1.50 wm/wm wm/sh
-```
+- **The whole desktop** ([3a](#3a-the-whole-desktop-in-its-own-window)):
+  a window on your screen becomes the other machine's desktop, with its
+  own window manager.
+- **Single windows on your desktop** ([3b](#3b-single-windows-on-your-own-desktop)):
+  individual programs from the other machine open as ordinary windows
+  among your own.
 
-The window manager and the shell in it run over there; your machine
-lends only its screen, mouse and keyboard.
-
-This is stock Inferno, not a new protocol. `cpu` exports your namespace
-to the other machine over an authenticated, encrypted 9P connection;
-`auxi/rstyxd` there binds your `/dev` over its own, so its programs open
-your `/dev/draw`, `/dev/pointer` and `/dev/keyboard`. Everything else
-they touch — files, network, CPU — is theirs.
-
-This document takes you from nothing to a working session, and explains
-what each step is for so you can repair it when it does not work.
+Both use only programs that ship with InferNode, and both run over the
+same authenticated, encrypted connection. This document takes you from
+nothing to a working session, and explains each step so you can repair
+it when it does not work. If Inferno or Plan 9 is new to you, read the
+next section first: the rest makes much more sense with it.
 
 **Words used here.** The **viewer** is the machine with the screen,
 where you type `cpu`. The **node** is the headless machine you want to
@@ -28,15 +25,71 @@ every machine and person allowed in.
 
 | Step | Time | Where |
 |-|-|-|
+| [How this works](#how-this-works) | 5 min to read | |
 | [0. Before you start](#0-before-you-start) | 5 min | both |
 | [1. The signer and the certificates](#1-the-signer-and-the-certificates) | 5 min, once | viewer |
 | [2. Turn on the node](#2-turn-on-the-node) | 5 min, once | node |
-| [3. Connect](#3-connect) | 1 min, each time | viewer |
+| [3. Connect: two ways](#3-connect-two-ways) | 1 min, each time | viewer |
 | [4. End a session cleanly](#4-end-a-session-cleanly) | | viewer |
 | [5. Adding another person](#5-adding-another-person) | | viewer |
 | [6. How it is protected](#6-how-it-is-protected) | | |
 | [7. When it does not work](#7-when-it-does-not-work) | | |
 | [8. Releases before these fixes](#8-releases-before-these-fixes) | | |
+
+---
+
+## How this works
+
+Three ideas carry everything below. They come from Plan 9, the
+operating system Inferno descends from, and they are what make a
+"remote desktop" possible without any remote-desktop software.
+
+**1. Devices are files.** Your screen, mouse and keyboard are not
+special interfaces a program asks the system for; they are files in a
+directory called `/dev`. A program draws by writing drawing commands to
+`/dev/draw`, reads the mouse from `/dev/pointer`, and reads keys from
+`/dev/keyboard`. Whatever files a program finds under those names are
+its screen, mouse and keyboard.
+
+**2. Each program sees its own view of the files (its "namespace").**
+In Inferno, what a name like `/dev/draw` refers to is decided per
+process, and you can change it: `bind` makes one directory appear at
+another's place, and `mount` puts a file service (local, or from
+another machine over the network) at a name. Two programs on the same
+machine can see different things at `/dev`.
+
+**3. Files can come from another machine.** Inferno's file protocol
+(called 9P, or Styx) works the same over a network as locally. A
+program reading a file that is really on another machine does not know
+or care.
+
+Put together: **to show a program's screen somewhere else, give it a
+`/dev` whose drawing files are somewhere else.** That is all `cpu` does:
+
+- `cpu` connects to the node, both sides prove who they are, and it
+  sends the node **your whole namespace** — your files, and your `/dev`.
+- On the node, a small program, `rstyxd`, puts your namespace at
+  `/n/client` and lays **your** `/dev` over the node's own `/dev`.
+- It then runs the command you gave. That command runs on the node's
+  CPU, reads the node's files and uses the node's network, but when it
+  opens `/dev/draw` it gets **yours** — so it draws on your screen, and
+  reads your mouse and keyboard.
+
+The two ways in step 3 differ only in *what* runs on the node:
+
+- **3a** runs the node's own **window manager** (`wm/wm`), which takes
+  over a whole screen: you give it a whole screen of its own.
+- **3b** runs single programs as **clients of your window manager**.
+  Your window manager can itself be offered as files (`wmexport`), and
+  a program on the node can ask it for a window through them
+  (`wmimport`). The program runs on the node; its window is one of
+  yours.
+
+One consequence to remember: inside a session, anything under `/dev` on
+the node is **your** machine's, not the node's. To see where a shell is
+really running, look at something outside `/dev` — `ps` lists the
+processes of the machine it runs on, and on a Raspberry Pi `ls /n/dos`
+lists its SD card.
 
 ---
 
@@ -181,11 +234,26 @@ allow incoming connections on port 6668.
 
 ---
 
-## 3. Connect
+## 3. Connect: two ways
 
-Each time, on the viewer. Your own desktop is busy drawing itself, so
-the node's desktop gets **a second emulator, as its own window**. On a
-Mac, in Terminal, from any folder:
+| | [3a. The whole desktop](#3a-the-whole-desktop-in-its-own-window) | [3b. Single windows](#3b-single-windows-on-your-own-desktop) |
+|-|-|-|
+| What you get | A window that **is** the node's desktop, with its own window manager | The node's programs as **ordinary windows on your desktop**, mixed with your own |
+| Good for | Working "on" the node: a full session there, many programs, its own menus | Using one or two of the node's programs alongside your own work |
+| Needs | A second emulator on the viewer, as a screen for the node | A window manager running on the viewer (`wm/wm`) |
+| What runs on the node | Its window manager, and everything started from it | Only the programs you ask for |
+
+Both are started from the viewer, and both use the certificates from
+step 1. Whichever you use, the first connection takes a few seconds for
+the handshake, and everything is slower than local: every change on
+screen crosses the network, several times more slowly over Wi-Fi than
+over a cable.
+
+### 3a. The whole desktop, in its own window
+
+Your own desktop is busy drawing itself, so the node's desktop gets **a
+second emulator, as its own window**. On a Mac, in Terminal, from any
+folder:
 
 ```sh
 /Applications/InferNode.app/Contents/MacOS/emu -c1 -g1024x768 -r/Applications/InferNode.app/Contents/Resources sh -l
@@ -199,37 +267,83 @@ cpu tcp!192.168.1.50 wm/wm wm/sh &
 ```
 
 The window becomes the node's desktop: its window manager, with a shell
-that runs on the node. The first connection takes a few seconds for the
-handshake.
+that runs on the node.
+
+What happens: `cpu` sends your namespace to the node, including this
+emulator's `/dev` — its window. On the node, `wm/wm` opens `/dev/draw`,
+gets this window, and treats it as its whole screen.
 
 - **`sh -l`, not `sh`.** Only a login shell sees your keyring in
   `~/.infernode`; without it `cpu` says it cannot find a certificate.
 - **A non-standard port** (step 2.2) goes on the address:
   `cpu tcp!192.168.1.50!17030 wm/wm wm/sh &`.
-- **It is slower than a local desktop**, because every change on screen
-  crosses the network. Over Wi-Fi it is several times slower than over a
-  cable.
+- **Keep working locally at the same time.** The trailing `&` runs the
+  session in the background, so the `;` prompt in Terminal stays yours:
+  commands you type there run on your own machine while the node's
+  desktop runs in the window. Ordinary shell job control applies — `&`
+  for any number of background jobs, `ps` to list them, `kill` to stop
+  one.
+- **One desktop per emulator.** An emulator's window is one screen, and
+  a second window manager (another node's, or a local `wm/wm`) would
+  fight the first for it. For two desktops, start a second emulator in
+  another Terminal tab: one window per desktop.
 
-**Keep working locally at the same time.** The trailing `&` runs the
-session in the background, so the `;` prompt in Terminal stays yours:
-commands you type there run on your own machine while the node's
-desktop runs in the window. Ordinary shell job control applies — `&`
-for any number of background jobs, `ps` to list them, `kill` to stop
-one.
+### 3b. Single windows, on your own desktop
 
-What one emulator cannot do is show two desktops: its window is one
-screen, and a second window manager (the node's, or a local `wm/wm`)
-would fight the first for it. For two desktops, start a second emulator
-(the same Terminal command, in another Terminal tab): one window per
-desktop, each with its own prompt. Two nodes, or a node and a local
-`wm/wm`, side by side.
+Here the node's programs open as windows in **your** window manager.
+Start a viewer emulator as in 3a, then give it a window manager of its
+own:
+
+```
+wm/wm
+```
+
+A shell window appears inside it. **In that shell window**, one line at
+a time:
+
+```
+mkdir /tmp/wmx
+mount {wmexport} /tmp/wmx
+cpu tcp!192.168.1.50 wmimport -w /n/client/tmp/wmx wm/sh &
+```
+
+A new window opens among your own, and the shell in it runs on the
+node. Each further `cpu … wmimport … &` line adds another window; put
+any program in place of `wm/sh`: `wm/clock`, `acme`, `wm/tetris`.
+
+What each line does:
+
+1. **`mkdir /tmp/wmx`** makes an empty directory to hang something on.
+2. **`mount {wmexport} /tmp/wmx`** runs the stock program `wmexport`,
+   which **serves your window manager as files**: opening
+   `/tmp/wmx/clone` creates a new window in it, and each window's
+   keyboard, mouse and window-control files appear beside it. The
+   braces mean "the files served by this command", and `mount` puts
+   them at `/tmp/wmx`. It must be typed in a shell *inside* the window
+   manager — that is where it learns which window manager to serve.
+3. **`cpu … wmimport -w /n/client/tmp/wmx wm/sh &`** runs `wmimport` on
+   the node. Your namespace, including `/tmp/wmx`, arrives there under
+   `/n/client`, so `/n/client/tmp/wmx` is your window manager, seen from
+   the node. `wmimport` asks it for a window through those files and
+   runs `wm/sh` in it. The program runs on the node; it draws into a
+   window of yours, on your screen (your `/dev/draw`, laid over the
+   node's), and your window manager gives it your keyboard and mouse
+   when its window is in front.
+
+This needs no `bind -a '#i' /dev` on any release: your window manager
+already has the display in `/dev`. It has been checked with the stock
+`wm/wm` as the viewer's window manager; whether it works from a shell
+inside the Lucifer desktop is untested.
 
 ---
 
 ## 4. End a session cleanly
 
-**Quit the programs you started, then close the node's window manager**
-(its menu, or `exit` in its shell), then close the emulator.
+**3a:** quit the programs you started, then close the node's window
+manager (its menu, or `exit` in its shell), then close the emulator.
+
+**3b:** quit each remote program in its window (for a shell, `exit`).
+Closing your own window manager, or the emulator, ends everything.
 
 Closing the window alone is not enough today: programs you started in
 the session keep running on the node, as you, after you disconnect, and
@@ -293,6 +407,8 @@ only other way is a new signer and new certificates for everyone.
 | `cpu` returns to the prompt with no message | The node refused the session; the reason is on the node's console ([#733](https://github.com/infernode-os/infernode/issues/733)). Most often `client omitted required integrity algorithm` — see section 8. |
 | The window stays black, and **the node's own monitor** shows a desktop | The viewer's `/dev` had no display in it, so the node's own display showed through. See section 8, `bind -a '#i' /dev`. |
 | A grey window that fills in slowly | Normal over Wi-Fi. If it is very slow, something left on the node is using its CPU (section 4). |
+| `wmexport: no window manager context` (3b) | `mount {wmexport}` was typed in a shell that is not inside a window manager (for example Terminal's `;` prompt). Type it in the shell window inside `wm/wm`. |
+| `wmimport: no wm at /n/client/tmp/wmx` (3b) | The `mount {wmexport} /tmp/wmx` step was skipped or failed, or the path in the `cpu` line differs from the one mounted. |
 | acme says `can't mount /mnt/acme` | Your certificate's name differs from your user name on the viewer (step 1). |
 | Starting the viewer closes your Lucifer desktop | Section 8. |
 | `boot: /n/dos/cpulisten is set but … missing; NOT starting` | The node's certificate is not at `usr/inferno/keyring/default` on the card. |
@@ -310,8 +426,8 @@ The steps above assume a release with the fixes from September 2026
 - **Before running `cpu`**, type `bind -a '#i' /dev` in the viewer.
   Older `cpu` bound the wrong device for the display, so without this
   the node draws on its own monitor and your window stays black.
-- **Name the ciphers**: `cpu -C 'aes_256_cbc sha256' tcp!…`, quoted
-  exactly so. Older `cpu` defaulted to no encryption, and a node that
+- **Name the ciphers**, in both 3a and 3b: `cpu -C 'aes_256_cbc sha256' tcp!…`,
+  quoted exactly so. Older `cpu` defaulted to no encryption, and a node that
   requires both refuses encryption without the MAC (`client omitted
   required integrity algorithm`).
 - **`mkauthinfo` ignored its file argument**: write
