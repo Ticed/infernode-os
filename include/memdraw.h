@@ -165,6 +165,8 @@ extern	int	_memhwdraw(Memdrawparam*);
 extern	void	memhwsync(void);
 extern	void	memhwwrite(Memdata*);
 extern	void	memhwread(Memdata*);
+extern	int	memhwinuse(Memdata*);
+extern	void	memhwfree(Memimage*);
 
 /*
  * Memimage management

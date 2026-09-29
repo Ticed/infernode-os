@@ -30,6 +30,8 @@ INSTALLDIR=$ROOT/$SYSTARG/$OBJTYPE/bin	#path of directory where kernel is instal
 OBJ=\
 	asm-$OBJTYPE.$O\
 	os.$O\
+	memhw.$O\
+	memhw-metal.$O\
 	$GUISRC\
 	$CONF.root.$O\
 	lock.$O\
@@ -53,6 +55,8 @@ SYSLIBS= \
 	-lpthread\
 	-framework CoreFoundation\
 	-framework IOKit\
+	-framework Metal\
+	-framework Foundation\
 
 default:V:	$O.$CONF
 
@@ -68,6 +72,12 @@ install:V: $O.$CONF
 	cp $O.$CONF $INSTALLDIR/$CONF
 
 <../port/portmkfile
+
+# the GPU as drawing hardware: Objective-C, apart from Inferno's headers
+memhw-metal.$O:	memhw-metal.m memhw-metal.h
+	$CC -fobjc-arc $CFLAGS memhw-metal.m
+
+memhw.$O:	memhw-metal.h
 
 ipif.c:N:	../FreeBSD/ipif.c
 devfs.c:N:	../port/devfs-posix.c

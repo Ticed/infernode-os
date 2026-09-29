@@ -1,7 +1,7 @@
 # Anti-aliased geometry in the draw device
 
-**Status:** the rasteriser, the draw operations and the client APIs are
-built; the GPU work is next (§6).  Man pages: draw(3) for the protocol,
+**Status:** the rasteriser, the draw operations, the client APIs and a
+first GPU backend (Metal, off by default: §6) are built.  Man pages: draw(3) for the protocol,
 draw-image(2) for `Path`, `fillpath` and `strokepath`.
 
 Before this work InferNode had five anti-aliasing implementations, each
@@ -134,30 +134,57 @@ a cache slot is replaced, not composited over) where the emulator used
 Users: Tk's canvas lines, ovals and radio indicators, `lib/scene`,
 Matrix's `line-plot`, `sparkline` and `video-overlay`.
 
-## 6. The GPU (next)
+## 6. The GPU
 
-Agreed direction:
+**Built:** the device layer in `libmemdraw` and a Metal backend for the
+macOS emulator.  **Off by default**: `DRAWHW=1` in the environment turns
+it on, until the A/B below says it should be on everywhere.
 
-- **The GPU goes below the draw device**, behind the platform seams
-  that already exist, so no program knows which hardware drew its
-  pixels: `hwdraw(Memdrawparam*)`, which `memimagedraw` offers every
-  operation first (0 means "do it in software"), and the screen
-  contract of `attachscreen` and `flushmemscreen`.
-- **Not tied to SDL3.** SDL3 is one backend; a native backend, and the
-  bare-metal kernel (which has no SDL), implement the same interface.
-  `hwdraw` may be re-engineered for modern hardware: batched submission,
-  images that may live on the GPU, and synchronisation wherever the CPU
-  touches pixels (a software fallback, `readpixels`, window pictures,
-  presenting the screen).
-- **Coverage on the CPU, composition on the GPU.**  The rasteriser above
-  computes coverage exactly and cheaply; the GPU composites (ops, masks,
-  fills, copies, windows, the screen) with integer arithmetic that
-  matches the software path bit for bit.  Every platform then draws the
-  same pixels, and a test compares GPU output with software output.
-  (No renderer that rasterises on the GPU promises identical output to
-  its CPU path; Vello's tests allow differences of up to 7/255.)
-- **The software path stays the reference**, and a backend without a
-  GPU changes nothing.
+- **Below the draw device, not tied to SDL3.**  `memimagedraw` offers
+  each draw, after the platform's `hwdraw`, to `memhw` (`libmemdraw/hw.c`,
+  `memdraw.h`), which a platform sets if it has a device.  SDL3 is not
+  involved; the bare-metal kernel and other hosts can offer their own.
+- **Four kinds of work**, each taken only where the software path that
+  would otherwise run is the one it reproduces: memoptdraw's fill and
+  copy, coverdraw (a solid colour through a GREY8 mask), and blenddraw
+  (an image with alpha, or a translucent fill, S over D).  The device
+  does Draw's integer arithmetic, so the pixels are the same bit for
+  bit.
+- **In place, on shared memory.**  The emulator's image arenas are
+  wrapped once as Metal buffers without copying (Apple silicon's memory
+  is unified); an image is a buffer and an offset.
+- **Waiting only where needed.**  Each image's memory remembers the
+  generation of queued work that last read and wrote it; the CPU waits
+  before reading what queued work writes, or writing what it reads or
+  writes.  The rasteriser draws bands through masks it retires rather
+  than waits on.
+- **Where the work goes.**  Below 1024 pixels a draw is cheaper on the
+  CPU than as a dispatch; while the device has work queued, up to 32
+  small draws in a row follow it (to save a wait), then the CPU takes
+  over.  Copies and coverage go to the device only when the target
+  already has work queued: the CPU moves memory and draws coverage as
+  fast as a dispatch is made.
+
+**A/B** (`benchmarks/bench-draw.sh`, same binary, `DRAWHW=0` against
+`DRAWHW=1`, 7 interleaved runs, ms a frame, on a loaded M-series
+machine; every checksum the same):
+
+| workload | CPU | GPU | |
+|---|---|---|---|
+| fill (400 rectangles) | 7.3 | 2.8 | 2.6× |
+| alpha (300 translucent 128² images) | 21.5 | 2.8 | 7.7× |
+| text | 1.9 | 1.8 | same |
+| shapes (anti-aliased) | 26.3 | 24.9 | same |
+| copy (scroll and blits) | 0.6 | 1.3 | slower |
+| lines (anti-aliased) | 10.9 | 14.9 | 0.73× |
+
+Large per-pixel work (fills, images, video frames, overlays) is where a
+GPU pays; drawing that is mostly rasterising (shapes, lines, glyphs) is
+bound by the CPU's rasteriser, and pays for the hand-overs.
+
+**Next:** the screen's own memory on the device (so a desktop's
+windows are composited there, not only off-screen images); a Vulkan
+backend for Linux; a native bare-metal one.
 
 ## 7. Tests
 

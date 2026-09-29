@@ -511,6 +511,16 @@ _memaadraw(Memimage *dst, Aapoly *poly, Point off, int wind, Memimage *src, Poin
 		 * held once the hardware (if any) has drawn it.
 		 */
 		b = &bm[band % Nmask];
+		if(memhwinuse(b->m->data)){
+			/* queued work still reads it: draw into a fresh one instead of waiting */
+			mask = allocmemimage(b->m->r, GREY8);
+			if(mask != nil){
+				memfillcolor(mask, DTransparent);
+				memhwfree(b->m);
+				b->m = mask;
+				b->n = 0;
+			}
+		}
 		mask = b->m;
 		memhwwrite(mask->data);
 		for(i = 0; i < b->n; i++)
@@ -590,7 +600,7 @@ _memaadraw(Memimage *dst, Aapoly *poly, Point off, int wind, Memimage *src, Poin
 	for(i = 0; i < Nmask; i++){
 		free(bm[i].s);
 		free(bm[i].row);
-		freememimage(bm[i].m);
+		memhwfree(bm[i].m);
 	}
 }
 
