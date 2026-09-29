@@ -342,8 +342,10 @@ inside the Lucifer desktop is untested.
 **3a:** quit the programs you started, then close the node's window
 manager (its menu, or `exit` in its shell), then close the emulator.
 
-**3b:** quit each remote program in its window (for a shell, `exit`).
-Closing your own window manager, or the emulator, ends everything.
+**3b:** quit each remote program in its window (for a shell, `exit`)
+before closing your window manager. Closing it, or the emulator, takes
+their windows away, but the programs may keep running on the node, as
+below.
 
 Closing the window alone is not enough today: programs you started in
 the session keep running on the node, as you, after you disconnect, and
