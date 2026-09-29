@@ -9,7 +9,7 @@
 # change), or one binary with and without a setting, e.g.
 #
 #	bench-draw.sh ./old/o.emu ./emu/MacOSX/o.emu
-#	bench-draw.sh 'env DRAWHW=0 ./emu/MacOSX/o.emu' 'env DRAWHW=1 ./emu/MacOSX/o.emu'
+#	bench-draw.sh 'env VAR=0 ./emu/MacOSX/o.emu' 'env VAR=1 ./emu/MacOSX/o.emu'
 #
 # Each is run n times (default 5); the table has each workload's median
 # ms a frame, B's speed-up, and whether the final pixels agree.  It exits

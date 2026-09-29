@@ -1,7 +1,7 @@
 # Anti-aliased geometry in the draw device
 
 **Status:** the rasteriser, the draw operations and the client APIs are
-built; the GPU work is next (§6).  Man pages: draw(3) for the protocol,
+built.  A GPU backend was built, measured and removed (§6).  Man pages: draw(3) for the protocol,
 draw-image(2) for `Path`, `fillpath` and `strokepath`.
 
 Before this work InferNode had five anti-aliasing implementations, each
@@ -134,30 +134,36 @@ a cache slot is replaced, not composited over) where the emulator used
 Users: Tk's canvas lines, ovals and radio indicators, `lib/scene`,
 Matrix's `line-plot`, `sparkline` and `video-overlay`.
 
-## 6. The GPU (next)
+## 6. The GPU: measured, not kept
 
-Agreed direction:
+A Metal backend was built below the draw device (compute kernels for
+fills, copies, coverage and blends, working in place on the image
+arenas, which unified memory lets the GPU read without copying).  It
+drew the same pixels as the CPU, bit for bit.  On `drawbench` it
+was faster for large fills (2.6x) and alpha blends (7.7x), the same for
+text and shapes, and slower for copies and lines (0.73x).
 
-- **The GPU goes below the draw device**, behind the platform seams
-  that already exist, so no program knows which hardware drew its
-  pixels: `hwdraw(Memdrawparam*)`, which `memimagedraw` offers every
-  operation first (0 means "do it in software"), and the screen
-  contract of `attachscreen` and `flushmemscreen`.
-- **Not tied to SDL3.** SDL3 is one backend; a native backend, and the
-  bare-metal kernel (which has no SDL), implement the same interface.
-  `hwdraw` may be re-engineered for modern hardware: batched submission,
-  images that may live on the GPU, and synchronisation wherever the CPU
-  touches pixels (a software fallback, `readpixels`, window pictures,
-  presenting the screen).
-- **Coverage on the CPU, composition on the GPU.**  The rasteriser above
-  computes coverage exactly and cheaply; the GPU composites (ops, masks,
-  fills, copies, windows, the screen) with integer arithmetic that
-  matches the software path bit for bit.  Every platform then draws the
-  same pixels, and a test compares GPU output with software output.
-  (No renderer that rasterises on the GPU promises identical output to
-  its CPU path; Vello's tests allow differences of up to 7/255.)
-- **The software path stays the reference**, and a backend without a
-  GPU changes nothing.
+Then real workloads were sampled (SDL3 emulator, 1280x800):
+
+| workload | emu CPU | draw device |
+|---|---|---|
+| Lucifer, Matrix dashboards, idle | 0.1-1.2% | ~0.1% |
+| Matrix `scene-demo`, animated | 15% | 2.4% |
+| scene simulation (scenefs + wm/scene) | ~12% | <1% |
+| video 1280x720 at 25 fps (vidplay9p) | 93% | ~1% |
+
+The rasteriser and the CPU fast paths (`coverdraw`, `blenddraw`) had
+already made drawing cheap; what remains is Limbo, its garbage
+collector, and (for video) the YCbCr conversion done in Limbo.  A GPU
+under the draw device cannot help with any of them, so it was removed
+rather than kept as unused complexity: the synchronisation it needs
+wherever the CPU touches pixels is a cost every path pays.  The work is
+preserved at the tag `gpu-metal-experiment`.
+
+If hardware is taken up again, the place for it is the screen side
+(`attachscreen` and `flushmemscreen`: scaling, final composition),
+behind the platform seams, not tied to SDL3, with the software path the
+reference.
 
 ## 7. Tests
 

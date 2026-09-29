@@ -2,7 +2,7 @@ implement Drawbench;
 
 #
 # drawbench - time the draw device on fixed workloads, for A/B tests of
-# how it draws (benchmarks/bench-draw.sh runs it with the GPU off and on).
+# how it draws (benchmarks/bench-draw.sh runs it on two emulators).
 #
 #	drawbench [-f frames] [-w workload]...
 #
@@ -102,7 +102,7 @@ run(w: Work)
 	sys->print("%-8s %6.2f ms %s\n", w.name, real t / real frames, checksum(img));
 }
 
-# wait until the image is drawn: reading a pixel waits for any GPU work
+# wait until the image is drawn: reading a pixel waits for the device
 finish(img: ref Image)
 {
 	b := array[4] of byte;
