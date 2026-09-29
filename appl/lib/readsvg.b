@@ -86,8 +86,8 @@ Style: adt {
 	fill:		ref Color;
 	stroke:		ref Color;
 	stroke_width:	real;
-	opacity:	real;
-	fill_opacity:	real;
+	opacity:	real;	# the element's, times its groups': multiplies down
+	fill_opacity:	real;	# inherited, not multiplied
 	stroke_opacity:	real;
 	font_size:	real;
 	fill_rule:	int;	# as fillpath's: ~0 non-zero, 1 even-odd
@@ -656,7 +656,7 @@ render_text_string(canvas: ref Canvas, text: string, tx, ty: real, xform: ref Ma
 			ref Segment(SEG_LINETO, x + charw * 0.8, ty, 0.0, 0.0, 0.0, 0.0) ::
 			ref Segment(SEG_LINETO, x, ty, 0.0, 0.0, 0.0, 0.0) ::
 			ref Segment(SEG_CLOSE, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) :: nil;
-		fill_path_color(canvas, segs, xform, color, ~0);
+		fill_path_color(canvas, segs, xform, color, style.opacity*style.fill_opacity, ~0);
 		x += charw;
 	}
 }
@@ -899,10 +899,14 @@ topath(path: list of ref Segment, m: ref Matrix): ref Path
 	return p;
 }
 
-# A colour as a source image: Draw's colours are premultiplied
-paint(c: ref Color): ref Image
+# A colour at an opacity as a source image: Draw's colours are premultiplied
+paint(c: ref Color, opacity: real): ref Image
 {
-	a := c.a;
+	if(opacity < 0.0)
+		opacity = 0.0;
+	if(opacity > 1.0)
+		opacity = 1.0;
+	a := int (real c.a * opacity + 0.5);
 	if(a <= 0)
 		return nil;
 	if(a > 255)
@@ -915,12 +919,12 @@ fill_path(canvas: ref Canvas, path: list of ref Segment, xform: ref Matrix, styl
 {
 	if(style.fill == nil)
 		return;
-	fill_path_color(canvas, path, xform, style.fill, style.fill_rule);
+	fill_path_color(canvas, path, xform, style.fill, style.opacity*style.fill_opacity, style.fill_rule);
 }
 
-fill_path_color(canvas: ref Canvas, path: list of ref Segment, xform: ref Matrix, color: ref Color, rule: int)
+fill_path_color(canvas: ref Canvas, path: list of ref Segment, xform: ref Matrix, color: ref Color, opacity: real, rule: int)
 {
-	if(path == nil || (src := paint(color)) == nil)
+	if(path == nil || (src := paint(color, opacity)) == nil)
 		return;
 	canvas.img.fillpath(topath(path, xform), rule, src, (0, 0));
 }
@@ -930,7 +934,7 @@ stroke_path(canvas: ref Canvas, path: list of ref Segment, xform: ref Matrix, st
 {
 	if(style.stroke == nil || style.stroke_width <= 0.0 || path == nil)
 		return;
-	src := paint(style.stroke);
+	src := paint(style.stroke, style.opacity*style.stroke_opacity);
 	if(src == nil)
 		return;
 	det := xform.a*xform.e - xform.b*xform.d;
@@ -1117,11 +1121,15 @@ parse_style(attrs: Attributes, parent: ref Style): ref Style
 
 	op := attrs.get("opacity");
 	if(op != nil)
-		s.opacity = real op;
+		s.opacity *= real op;
 
 	fop := attrs.get("fill-opacity");
 	if(fop != nil)
 		s.fill_opacity = real fop;
+
+	sop := attrs.get("stroke-opacity");
+	if(sop != nil)
+		s.stroke_opacity = real sop;
 
 	fs := attrs.get("font-size");
 	if(fs != nil)
@@ -1131,12 +1139,8 @@ parse_style(attrs: Attributes, parent: ref Style): ref Style
 		if((v := attrs.get(strokeprops[k])) != nil)
 			setstrokeprop(s, strokeprops[k], v);
 
-	# Apply opacity to colors
-	if(s.fill != nil && s.opacity < 1.0)
-		s.fill.a = int (real s.fill.a * s.opacity * s.fill_opacity);
-
-	if(s.stroke != nil && s.opacity < 1.0)
-		s.stroke.a = int (real s.stroke.a * s.opacity * s.stroke_opacity);
+	# the colours stay as given, shared with the parent's and siblings'
+	# styles: opacity is applied when painting (paint)
 
 	return s;
 }
@@ -1192,9 +1196,11 @@ apply_css_style(s: ref Style, css: string)
 		"stroke-width" =>
 			s.stroke_width = real value;
 		"opacity" =>
-			s.opacity = real value;
+			s.opacity *= real value;
 		"fill-opacity" =>
 			s.fill_opacity = real value;
+		"stroke-opacity" =>
+			s.stroke_opacity = real value;
 		"font-size" =>
 			s.font_size = parse_length(value, s.font_size);
 		"fill-rule" or "stroke-linecap" or "stroke-linejoin" =>
