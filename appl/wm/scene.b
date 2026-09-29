@@ -1,53 +1,52 @@
-implement SceneView;
+implement WmScene;
 
 #
-# scene-view — a Matrix display module that draws a 2-D scene
-# (docs/scene-design.md): entities, features and layers in a geo or xy
-# frame, over time.
+# wm/scene — show a 2-D scene (docs/scene-design.md) in a window.
 #
-# The mount is a scene directory.  When it is a scenefs (it has a
-# status file) the view is live and shared: update() reloads only when
-# status reports a new gen, the camera follows the server's view, and
-# this pane's own pan/zoom/select are written back to its ctl, so every
-# viewer — and any agent reading view or event — sees the same picture.
-# A plain directory (the geo-map contract) works too: it is rescanned
-# on a count+mtime change and the camera is local.
+#	wm/scene [dir]		(default /mnt/scene)
 #
-# Composition usage:
-#	top scene-view /mnt/scene
+# The directory is a scene: entities, features and layers in a geo or
+# xy frame, over time.  When it is a scenefs (it has a status file) the
+# view is live and shared: it reloads only when status reports a new
+# gen, the camera follows the server's view, and this window's own
+# pan, zoom and select are written back to its ctl, so every viewer and
+# any agent reading view or event sees the same picture.  A plain
+# directory works too: it is rescanned when its signature changes and
+# the camera is local.
+#
+# An ordinary window: run it under wm, in a Lucifer activity (where the
+# activity's agent can picture it with the window tool), or in a Matrix
+# app region:
+#	top app /dis/wm/scene.dis /mnt/scene
 #
 # Input: drag pans; wheel zooms about the pointer; click selects;
-# + - zoom; h j k l pan; f fits; space play/pause; . , step
-# forward/back one tick; L rejoins live.
+# + - zoom; h j k l pan; f fits; button 3 for the menu.
 #
 
 include "sys.m";
 	sys: Sys;
 include "draw.m";
-	drawm: Draw;
-	Display, Font, Image, Point, Rect, Pointer: import drawm;
+	draw: Draw;
+	Display, Font, Image, Point, Rect, Pointer: import draw;
+include "wmclient.m";
+	wmclient: Wmclient;
+	Window: import wmclient;
+include "menuhit.m";
+	menuhit: Menuhit;
+	Menu, Mousectl: import menuhit;
 include "scene.m";
 	scene: Scene;
 	Model, Cam, Trails: import scene;
-include "matrix.m";
 
-SceneView: module
+WmScene: module
 {
-	init:	fn(display: ref Display, font: ref Font, mount: string): string;
-	resize:	fn(r: Rect);
-	update:	fn(): int;
-	draw:	fn(dst: ref Image);
-	pointer:	fn(p: ref Pointer): int;
-	key:	fn(k: int): int;
-	retheme:	fn(display: ref Display);
-	shutdown:	fn();
-	interval:	fn(): int;
+	init:	fn(ctxt: ref Draw->Context, argv: list of string);
 };
 
-display_g: ref Display;
-font_g: ref Font;
-mountpath: string;
-served := 0;		# the mount is a scenefs
+TICK: con 100;		# ms between looks at the scene
+
+dir: string;
+served := 0;		# the directory is a scenefs
 m: ref Model;
 cam: ref Cam;
 trails: ref Trails;
@@ -55,22 +54,8 @@ lastgen := -1;
 lastscan := "";
 lastsub := "";
 nextscan := 0;		# when a directory signature may next be taken
-
-# A signature reads the directory: over a slow server that costs.  Take
-# one no more often than three times what the last one cost, so a pane
-# never spends most of its time watching.
-scanok(): int
-{
-	return sys->millisec() >= nextscan;
-}
-
-scanned(t0: int)
-{
-	cost := sys->millisec() - t0;
-	nextscan = sys->millisec() + 3 * cost;
-}
 lastview := "";
-fitseq := 0;		# the last fit request this pane answered
+fitseq := 0;		# the last fit request this window answered
 pendfit := 0;		# the request the server shows (0: none)
 fitted := 0;		# plain directory: fitted once, locally
 mode := "";
@@ -82,64 +67,142 @@ moved := 0;
 lastp, downp: Point;
 chipdown := 0;
 
-interval(): int
-{
-	return 100;
-}
-
-init(display: ref Display, font: ref Font, mount: string): string
+init(ctxt: ref Draw->Context, argv: list of string)
 {
 	sys = load Sys Sys->PATH;
-	drawm = load Draw Draw->PATH;
+	draw = load Draw Draw->PATH;
+	wmclient = load Wmclient Wmclient->PATH;
+	menuhit = load Menuhit Menuhit->PATH;
 	scene = load Scene Scene->PATH;
-	if(scene == nil)
-		return sys->sprint("scene-view: cannot load %s: %r", Scene->PATH);
-	display_g = display;
-	font_g = font;
-	mountpath = mount;
+	if(scene == nil) {
+		sys->fprint(sys->fildes(2), "scene: cannot load %s: %r\n", Scene->PATH);
+		raise "fail:load";
+	}
+	dir = "/mnt/scene";
+	if(argv != nil && tl argv != nil)
+		dir = hd tl argv;
+
+	sys->pctl(Sys->NEWPGRP, nil);
+	wmclient->init();
+	w := wmclient->window(ctxt, "scene " + dir, Wmclient->Appl);
+	display := w.display;
+	font := Font.open(display, "/fonts/combined/unicode.sans.14.font");
+	if(font == nil)
+		font = Font.open(display, "*default*");
 	scene->init(display, font);
 	cam = Cam.new(Rect((0, 0), (0, 0)));
 	trails = Trails.new();
 	m = Model.new();
-	return nil;
+
+	w.reshape(Rect((0, 0), (800, 600)));
+	w.startinput("kbd" :: "ptr" :: nil);
+	w.onscreen(nil);
+	menuhit->init(w);
+	menu := ref Menu(array[] of {"fit", "exit"}, nil, 0);
+
+	resize(w);
+	update();
+	redraw(w);
+
+	tick := chan of int;
+	spawn ticker(tick);
+	for(;;) alt {
+	c := <-w.ctl or
+	c = <-w.ctxt.ctl =>
+		w.wmctl(c);
+		if(c != nil && c[0] == '!') {
+			resize(w);
+			redraw(w);
+		}
+	k := <-w.ctxt.kbd =>
+		if(key(k))
+			redraw(w);
+	p := <-w.ctxt.ptr =>
+		if(w.pointer(*p))
+			continue;
+		if(p.buttons & 4) {
+			mc := ref Mousectl(w.ctxt.ptr, p.buttons, p.xy, p.msec);
+			case menuhit->menuhit(p.buttons, mc, menu, nil) {
+			0 =>
+				dofit(1);
+				redraw(w);
+			1 =>
+				postnote(sys->pctl(0, nil), "killgrp");
+				exit;
+			}
+			continue;
+		}
+		if(pointer(p))
+			redraw(w);
+	<-tick =>
+		if(update())
+			redraw(w);
+	}
 }
 
-retheme(display: ref Display)
+ticker(c: chan of int)
 {
-	display_g = display;
-	scene->retheme();
+	for(;;) {
+		sys->sleep(TICK);
+		c <-= 1;
+	}
 }
 
-resize(r: Rect)
+resize(w: ref Window)
 {
-	cam.r = r;
-	if(!served && !fitted && m != nil)
+	if(w.image == nil)
+		return;
+	cam.r = w.image.r;
+	if(!served && !fitted)
 		fitted = dofit(0);
 }
 
-shutdown()
+redraw(w: ref Window)
 {
-	m = nil;
-	trails = nil;
+	if(w.image == nil)
+		return;
+	extra := "";
+	if(served && mode != nil && mode != "live")
+		extra = mode;
+	scene->render(w.image, m, cam, trails, Scene->RHUD | Scene->RGRID | Scene->RCHIPS, extra);
+	w.image.flush(Draw->Flushnow);
 }
 
-# ── update ─────────────────────────────────────────────────
+postnote(pid: int, note: string)
+{
+	fd := sys->open("#p/" + string pid + "/ctl", Sys->OWRITE);
+	if(fd != nil)
+		sys->fprint(fd, "%s", note);
+}
+
+# ── following the scene ────────────────────────────────────
+
+# A signature reads the directory: over a slow server that costs.  Take
+# one no more often than three times what the last one cost, so the
+# window never spends most of its time watching.
+scanok(): int
+{
+	return sys->millisec() >= nextscan;
+}
+
+scanned(t0: int)
+{
+	nextscan = sys->millisec() + 3 * (sys->millisec() - t0);
+}
 
 update(): int
 {
 	dirty := 0;
 	if(!served) {
-		# a scenefs may be mounted after we start (Matrix loads
-		# display modules before services): keep looking
-		(ok, nil) := sys->stat(mountpath + "/status");
+		# a scenefs may be mounted after we start: keep looking
+		(ok, nil) := sys->stat(dir + "/status");
 		if(ok >= 0) {
 			served = 1;
 			lastview = "";
 		}
 	}
 	if(served) {
-		st := readfile(mountpath + "/status");
-		(gen, md) := parsestatus(st);
+		(gen, md) := parsestatus(readfile(dir + "/status"));
 		if(md != mode) {	# the HUD shows it
 			mode = md;
 			dirty = 1;
@@ -159,7 +222,7 @@ update(): int
 			dirty = 1;
 		}
 		if(!dragging) {
-			v := readfile(mountpath + "/view");
+			v := readfile(dir + "/view");
 			if(v != lastview) {
 				lastview = v;
 				if(cam.parse(v))
@@ -168,7 +231,7 @@ update(): int
 			}
 		}
 		# Answer a fit request (a fresh scene makes one) once there is
-		# data to fit; a pane joining a scene whose camera is already
+		# data to fit; a window joining a scene whose camera is already
 		# set adopts it instead.
 		if(pendfit > 0 && pendfit != fitseq && dofit(1)) {
 			fitseq = pendfit;
@@ -178,7 +241,7 @@ update(): int
 		sc := lastscan;
 		if(scanok()) {
 			t0 := sys->millisec();
-			sc = scene->signature(mountpath);
+			sc = scene->signature(dir);
 			scanned(t0);
 		}
 		if(sc != lastscan) {
@@ -198,7 +261,7 @@ update(): int
 
 reload()
 {
-	nm := Model.read(mountpath);
+	nm := Model.read(dir);
 	if(nm.hast && m.hast && nm.t < lastt)	# time went backwards: a seek
 		trails.reset();
 	lastt = nm.t;
@@ -208,7 +271,7 @@ reload()
 		fitted = dofit(0);
 }
 
-# Fit locally (only this pane knows its size); with share set, publish
+# Fit locally (only this window knows its size); with share set, publish
 # the result as the scene's view.  0 if there is nothing to fit yet.
 dofit(share: int): int
 {
@@ -225,9 +288,6 @@ dofit(share: int): int
 
 sendcam()
 {
-	if(!served)
-		return;
-
 	ctl(sys->sprint("center %s %s\nzoom %s", fmtr(cam.ca), fmtr(cam.cb), fmtr(cam.zoom)));
 }
 
@@ -235,7 +295,7 @@ ctl(s: string)
 {
 	if(!served)
 		return;
-	fd := sys->open(mountpath + "/ctl", Sys->OWRITE);
+	fd := sys->open(dir + "/ctl", Sys->OWRITE);
 	if(fd == nil)
 		return;
 	(nil, lines) := sys->tokenize(s, "\n");
@@ -258,16 +318,6 @@ fieldafter(s, k: string): string
 		if(hd toks == k)
 			return hd tl toks;
 	return nil;
-}
-
-# ── draw ───────────────────────────────────────────────────
-
-draw(dst: ref Image)
-{
-	extra := "";
-	if(served && mode != nil && mode != "live")
-		extra = mode;
-	scene->render(dst, m, cam, trails, Scene->RHUD | Scene->RGRID | Scene->RCHIPS, extra);
 }
 
 # ── input ──────────────────────────────────────────────────
@@ -357,43 +407,9 @@ key(k: int): int
 	'k' =>	cam.pan(m, 0, 32); sendcam();
 	'j' =>	cam.pan(m, 0, -32); sendcam();
 	'f' =>	dofit(1);
-	' ' =>
-		if(mode == "playing")
-			ctl("pause");
-		else
-			ctl("play");
-	'.' =>	ctl("step");
-	',' =>	stepback();
-	'L' =>	ctl("live");
 	* =>	return 0;
 	}
 	return 1;
-}
-
-# Back one tick: to the previous clock value in the history, within
-# the run since the last clear (as the server replays).
-stepback()
-{
-	if(!served || !m.hast)
-		return;
-	h := readfile(mountpath + "/history");
-	prev := -1.0;
-	found := 0;
-	(nil, lines) := sys->tokenize(h, "\n");
-	for(; lines != nil; lines = tl lines) {
-		l := hd lines;
-		if(l == "clear")
-			found = 0;
-		else if(len l > 5 && l[0:5] == "time ") {
-			t := real l[5:];
-			if(t < m.t) {
-				prev = t;
-				found = 1;
-			}
-		}
-	}
-	if(found)
-		ctl("seek " + fmtr(prev));
 }
 
 # ── helpers ────────────────────────────────────────────────

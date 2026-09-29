@@ -3,7 +3,6 @@
 # Namespace-contract test for scenefs(4): the tree, the record wire,
 # stanza files that behave as files, the history as a recording, the
 # playhead (seek and live), the shared camera, event, and refusals.
-# Renders the served scene with scenerender(1) when /dev/draw exists.
 #
 
 load std
@@ -146,19 +145,8 @@ if {echo 'nonsense record' > $S/log >[2] /dev/null} {
 	raise 'fail:unknown record accepted'
 }
 
-# A replayable recording, and a picture of it.
+# A replayable recording.
 cat $S/history > /tmp/scenefs_test.scene
-# (A machine with no draw device at all is the one tolerated failure.)
-if {ftest -f /dis/scenerender.dis} {
-	rm -f /tmp/scenefs_test.bit /tmp/scenefs_test.err
-	scenerender -w 200 -h 150 -r /tmp/scenefs_test.scene > /tmp/scenefs_test.bit >[2] /tmp/scenefs_test.err
-	if {! ~ `{read 11 < /tmp/scenefs_test.bit} compressed r8g8b8} {
-		if {! grep -s 'cannot allocate display' /tmp/scenefs_test.err} {
-			raise 'fail:scenerender: '^`{cat /tmp/scenefs_test.err}
-		}
-	}
-	rm -f /tmp/scenefs_test.bit /tmp/scenefs_test.err
-}
 rm -f /tmp/scenefs_test.scene
 unmount $S
 echo PASS

@@ -1,4 +1,4 @@
-# scene-demo — a live 2-D scene, served by scenefs, drawn by scene-view.
+# scene-demo — a live 2-D scene, served by scenefs, drawn by wm/scene.
 #
 # scene-fixture mounts a scenefs at /mnt/scene and drives it with
 # scenedemo (a synthetic field survey: rovers mowing lanes, a relay, a
@@ -12,6 +12,6 @@
 
 layout vsplit 100 0
 
-top scene-view /mnt/scene
+top app /dis/wm/scene.dis /mnt/scene
 
 service scene-fixture /mnt/scene

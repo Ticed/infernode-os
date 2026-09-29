@@ -12,7 +12,6 @@ position-table (display) - read every file in a positions directory as a one-lin
 proc-list (display) - render a scrollable process table joined from a status-snapshot file and a per-pid rate file, with row selection and a key-triggered kill
 risk-gauge (display) - render a fixed label/value metric column from a five-field file at the mount path plus two files at sibling paths of the mount
 scene-fixture (service) - mount a scenefs at its mount point and drive it with scenedemo, a synthetic field survey
-scene-view (display) - draw a 2-D scene (entities, features, layers, trails, clock) in a geo or xy frame, with a camera shared through scenefs
 signal-feed (display) - parse one whitespace-separated record per line from the file at the mount path and render a scrollable colour-coded list
 sparkline (display) - render the last column of a history-style file as one anti-aliased trend line with a headline value
 sysmon-svc (service) - poll /dev/memory, /prog/*/status, and /net conversation status at 1 Hz and rewrite current-snapshot and ring-buffer history files

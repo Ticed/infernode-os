@@ -5,7 +5,7 @@
 # that move, features that are drawn, background layers, a clock.  It
 # is served as a directory of ndb stanza files (docs/scene-design.md
 # §2) and changed by one-line records (§3.2).  This library is the
-# whole of the scene's semantics; scenefs, scene-view and scenerender
+# whole of the scene's semantics; scenefs and wm/scene
 # are thin clients of it.
 #
 # Positions are always (a, b) in the order the frame writes them:

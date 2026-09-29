@@ -20,4 +20,4 @@ DESCRIPTION
 	The mount is the grant: service scene-fixture /mnt/scene.
 
 SEE ALSO
-	scene-view, scenefs(4), scenedemo(1)
+	wm/scene, scenefs(4), scenedemo(1)

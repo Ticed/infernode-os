@@ -69,6 +69,7 @@ Matrix: module
 
 UPDATE_MS: con 2000;
 MINTICK_MS: con 40;	# fastest per-module cadence (25 fps)
+APPTICK_MS: con 100;	# how often an app region's window is re-copied into the frame
 
 # ── 9P qid space ───────────────────────────────────────────
 #
@@ -2009,6 +2010,10 @@ loadappleaf(n: ref LayoutNode.Leaf)
 		sys->fprint(stderr, "matrix: app hosting unavailable: %s\n", err);
 		return;
 	}
+	# An app draws into its own window and nothing tells us when, so its
+	# region is re-copied at a fixed cadence (without this a composition
+	# of apps alone never repainted: only a changing module did it).
+	settick(n.name, APPTICK_MS);
 	<-applk;
 	apppendq = append2q(apppendq, n);
 	applk <-= 1;
@@ -2311,6 +2316,8 @@ updatedisplaymodules(node: ref LayoutNode): int
 		}
 		if(n.tkmod != nil)
 			return n.tkmod->update();
+		if(n.modname == "app" && n.apppid > 0)
+			return 1;	# its window may have changed: re-copy it
 	}
 	return 0;
 }

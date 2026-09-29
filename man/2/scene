@@ -41,10 +41,8 @@ subsignature: fn(m: ref Model): string;
 holds the semantics of the scene contract in
 .BR docs/scene-design.md ;
 .IR scenefs (4),
-.IR scenerender (1)
-and the Matrix
-.I scene-view
-module are thin clients of it.
+.IR scene (1)
+are thin clients of it.
 .PP
 A
 .B Model
@@ -141,6 +139,6 @@ covers only a model's scene layers.
 .SH SOURCE
 .B /appl/lib/scene.b
 .SH SEE ALSO
+.IR scene (1),
 .IR scenefs (4),
-.IR scenerender (1),
 .IR draw-intro (2)

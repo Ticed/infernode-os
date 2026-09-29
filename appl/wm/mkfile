@@ -18,6 +18,7 @@ TARG=\
 	man.dis\
 	presrender.dis\
 	settings.dis\
+	scene.dis\
 	editor.dis\
 	fractals.dis\
 	tetris.dis\
@@ -47,6 +48,7 @@ SYSMODULES=\
 	man.m\
 	daytime.m\
 	draw.m\
+	scene.m\
 	factotum.m\
 	formatter.m\
 	html.m\

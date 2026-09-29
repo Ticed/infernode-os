@@ -414,6 +414,10 @@ the new geometry (a pushed reshape under any other name is rejected
 client-side). Pointer and keyboard events route to the app whose
 region contains the pointer.
 
+An app draws into its own window and nothing tells the runtime when, so
+an app region is re-copied into the frame every 100 ms (a region tick,
+as for `MatrixTicker` modules).
+
 Lifecycle: apps are never transplanted across reloads — a reload (or
 unload) kills the app's process group and, if the region survives,
 launches it fresh. Regions smaller than 32x32 refuse to host an app

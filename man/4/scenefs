@@ -15,9 +15,7 @@ scenefs \- a live 2-D scene with a shared camera, record and replay
 .I Scenefs
 serves a scene: things in a plane or on the globe, over time.
 Producers write entities, features and layers; viewers such as
-.IR scene-view
-(a Matrix module) and
-.IR scenerender (1)
+.IR scene (1)
 read them; anyone steers the shared camera and the playhead through
 .BR ctl .
 Every change is kept, stamped with the scene clock, so the scene can be
@@ -167,7 +165,7 @@ cat /mnt/scene/history > /tmp/run.scene
 .br
 .B /appl/lib/scene.b
 .SH SEE ALSO
-.IR scenerender (1),
+.IR scene (1),
 .IR scene (2),
 .B docs/scene-design.md
 .SH BUGS

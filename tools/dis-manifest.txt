@@ -544,7 +544,6 @@ dis/matrix/position-table.dis
 dis/matrix/proc-list.dis
 dis/matrix/risk-gauge.dis
 dis/matrix/scene-fixture.dis
-dis/matrix/scene-view.dis
 dis/matrix/signal-feed.dis
 dis/matrix/sparkline.dis
 dis/matrix/sysmon-svc.dis
@@ -612,7 +611,6 @@ dis/runas.dis
 dis/scap.dis
 dis/scenedemo.dis
 dis/scenefs.dis
-dis/scenerender.dis
 dis/sed.dis
 dis/sendmail.dis
 dis/seq.dis
@@ -954,6 +952,7 @@ dis/wm/sam.dis
 dis/wm/samengine.dis
 dis/wm/samstub.dis
 dis/wm/samtk.dis
+dis/wm/scene.dis
 dis/wm/settings.dis
 dis/wm/sh.dis
 dis/wm/shell.dis
