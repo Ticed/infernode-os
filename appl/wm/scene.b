@@ -58,7 +58,6 @@ lastview := "";
 fitseq := 0;		# the last fit request this window answered
 pendfit := 0;		# the request the server shows (0: none)
 fitted := 0;		# plain directory: fitted once, locally
-mode := "";
 lastt := 0.0;
 
 # pointer state
@@ -161,10 +160,7 @@ redraw(w: ref Window)
 {
 	if(w.image == nil)
 		return;
-	extra := "";
-	if(served && mode != nil && mode != "live")
-		extra = mode;
-	scene->render(w.image, m, cam, trails, Scene->RHUD | Scene->RGRID | Scene->RCHIPS, extra);
+	scene->render(w.image, m, cam, trails, Scene->RHUD | Scene->RGRID | Scene->RCHIPS, nil);
 	w.image.flush(Draw->Flushnow);
 }
 
@@ -202,11 +198,7 @@ update(): int
 		}
 	}
 	if(served) {
-		(gen, md) := parsestatus(readfile(dir + "/status"));
-		if(md != mode) {	# the HUD shows it
-			mode = md;
-			dirty = 1;
-		}
+		gen := parsestatus(readfile(dir + "/status"));
 		# the server's gen covers its own objects; scenes its scene
 		# layers overlay are other servers, watched by their signatures
 		sub := lastsub;
@@ -262,7 +254,7 @@ update(): int
 reload()
 {
 	nm := Model.read(dir);
-	if(nm.hast && m.hast && nm.t < lastt)	# time went backwards: a seek
+	if(nm.hast && m.hast && nm.t < lastt)	# time went backwards: a replay or a new run
 		trails.reset();
 	lastt = nm.t;
 	m = nm;
@@ -303,12 +295,12 @@ ctl(s: string)
 		sys->fprint(fd, "%s", hd lines);
 }
 
-parsestatus(s: string): (int, string)
+parsestatus(s: string): int
 {
 	g := fieldafter(s, "gen");
 	if(g == nil)
-		return (-1, nil);
-	return (int g, fieldafter(s, "mode"));
+		return -1;
+	return int g;
 }
 
 fieldafter(s, k: string): string

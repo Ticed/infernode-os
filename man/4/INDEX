@@ -28,4 +28,5 @@ namespace namespace
 ramfile ramfile
 registry registry
 regquery registry
+scenefs scenefs
 tarfs tarfs

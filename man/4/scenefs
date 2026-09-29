@@ -1,13 +1,10 @@
 .TH SCENEFS 4
 .SH NAME
-scenefs \- a live 2-D scene with a shared camera, record and replay
+scenefs \- a live 2-D scene with a shared camera and a stream of its changes
 .SH SYNOPSIS
 .B mount {scenefs
 [
 .B -D
-] [
-.B -r
-.I recording
 ]
 .B }
 .I mountpoint
@@ -16,17 +13,21 @@ scenefs \- a live 2-D scene with a shared camera, record and replay
 serves a scene: things in a plane or on the globe, over time.
 Producers write entities, features and layers; viewers such as
 .IR scene (1)
-read them; anyone steers the shared camera and the playhead through
+read them; anyone steers the shared camera through
 .BR ctl .
-Every change is kept, stamped with the scene clock, so the scene can be
-paused, stepped, sought and played back while producers keep writing,
-and the history is itself a recording.
+Every change is also a record on the
+.B changes
+stream, so recording a run is reading that file, and playing one back is
+.I scenereplay
+(see
+.IR scene (1))
+writing it into
+.BR log .
+.I Scenefs
+keeps no history of its own.
 It serves 9P on its standard input; the conventional mount point is
 .BR /mnt/scene .
 .PP
-With
-.B -r
-the recording is loaded and the scene opens paused at its start.
 .B -D
 traces 9P messages on standard error.
 .PP
@@ -48,12 +49,6 @@ write-only, one command per line:
 .BR unfollow ,
 .BI select " id" ,
 .BR deselect ;
-.BR play ,
-.BR pause ,
-.BI seek " t" ,
-.BI step " \fR[\fPdt\fR]\fP" ,
-.BI rate " r" ,
-.BR live ;
 .BR clear .
 Positions are in the scene's frame: latitude and longitude for
 .BR frame=geo ,
@@ -73,32 +68,36 @@ clears it.
 A fresh scene starts with a request.
 .TP
 .B status
-.BI "mode " "m " "t " "t " "t0 " "t " "t1 " "t " "rate " "r " "gen " "g"
-and the entity, feature, layer and record counts.
-.I Mode
-is
-.BR live ,
-.B paused
-or
-.BR playing ;
-.I gen
-changes whenever what is served changes, so a viewer polls this one
-file.
+.BI "t " "t " "gen " "g"
+and the entity, feature and layer counts.
+.I Gen
+changes whenever the scene changes, so a viewer polls this one file.
 .TP
 .B event
 read blocks until something happens and returns one line:
 .BI "gen " g ,
-.BI "select " id ,
-.BI "time " t
+.BI "select " id
 or
 .BI "view " ... ;
 each open is its own cursor.
 Newer
-.BR gen ,
-.B time
+.B gen
 and
 .B view
 events replace queued ones.
+.TP
+.B changes
+read blocks until the scene changes and returns the change as records,
+each preceded by a
+.B time
+record when the clock has moved.
+Each open is its own cursor, and begins with the scene as it stands
+(a
+.B clear
+and the records that rebuild it), so what one open reads is a
+self-contained recording.
+Nothing is dropped; a reader that falls more than 4MB behind is cut off
+with an error.
 .TP
 .B log
 write-only: records, one per line
@@ -111,9 +110,6 @@ write-only: records, one per line
 .BR clear ).
 Viewers see a write whole; a bad record stops it with an error, and the
 records before it stand.
-.TP
-.B history
-every record so far, each change preceded by the clock it happened at.
 .TP
 .B meta
 the scene's stanza
@@ -142,13 +138,6 @@ and
 .B echo >>
 do what they say.
 .PD
-.PP
-While paused or playing, the object files, meta and time show the scene
-as it was at the playhead; writes still change the live scene, which
-.B live
-rejoins, as does playing up to the end.
-Replay covers the run since the last
-.BR clear .
 .SH EXAMPLES
 .EX
 mkdir -p /mnt/scene
@@ -158,7 +147,7 @@ echo 'time 0' > /mnt/scene/log
 echo 'ent r1 x=0 y=0 shape=triangle group=blue course=45' > /mnt/scene/log
 cat /mnt/scene/entities/r1
 echo 'follow r1' > /mnt/scene/ctl
-cat /mnt/scene/history > /tmp/run.scene
+cat /mnt/scene/changes > /tmp/run.scene &
 .EE
 .SH SOURCE
 .B /appl/cmd/scenefs.b
@@ -168,6 +157,3 @@ cat /mnt/scene/history > /tmp/run.scene
 .IR scene (1),
 .IR scene (2),
 .B docs/scene-design.md
-.SH BUGS
-The history is kept in memory, and a seek backwards replays it from the
-start.

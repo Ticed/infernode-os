@@ -1,8 +1,8 @@
 #!/dis/sh.dis
 #
 # Namespace-contract test for scenefs(4): the tree, the record wire,
-# stanza files that behave as files, the history as a recording, the
-# playhead (seek and live), the shared camera, event, and refusals.
+# stanza files that behave as files, status, the shared camera, event,
+# changes as a recording, scenereplay(1) playing one back, and refusals.
 #
 
 load std
@@ -18,7 +18,7 @@ if {! ftest -f $S/status} {
 	raise 'fail:scenefs did not mount'
 }
 
-for (f in ctl view status event log history meta time) {
+for (f in ctl view status event changes log meta time) {
 	if {! ftest -f $S/$f} {
 		raise 'fail:'^$f^' missing'
 	}
@@ -66,36 +66,13 @@ if {ftest -f $S/entities/b} {
 	raise 'fail:rm did not remove entities/b'
 }
 
-# Status and history.
+# Status.
 v=`{cat $S/status}
-if {! ~ ${index 2 $v} live} {
-	raise 'fail:mode: '^$"v
+if {! ~ ${index 1 $v}^' '^${index 2 $v} 't 2'} {
+	raise 'fail:status: '^$"v
 }
-if {! ~ ${index 4 $v} 2} {
-	raise 'fail:clock: '^$"v
-}
-n=`{grep '^time ' $S/history | wc -l}
-if {! ~ $n 3} {
-	raise 'fail:history time records: '^$"n
-}
-
-# The playhead: seek shows the past; live rejoins.
-echo seek 1 > $S/ctl
-v=`{grep '^x=' $S/entities/a}
-if {! ~ $"v 'x=10'} {
-	raise 'fail:after seek 1, entity a: '^$"v
-}
-if {ftest -f $S/entities/c} {
-	raise 'fail:entities/c exists at t=1, before it was written'
-}
-v=`{cat $S/status}
-if {! ~ ${index 2 $v} paused} {
-	raise 'fail:mode after seek: '^$"v
-}
-echo live > $S/ctl
-v=`{grep '^x=' $S/entities/a}
-if {! ~ $"v 'x=20'} {
-	raise 'fail:after live, entity a: '^$"v
+if {ftest -f $S/history} {
+	raise 'fail:history is gone: scenefs keeps no history'
 }
 
 # The shared camera.
@@ -116,23 +93,55 @@ if {! ~ ${index 1 $v}^' '^${index 2 $v}^' '^${index 3 $v} 'select a view'} {
 	raise 'fail:event: '^$"v
 }
 
-# A new run after a clear: pause shows the latest state, not the old run's.
+# changes: a reader begins with the scene as it stands, then gets every
+# change, stamped by the clock: what it reads is a recording.
+R=/tmp/scenefs_test.scene
+cat $S/changes > $R &
+cpid=$apid
+sleep 1
 echo clear > $S/log
 echo 'time 0' > $S/log
 echo 'ent a x=500 y=0' > $S/log
 echo 'time 1' > $S/log
 echo 'ent a x=501 y=0' > $S/log
-echo pause > $S/ctl
-v=`{grep '^x=' $S/entities/a}
+echo 'x=7' > $S/entities/d
+sleep 1
+echo kill > /prog/$cpid/ctl
+v=`{sed 1q $R}
+if {! ~ $"v clear} {
+	raise 'fail:changes should begin with the scene: '^$"v
+}
+n=`{grep '^time ' $R | wc -l}
+if {! ~ $n 3} {
+	raise 'fail:changes time records (the start and two): '^$"n
+}
+
+# scenereplay: the recording played back into another scene.
+S2=/tmp/scenefs_test2
+mkdir -p $S2
+mount -c {scenefs} $S2
+scenereplay -x 0 $R > $S2/log
+v=`{grep '^x=' $S2/entities/a}
 if {! ~ $"v 'x=501'} {
-	raise 'fail:pause after a restart, entity a: '^$"v
+	raise 'fail:replayed entity a: '^$"v
 }
-echo 'seek 0' > $S/ctl
-v=`{grep '^x=' $S/entities/a}
-if {! ~ $"v 'x=500'} {
-	raise 'fail:seek within the new run, entity a: '^$"v
+if {! ftest -f $S2/entities/d} {
+	raise 'fail:replay lost entities/d'
 }
-echo live > $S/ctl
+# from a start time: the scene as it stood then
+echo clear > $S2/log
+scenereplay -x 0 -t 0 $R > $S2/log
+v=`{grep '^x=' $S2/entities/a}
+if {! ~ $"v 'x=501'} {
+	raise 'fail:replay from 0 ends with entity a: '^$"v
+}
+scenereplay -x 0 -t 0 $R | sed 20q > /tmp/scenefs_test.head
+v=`{grep '^ent a ' /tmp/scenefs_test.head | grep 'x=500'}
+if {~ $#v 0} {
+	raise 'fail:replay from 0 should first show entity a at 500: '^$"v
+}
+unmount $S2
+rm -f /tmp/scenefs_test.head
 
 # Refusals answer with an error.
 if {echo frobnicate > $S/ctl >[2] /dev/null} {
@@ -145,8 +154,6 @@ if {echo 'nonsense record' > $S/log >[2] /dev/null} {
 	raise 'fail:unknown record accepted'
 }
 
-# A replayable recording.
-cat $S/history > /tmp/scenefs_test.scene
-rm -f /tmp/scenefs_test.scene
+rm -f $R
 unmount $S
 echo PASS

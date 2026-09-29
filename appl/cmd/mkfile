@@ -161,6 +161,7 @@ TARG=\
 	scap.dis\
 	scenedemo.dis\
 	scenefs.dis\
+	scenereplay.dis\
 	sed.dis\
 	sendmail.dis\
 	seq.dis\

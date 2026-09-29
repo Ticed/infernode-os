@@ -1,42 +1,39 @@
 implement Scenefs;
 
 #
-# scenefs — serve a live 2-D scene: its objects, a shared camera, a
-# clock with record and replay.  docs/scene-design.md §3; man/4/scenefs.
+# scenefs — serve a live 2-D scene: its objects, a shared camera, and
+# the stream of its changes.  docs/scene-design.md §3; man/4/scenefs.
 #
-#	mount {scenefs [-r recording]} /mnt/scene
+#	mount {scenefs} /mnt/scene
 #
 # The tree (all text; stanza files are one attr=value per line):
 #
 #	ctl		(w)  one command per write line:
 #			     center A B | zoom Z | fit | follow ID | unfollow
-#			     select ID | deselect
-#			     play | pause | seek T | rate R | live | step [DT]
-#			     clear
+#			     select ID | deselect | clear
 #	view		(r)  "frame F center A B zoom Z sel ID follow ID fit N"
 #			     (N is a pending fit request, 0 when none)
-#	status		(r)  "mode M t T t0 T0 t1 T1 rate R gen G entities N
-#			      features N layers N records N"
+#	status		(r)  "t T gen G entities N features N layers N"
 #	event		(r)  blocking; one event per read, each open its own
-#			     cursor: "gen G", "select ID", "time T", "view ..."
-#	log		(w)  records (§3.2), one per line; a write is seen whole,
+#			     cursor: "gen G", "select ID", "view ..."
+#	changes		(r)  blocking; every change as records (§3.2), each
+#			     stamped with the clock when it moved; each open is
+#			     its own cursor and begins with the scene as it
+#			     stands, so what it reads is a recording:
+#				cat /mnt/scene/changes > run.scene
+#	log		(w)  records, one per line; a write is seen whole,
 #			     and a bad record stops it (the lines before stand)
-#	history		(r)  every record so far, with its clock: a recording
 #	meta		(rw) the scene's stanza (frame=, units=, title=, ...)
 #	time		(rw) the scene clock
 #	entities/	(rw) one stanza file per entity: create, write, remove
 #	features/	(rw) likewise
 #	layers/		(rw) likewise
 #
-# A stanza write lands at its offset and takes effect at once.  Every
-# change is appended to the history, stamped with the clock; seek/play/
-# step show the scene as the history says it was (the run since the last
-# clear), while producers keep changing the live scene underneath; `live`
-# rejoins it, as does playing up to the end.  The playhead lives
-# here, not in the viewers, so every viewer of a scene is in step.
+# A stanza write lands at its offset and takes effect at once.  The
+# server keeps no history: recording is reading changes, and replay is
+# scenereplay(1) writing a recording back into log.
 #
-# scenefs holds no authority beyond the files it serves: the only file
-# it opens is the recording named by -r.
+# scenefs holds no authority beyond the files it serves: it opens none.
 #
 
 include "sys.m";
@@ -44,9 +41,6 @@ include "sys.m";
 	Qid: import Sys;
 include "draw.m";
 include "arg.m";
-include "bufio.m";
-	bufio: Bufio;
-	Iobuf: import bufio;
 include "styx.m";
 	styx: Styx;
 	Tmsg, Rmsg: import styx;
@@ -64,46 +58,26 @@ Scenefs: module
 	init:	fn(nil: ref Draw->Context, argv: list of string);
 };
 
-Qroot, Qctl, Qview, Qstatus, Qevent, Qlog, Qhistory, Qmeta, Qtime,
+Qroot, Qctl, Qview, Qstatus, Qevent, Qchanges, Qlog, Qmeta, Qtime,
 Qentdir, Qfeatdir, Qlayerdir: con iota;
 Qobj: con 16;		# + kind; the object's slot is path >> 8
 
-LIVE, PAUSED, PLAYING: con iota;
-modenames := array[] of {"live", "paused", "playing"};
-
-TICKMS: con 100;
 EVMAX: con 64;
+CHMAX: con 4*1024*1024;	# bytes a changes reader may fall behind
 
 stderr: ref Sys->FD;
 user: string;
 srv: ref Styxserver;
 lk: chan of int;
 
-live: ref Model;	# what producers last wrote
-shown: ref Model;	# what is served (== live in live mode)
+live: ref Model;	# the scene
 cam: ref Cam;
 fitseq := 1;
 fitpending := 1;	# a fit asked for and not yet answered (only a viewer
 			# knows its size); a fresh scene asks for one
-mode := LIVE;
-rate := 1.0;
-pt := 0.0;		# playhead time
-sgen := 0;		# bumped whenever what is served changes
-
-# the recording
-# The history is one byte buffer (what history serves) and the offset of
-# each record in it: two objects the collector need not look inside,
-# rather than one string per record, which it would walk for ever.
-hoff: array of int;
-nhist := 0;
-lastclear := 0;		# index of the last "clear": replay starts there
-hidx := 0;		# replay cursor into hist (records applied to shown)
-lastrect := 0.0;	# clock value of the last "time" record written
+sgen := 0;		# bumped whenever the scene changes
+lastrect := 0.0;	# the clock value last stamped into changes
 hasrect := 0;
-t0 := 0.0;
-hast0 := 0;
-histb: array of byte;	# the history as served, grown in place
-nhistb := 0;
 
 # object slots: qid path <-> (kind, id), append-only
 slotids: array of array of string;
@@ -119,26 +93,33 @@ Evq: adt {
 };
 evqs: list of ref Evq;
 
+# changes cursors: the bytes a reader has yet to read, one array each
+Chq: adt {
+	fid:	int;
+	buf:	array of byte;
+	n:	int;
+	lost:	int;	# fell more than CHMAX behind: changes were dropped
+	pending: ref Tmsg.Read;
+};
+chqs: list of ref Chq;
+
 init(nil: ref Draw->Context, argv: list of string)
 {
 	sys = load Sys Sys->PATH;
 	stderr = sys->fildes(2);
-	bufio = load Bufio Bufio->PATH;
 	styx = load Styx Styx->PATH;
 	styxservers = load Styxservers Styxservers->PATH;
 	scene = load Scene Scene->PATH;
 	str = load String String->PATH;
-	if(str == nil || styx == nil || styxservers == nil || scene == nil || bufio == nil)
+	if(str == nil || styx == nil || styxservers == nil || scene == nil)
 		fatal(sys->sprint("cannot load modules: %r"));
 	styx->init();
 	styxservers->init(styx);
 	arg := load Arg Arg->PATH;
 	arg->init(argv);
-	arg->setusage("scenefs [-r recording]");
-	rec: string;
+	arg->setusage("scenefs [-D]");
 	while((c := arg->opt()) != 0)
 		case c {
-		'r' =>	rec = arg->earg();
 		'D' =>	styxservers->traceset(1);
 		* =>	arg->usage();
 		}
@@ -149,10 +130,7 @@ init(nil: ref Draw->Context, argv: list of string)
 		user = "inferno";
 
 	live = Model.new();
-	shown = live;
 	cam = Cam.new(((0, 0), (0, 0)));
-	hoff = array[1024] of int;
-	histb = array[65536] of byte;
 	slotids = array[3] of array of string;
 	nslots = array[3] of {* => 0};
 	slotlook = array[3] of array of list of (string, int);
@@ -162,35 +140,11 @@ init(nil: ref Draw->Context, argv: list of string)
 	}
 	lk = chan[1] of int;
 
-	if(rec != nil) {
-		b := bufio->open(rec, Bufio->OREAD);
-		if(b == nil)
-			fatal(sys->sprint("cannot open %s: %r", rec));
-		n := 0;
-		while((line := b.gets('\n')) != nil) {
-			n++;
-			line = trim(line);
-			if(line == "" || line[0] == '#')
-				continue;
-			if((err := live.apply(line)) != nil) {
-				sys->fprint(stderr, "scenefs: %s:%d: %s\n", rec, n, err);
-				continue;
-			}
-			record(line);
-		}
-		# a recording opens paused at its start, ready to play
-		mode = PAUSED;
-		pt = t0;
-		rebuild();
-	}
-
 	navops := chan of ref Navop;
 	spawn navigator(navops);
 	tc: chan of ref Tmsg;
 	(tc, srv) = Styxserver.new(sys->fildes(0), Navigator.new(navops), big Qroot);
-	tick := chan of int;
-	spawn ticker(tick);
-	serve(tc, tick);
+	serve(tc);
 }
 
 lock()
@@ -203,30 +157,10 @@ unlock()
 	<-lk;
 }
 
-ticker(c: chan of int)
+serve(tc: chan of ref Tmsg)
 {
 	for(;;) {
-		sys->sleep(TICKMS);
-		c <-= 1;
-	}
-}
-
-serve(tc: chan of ref Tmsg, tick: chan of int)
-{
-	for(;;) alt {
-	<-tick =>
-		if(mode == PLAYING) {
-			lock();
-			advance(pt + rate * real TICKMS / 1000.0);
-			if(hidx >= nhist && pt >= lastrect) {	# caught up: rejoin live
-				mode = LIVE;
-				shown = live;
-				sgen++;
-			}
-			unlock();
-			post("time " + fmt(pt));
-		}
-	tmsg := <-tc =>
+		tmsg := <-tc;
 		if(tmsg == nil)
 			exit;
 		pick tm := tmsg {
@@ -234,6 +168,7 @@ serve(tc: chan of ref Tmsg, tick: chan of int)
 			exit;
 		Flush =>
 			cancelpending(tm.oldtag);
+			cancelchq(tm.oldtag);
 			srv.reply(ref Rmsg.Flush(tm.tag));
 		Open =>
 			c := srv.open(tm);
@@ -241,6 +176,13 @@ serve(tc: chan of ref Tmsg, tick: chan of int)
 				break;
 			if(int c.path == Qevent)
 				evqs = ref Evq(c.fid, nil, 0, nil) :: evqs;
+			if(int c.path == Qchanges) {
+				# begin with the scene as it stands: a self-contained recording
+				lock();
+				d := array of byte live.dump();
+				unlock();
+				chqs = ref Chq(c.fid, d, len d, 0, nil) :: chqs;
+			}
 			# a truncating open starts the file afresh; otherwise
 			# writes land in the current contents at their offset
 			if(tm.mode & Sys->OTRUNC && writable(c.path))
@@ -263,6 +205,8 @@ serve(tc: chan of ref Tmsg, tick: chan of int)
 				dropwbuf(c.fid);
 				if(int c.path == Qevent)
 					dropevq(c.fid);
+				if(int c.path == Qchanges)
+					dropchq(c.fid);
 			}
 			srv.clunk(tm);
 		Remove =>
@@ -294,16 +238,33 @@ doread(tm: ref Tmsg.Read)
 		srv.reply(styxservers->readstr(tm, statustext() + "\n"));
 	Qmeta =>
 		lock();
-		s := shown.metatext();
+		s := live.metatext();
 		unlock();
 		srv.reply(styxservers->readstr(tm, s));
 	Qtime =>
 		s := "";
-		if(shown.hast)
-			s = fmt(shown.t) + "\n";
+		if(live.hast)
+			s = fmt(live.t) + "\n";
 		srv.reply(styxservers->readstr(tm, s));
-	Qhistory =>
-		srv.reply(styxservers->readbytes(tm, histb[0:nhistb]));
+	Qchanges =>
+		q := getchq(c.fid);
+		if(q == nil) {
+			srv.reply(ref Rmsg.Error(tm.tag, "lost changes cursor"));
+			return;
+		}
+		if(q.pending != nil) {
+			srv.reply(ref Rmsg.Error(tm.tag, "read already pending"));
+			return;
+		}
+		if(q.lost) {
+			srv.reply(ref Rmsg.Error(tm.tag, "changes lost: the reader fell behind"));
+			return;
+		}
+		if(q.n == 0) {
+			q.pending = tm;
+			return;
+		}
+		srv.reply(chreply(tm, q));
 	Qevent =>
 		q := getevq(c.fid);
 		if(q == nil) {
@@ -322,7 +283,7 @@ doread(tm: ref Tmsg.Read)
 	* =>
 		if(TYPE(p) >= Qobj && TYPE(p) < Qobj + 3) {
 			lock();
-			o := shown.find(TYPE(p) - Qobj, slotid(p));
+			o := live.find(TYPE(p) - Qobj, slotid(p));
 			s := "";
 			if(o != nil)
 				s = o.text();
@@ -340,7 +301,7 @@ doread(tm: ref Tmsg.Read)
 viewtext(): string
 {
 	lock();
-	s := cam.text(shown) + " fit " + string fitpending;
+	s := cam.text(live) + " fit " + string fitpending;
 	unlock();
 	return s;
 }
@@ -349,11 +310,11 @@ statustext(): string
 {
 	lock();
 	t := 0.0;
-	if(shown.hast)
-		t = shown.t;
-	s := sys->sprint("mode %s t %s t0 %s t1 %s rate %s gen %d entities %d features %d layers %d records %d",
-		modenames[mode], fmt(t), fmt(t0), fmt(lastrect), fmt(rate), sgen,
-		shown.count(Scene->ENT), shown.count(Scene->FEAT), shown.count(Scene->LAYER), nhist);
+	if(live.hast)
+		t = live.t;
+	s := sys->sprint("t %s gen %d entities %d features %d layers %d",
+		fmt(t), sgen,
+		live.count(Scene->ENT), live.count(Scene->FEAT), live.count(Scene->LAYER));
 	unlock();
 	return s;
 }
@@ -580,9 +541,10 @@ doremove(tm: ref Tmsg.Remove)
 		srv.reply(ref Rmsg.Remove(tm.tag));
 }
 
-# ── the model and its history ──────────────────────────────
+# ── the scene and its changes ──────────────────────────────
 
-# Apply one record to the live scene and record it.  Called locked.
+# Apply one record to the scene and pass it to the changes readers.
+# Called locked.
 change(rec: string): string
 {
 	if(rec == "" || rec[0] == '#')
@@ -596,115 +558,97 @@ change(rec: string): string
 			return nil;	# no news
 	}
 	record(rec);
-	if(mode == LIVE)
-		sgen++;
+	sgen++;
 	return nil;
 }
 
-# Append to the history, stamping it with the clock when that moved.
+# Emit a change, stamped with the clock when that moved.
 record(rec: string)
 {
-	if(len rec >= 5 && rec[0:5] == "time ") {
-		if(!hast0) {
-			t0 = live.t;
-			hast0 = 1;
+	s := "";
+	if(len rec >= 5 && rec[0:5] == "time ")
+		rec = "time " + fmt(live.t);
+	else if(live.hast && (!hasrect || live.t != lastrect))
+		s = "time " + fmt(live.t) + "\n";
+	if(live.hast) {
+		lastrect = live.t;
+		hasrect = 1;
+	}
+	emit(array of byte (s + rec + "\n"));
+}
+
+emit(b: array of byte)
+{
+	for(l := chqs; l != nil; l = tl l) {
+		q := hd l;
+		if(q.lost)
+			continue;
+		if(q.n + len b > CHMAX) {
+			q.lost = 1;
+			q.buf = nil;
+			q.n = 0;
+			if(q.pending != nil) {
+				srv.reply(ref Rmsg.Error(q.pending.tag, "changes lost: the reader fell behind"));
+				q.pending = nil;
+			}
+			continue;
 		}
-		lastrect = live.t;
-		hasrect = 1;
-		push("time " + fmt(live.t));
-		return;
+		if(q.n + len b > len q.buf) {
+			nb := array[2 * (q.n + len b)] of byte;
+			nb[0:] = q.buf[0:q.n];
+			q.buf = nb;
+		}
+		q.buf[q.n:] = b;
+		q.n += len b;
+		if(q.pending != nil) {
+			srv.reply(chreply(q.pending, q));
+			q.pending = nil;
+		}
 	}
-	if(live.hast && (!hasrect || live.t != lastrect)) {
-		lastrect = live.t;
-		hasrect = 1;
-		push("time " + fmt(live.t));
-	}
-	push(rec);
 }
 
-push(s: string)
+# Up to count bytes of what the reader has yet to read.  A stream, not a
+# file: the offset is ignored.
+chreply(tm: ref Tmsg.Read, q: ref Chq): ref Rmsg
 {
-	if(nhist == len hoff) {
-		nh := array[2 * len hoff] of int;
-		nh[0:] = hoff;
-		hoff = nh;
-	}
-	if(s == "clear")
-		lastclear = nhist;
-	hoff[nhist++] = nhistb;
-	b := array of byte (s + "\n");
-	if(nhistb + len b > len histb) {
-		n := 2 * len histb;
-		if(n < nhistb + len b)
-			n = nhistb + len b + 4096;
-		nb := array[n] of byte;
-		nb[0:] = histb[0:nhistb];
-		histb = nb;
-	}
-	histb[nhistb:] = b;
-	nhistb += len b;
+	n := q.n;
+	if(n > tm.count)
+		n = tm.count;
+	d := array[n] of byte;
+	d[0:] = q.buf[0:n];
+	q.buf[0:] = q.buf[n:q.n];
+	q.n -= n;
+	return ref Rmsg.Read(tm.tag, d);
 }
 
-# Record i of the history, without its newline.
-hist(i: int): string
+getchq(fid: int): ref Chq
 {
-	e := nhistb;
-	if(i + 1 < nhist)
-		e = hoff[i + 1];
-	return string histb[hoff[i]:e - 1];
+	for(l := chqs; l != nil; l = tl l)
+		if((hd l).fid == fid)
+			return hd l;
+	return nil;
+}
+
+dropchq(fid: int)
+{
+	nl: list of ref Chq;
+	for(l := chqs; l != nil; l = tl l)
+		if((hd l).fid != fid)
+			nl = hd l :: nl;
+	chqs = nl;
+}
+
+cancelchq(tag: int)
+{
+	for(l := chqs; l != nil; l = tl l)
+		if((q := hd l).pending != nil && q.pending.tag == tag)
+			q.pending = nil;
 }
 
 # After a (batch of) change(s): tell the watchers.
 changed()
 {
-	if(mode == LIVE)
-		post("gen " + string sgen);
-}
-
-# Leave live mode: the shown scene becomes a replay at t.  Locked.
-detach(t: real)
-{
-	if(t == live.t) {	# the common case, pause: a copy of live, exact
-		shown = Model.new();
-		(nil, lines) := sys->tokenize(live.dump(), "\n");
-		for(; lines != nil; lines = tl lines)
-			shown.apply(hd lines);
-		hidx = nhist;
-		pt = t;
-		sgen++;
-		return;
-	}
-	pt = t;
-	rebuild();
-}
-
-# Rebuild the shown scene from the history up to the playhead.  Locked.
-rebuild()
-{
-	shown = Model.new();
-	hidx = lastclear;
-	advance(pt);
-}
-
-# Move the playhead forward to t, applying history records.  Locked.
-advance(t: real)
-{
-	if(t < pt) {
-		pt = t;
-		rebuild();
-		return;
-	}
-	pt = t;
-	while(hidx < nhist) {
-		r := hist(hidx);
-		if(len r > 5 && r[0:5] == "time " && real r[5:] > pt)
-			break;
-		shown.apply(r);
-		hidx++;
-	}
-	if(!shown.hast || shown.t < pt)
-		shown.settime(pt);
-	sgen++;
+	post("gen " + string sgen);
 }
 
 # ── ctl ────────────────────────────────────────────────────
@@ -760,52 +704,6 @@ ctl(line: string): string
 		cam.sel = nil;
 		post("select -");
 		camchange = 1;
-	"play" =>
-		lock();
-		if(mode == LIVE) {	# play from where live is, i.e. nothing to do
-			unlock();
-			return nil;
-		}
-		mode = PLAYING;
-		unlock();
-	"pause" =>
-		lock();
-		if(mode == LIVE)
-			detach(live.t);
-		mode = PAUSED;
-		unlock();
-	"seek" =>
-		if(n != 2)
-			return "usage: seek T";
-		lock();
-		if(mode == LIVE)
-			detach(real arg1);
-		else
-			advance(real arg1);
-		mode = PAUSED;
-		unlock();
-		post("time " + fmt(pt));
-	"step" =>
-		lock();
-		if(mode == LIVE)
-			detach(live.t);
-		mode = PAUSED;
-		if(n >= 2)
-			advance(pt + real arg1);
-		else
-			advance(nexttime());
-		unlock();
-		post("time " + fmt(pt));
-	"rate" =>
-		if(n != 2 || real arg1 <= 0.0)
-			return "usage: rate R (R > 0)";
-		rate = real arg1;
-	"live" =>
-		lock();
-		mode = LIVE;
-		shown = live;
-		sgen++;
-		unlock();
 	"clear" =>
 		lock();
 		change("clear");
@@ -820,17 +718,6 @@ ctl(line: string): string
 	return nil;
 }
 
-# The clock value of the next time record after the playhead.
-nexttime(): real
-{
-	for(i := hidx; i < nhist; i++) {
-		r := hist(i);
-		if(len r > 5 && r[0:5] == "time " && real r[5:] > pt)
-			return real r[5:];
-	}
-	return pt;
-}
-
 # ── events ─────────────────────────────────────────────────
 
 post(ev: string)
@@ -843,10 +730,10 @@ post(ev: string)
 			q.pending = nil;
 			continue;
 		}
-		# coalesce: a newer gen/time/view replaces a queued one of its kind
+		# coalesce: a newer gen/view replaces a queued one of its kind
 		(nil, w) := sys->tokenize(ev, " ");
 		kind := hd w;
-		if(kind == "gen" || kind == "time" || kind == "view") {
+		if(kind == "gen" || kind == "view") {
 			nq: list of string;
 			for(ql := q.q; ql != nil; ql = tl ql) {
 				(nil, qw) := sys->tokenize(hd ql, " ");
@@ -956,9 +843,9 @@ dirgen(p: big): ref Sys->Dir
 	Qview =>	return dir(p, "view", 8r444, 0);
 	Qstatus =>	return dir(p, "status", 8r444, 0);
 	Qevent =>	return dir(p, "event", 8r444, 0);
+	Qchanges =>	return dir(p, "changes", 8r444, 0);
 	Qlog =>	return dir(p, "log", 8r222, 0);
-	Qhistory =>	return dir(p, "history", 8r444, 0);
-	Qmeta =>	return dir(p, "meta", 8r664, len array of byte shown.metatext());
+	Qmeta =>	return dir(p, "meta", 8r664, len array of byte live.metatext());
 	Qtime =>	return dir(p, "time", 8r664, 0);
 	Qentdir =>	return dir(p, "entities", Sys->DMDIR|8r775, 0);
 	Qfeatdir =>	return dir(p, "features", Sys->DMDIR|8r775, 0);
@@ -967,7 +854,7 @@ dirgen(p: big): ref Sys->Dir
 	t := TYPE(p);
 	if(t >= Qobj && t < Qobj + 3) {
 		id := slotid(p);
-		o := shown.find(t - Qobj, id);
+		o := live.find(t - Qobj, id);
 		if(o == nil)
 			return nil;
 		return dir(p, id, 8r664, len array of byte o.text());
@@ -975,7 +862,7 @@ dirgen(p: big): ref Sys->Dir
 	return nil;
 }
 
-rootents := array[] of {Qctl, Qview, Qstatus, Qevent, Qlog, Qhistory, Qmeta, Qtime,
+rootents := array[] of {Qctl, Qview, Qstatus, Qevent, Qchanges, Qlog, Qmeta, Qtime,
 	Qentdir, Qfeatdir, Qlayerdir};
 
 # The entries of a directory.  Called locked.
@@ -989,7 +876,7 @@ entries(p: big): array of big
 		return a;
 	Qentdir or Qfeatdir or Qlayerdir =>
 		k := TYPE(p) - Qentdir;
-		objs := shown.objs(k);
+		objs := live.objs(k);
 		a := array[len objs] of big;
 		for(i := 0; i < len objs; i++)
 			a[i] = objpath(k, objs[i].id);
@@ -1044,7 +931,7 @@ walk(p: big, name: string): (ref Sys->Dir, string)
 		}
 	Qentdir or Qfeatdir or Qlayerdir =>
 		k := t - Qentdir;
-		if(shown.find(k, name) != nil)
+		if(live.find(k, name) != nil)
 			return (dirgen(objpath(k, name)), nil);
 	* =>
 		return (nil, Styxservers->Enotdir);

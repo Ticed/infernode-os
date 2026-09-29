@@ -1,6 +1,6 @@
 .TH SCENE 1
 .SH NAME
-scene, scenedemo \- show a 2-D scene in a window; drive a scene with a demo
+scene, scenedemo, scenereplay \- show a 2-D scene in a window; drive a scene with a demo or a recording
 .SH SYNOPSIS
 .B wm/scene
 [
@@ -16,6 +16,17 @@ scene, scenedemo \- show a 2-D scene in a window; drive a scene with a demo
 .I ms
 ] [
 .I dir
+]
+.PP
+.B scenereplay
+[
+.B -t
+.I start
+] [
+.B -x
+.I rate
+] [
+.I recording
 ]
 .SH DESCRIPTION
 .I Scene
@@ -71,6 +82,24 @@ one tick per second of scene time, every
 milliseconds (default 200; 0 as fast as possible), for
 .I ticks
 ticks (default: forever).
+.PP
+.I Scenereplay
+plays a recording \(em what a
+.IR scenefs (4)
+.B changes
+file reads \(em back as records on its standard output (from its
+standard input when no
+.I recording
+is named).
+It writes the scene as it stood at
+.I start
+(default: the first time in the recording) as one batch, then each
+tick's records as one write, paced by the recording's clock:
+.I rate
+2 plays at twice its speed, 0 as fast as the reader takes it.
+Where the clock runs backwards, as it does after a
+.BR clear ,
+the pacing starts again from there.
 .SH EXAMPLES
 .EX
 mkdir -p /mnt/scene
@@ -78,10 +107,20 @@ mount -c {scenefs} /mnt/scene
 scenedemo &
 wm/scene
 .EE
+.PP
+Record a run, then show it again from two minutes in, at double speed:
+.IP
+.EX
+cat /mnt/scene/changes > /tmp/run.scene &
+\&...
+scenereplay -t 120 -x 2 /tmp/run.scene > /mnt/scene/log
+.EE
 .SH SOURCE
 .B /appl/wm/scene.b
 .br
 .B /appl/cmd/scenedemo.b
+.br
+.B /appl/cmd/scenereplay.b
 .SH SEE ALSO
 .IR scenefs (4),
 .IR scene (2),

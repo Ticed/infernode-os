@@ -1,19 +1,17 @@
 # Scene: a general 2-D situation display for InferNode
 
 **Status:** implemented — `lib/scene` (model, camera, renderer),
-`scenefs` (the served scene: camera, clock, record/replay),
-`scene-view` (Matrix display module, replacing `geo-map`),
-`scenerender` (headless, to an image on standard output), `scenedemo`
-(a synthetic producer).  Man pages: scene(2), scenefs(4),
-scenerender(1); the Matrix library pages for `scene-view` and
-`scene-fixture`.
+`scenefs` (the served scene: camera, clock, a stream of its changes),
+`wm/scene` (a window showing a scene; composed into Matrix as an `app`
+region, replacing `geo-map`), `scenereplay` (plays a recording back),
+`scenedemo` (a synthetic producer).  Man pages: scene(1), scene(2),
+scenefs(4); the Matrix library page for `scene-fixture`.
 
 Scene generalises the earlier geo-map contract
 from "georeferenced units on a Mercator map" to "things in a 2-D space,
 over time": a simulation on a local metre grid, a board game, a network
 laid out in the plane, a test rig replaying a log, and — unchanged — a
-map. The same data drives a live Matrix pane, an image written by a
-batch job, and an agent that reads and steers the view through files.
+map. The same data drives a window, a Matrix pane, and an agent that reads and steers the view through files.
 
 Nothing here is domain-specific. The renderer knows shapes, colours,
 labels, headings and time; it does not know what the things are.
@@ -25,9 +23,9 @@ labels, headings and time; it does not know what the things are.
 | Piece | Kind | Role |
 |---|---|---|
 | `module/scene.m`, `appl/lib/scene.b` | library | The model (entities, features, layers, meta, clock), the record grammar, frames and camera, the renderer, hit-testing. Every other piece is a thin client of it. |
-| `scenefs` (`appl/cmd/scenefs.b`) | 9P server | Serves one live scene at `/mnt/scene`: producers write it, viewers read it, anyone steers it through `ctl`. Owns the camera and the playhead, records every change, replays a recording. |
-| `scene-view` (`appl/matrix/scene-view.b`) | Matrix display | Draws a scene directory — a `scenefs` mount or a plain directory — into a Matrix region. |
-| `scenerender` (`appl/cmd/scenerender.b`) | command | Draws a scene directory, or a recording at time *t*, as an Inferno image on standard output. No window system needed. |
+| `scenefs` (`appl/cmd/scenefs.b`) | 9P server | Serves one live scene at `/mnt/scene`: producers write it, viewers read it, anyone steers it through `ctl`. Owns the shared camera, and streams every change as records: reading that stream is recording. |
+| `wm/scene` (`appl/wm/scene.b`) | window | Draws a scene directory — a `scenefs` mount or a plain directory — in an ordinary window: under `wm`, in a Lucifer activity, or in a Matrix `app` region. |
+| `scenereplay` (`appl/cmd/scenereplay.b`) | filter | Plays a recording back as records, from a start time, paced by the recording's clock: `scenereplay run.scene > /mnt/scene/log`. |
 | `scenedemo` (`appl/cmd/scenedemo.b`) | command | A synthetic producer (a field survey) writing records to a scene's `log`: a demo and a test load. |
 | `scene-fixture` (`appl/matrix/scene-fixture.b`) | Matrix service | Mounts a `scenefs` and runs `scenedemo`, so `lib/matrix/compositions/scene-demo` works from the picker. |
 
@@ -129,7 +127,7 @@ mkdir -p /tmp/judge/layers
 echo 'frame=xy' > /tmp/judge/meta
 {echo 'kind=scene'; echo 'dir=/n/mosaic/view/scene'} > /tmp/judge/layers/10-view
 {echo 'kind=scene'; echo 'dir=/n/mosaic/truth/scene'; echo 'opacity=90'} > /tmp/judge/layers/20-truth
-wm/matrix ...   # with: top scene-view /tmp/judge
+wm/matrix ...   # with: top app /dis/wm/scene.dis /tmp/judge
 ```
 
 and the commander's own display, granted only `/n/mosaic/view`, cannot.
@@ -153,17 +151,17 @@ timeless.
 
 A plain directory is enough for a static picture. A *live* scene wants
 more: a camera several viewers share, a way for an agent to see and move
-what the human sees, a cheap change signal, and time travel. `scenefs`
-serves the §2 directory plus a control surface:
+what the human sees, a cheap change signal, and a record of what
+happened. `scenefs` serves the §2 directory plus a control surface:
 
 ```
 /mnt/scene/
     ctl            (w)   one command per line (below)
     view           (r)   the shared camera: "frame F center A B zoom Z sel ID follow ID fit N"
-    status         (r)   "mode M t T t0 T0 t1 T1 rate R gen G entities N features N"
+    status         (r)   "t T gen G entities N features N layers N"
     event          (r)   BLOCKING; one event per read (below)
+    changes        (r)   BLOCKING; every change as records (§3.3)
     log            (w)   batched update records (§3.2) — the ingest wire
-    history        (r)   the recording so far, as log records
     meta           (rw)
     time           (rw)
     entities/<id>  (rw)  create, write, remove — like a plain directory
@@ -189,12 +187,11 @@ was tried and dropped: a shell's clunks arrive out of order.)
 ```
 center A B        zoom Z        fit        follow ID        unfollow
 select ID         deselect
-play              pause         seek T     rate R           live        step [DT]
-clear             (drop every entity, feature and layer; the recording keeps the clear)
+clear             (drop every entity, feature and layer; a recording keeps the clear)
 ```
 
 Camera commands change `view` for every viewer: a human panning in one
-`scene-view` moves the picture an agent reads, and an agent writing
+window moves the picture an agent reads, and an agent writing
 `follow r2` moves the human's picture. `select` is how a click reaches
 an agent (as an `event`).  `fit` cannot be answered by the server, which
 does not know any viewer's size: it posts a request number in `view`
@@ -202,7 +199,7 @@ does not know any viewer's size: it posts a request number in `view`
 the camera back, and the request reads 0 again.  A fresh scene starts
 with a request; a viewer joining a scene whose camera is set adopts it.
 
-### 3.2 Records (`log`, `history`, recordings)
+### 3.2 Records (`log`, `changes`, recordings)
 
 One record per line, fields space-separated, rc-style quoting for values
 with spaces:
@@ -219,23 +216,47 @@ clear
 
 `ent`/`feat`/`layer` *replace* the object's stanza (a full state, not a
 patch), so any suffix of a recording after a `clear` is
-self-contained. `history` is exactly this stream with a `time` record
-before each change, so `cat /mnt/scene/history > run.scene` saves a run
-and `scenefs -r run.scene` (or `scenerender -r run.scene -t 300`)
-replays it.
+self-contained.
 
-### 3.3 Time: live, paused, playing
+### 3.3 Recording and replay: `changes` and `scenereplay`
 
-`scenefs` keeps two states: **live** (what producers last wrote) and the
-**playhead** state. In `live` mode they are the same object. `pause`,
-`seek T` or `step` detach the playhead: `entities/` etc. then show the
-scene as it was at the playhead, rebuilt from the recording, while
-producers keep writing the live state underneath. `play` advances the
-playhead at `rate` × wall-clock and rejoins live when it catches up;
-`live` rejoins at once.  Replay covers the run since the last `clear`
-(a restarted producer starts with one), so a clock that starts again
-from 0 is not confused with the previous run's. As with vid9p, the
-server owns the playhead, so every viewer of one scene is in step.
+`scenefs` keeps the scene as it stands, and no history. Time travel is
+not a server mode; it is two ordinary programs on either side of it.
+
+**Recording is reading.** `changes` is a blocking stream of every change
+as §3.2 records, with a `time` record wherever the clock has moved. Each
+open is its own cursor and begins with the scene as it stands (a `clear`
+and the records that rebuild it), so whatever one open reads is a
+self-contained recording:
+
+```
+cat /mnt/scene/changes > run.scene
+```
+
+Nothing is dropped: a reader that falls more than 4 MB behind is cut off
+with an error rather than handed a recording with holes in it.
+
+**Replay is writing.** `scenereplay [-t start] [-x rate] run.scene`
+writes, on standard output, the scene as it stood at `start` as one
+batch, then each tick's records as one write, paced by the recording's
+clock (`-x 0`: as fast as the reader takes it). Pointed at a scene's
+`log` it is just another producer:
+
+```
+scenereplay -t 120 -x 2 run.scene > /mnt/scene/log
+```
+
+So a review is a second `scenefs` fed by `scenereplay` while the live one
+carries on; every viewer of that scene is in step because they share its
+camera and clock, as with any producer. Seeking is running `scenereplay`
+again from another start; pausing is stopping it. The pieces compose
+with everything else that reads and writes files — `grep` a recording,
+cut one with `sed`, tee a live run to two scenes.
+
+(An earlier design kept the history and a playhead inside `scenefs`,
+with `play`/`pause`/`seek` verbs. It served two scenes through one set of
+files — which one a read saw depended on a mode — and put a recorder
+and a player inside a file server. They are gone.)
 
 ### 3.4 `event`
 
@@ -245,7 +266,6 @@ happens and returns one line:
 ```
 gen 42            # the visible scene changed (coalesced: only the latest is queued)
 select r2         # a viewer selected r2
-time 12.5         # the playhead moved
 view ...          # the camera moved (same text as `view`)
 ```
 
@@ -254,11 +274,10 @@ agents block on `event`.
 
 ### 3.5 Trust
 
-`scenefs` holds no authority beyond the files it serves: it opens only a
-recording named on its command line. Access is by placement — bind
-`/mnt/scene` into a namespace to grant it.  A grant that should watch
-but not steer is a separate `scenefs -r` of the recording, not a mode
-flag.
+`scenefs` holds no authority beyond the files it serves: it opens none.
+Access is by placement — bind `/mnt/scene` into a namespace to grant it.
+A grant that should watch but not steer is a second scene fed from the
+first (`cat changes | scenereplay -x 0 > other/log`), not a mode flag.
 
 ---
 
@@ -267,36 +286,30 @@ flag.
 `lib/scene` draws, back to front: background, layers (or the default
 grid/graticule), filled features, stroked features, trails, entity
 glyphs with heading leaders, labels (decluttered), selection, HUD (frame,
-scale bar, zoom, clock and mode). Colours are allocated once per value
+scale bar, zoom and clock). Colours are allocated once per value
 and cached; glyphs are anti-aliased through `lib/aadraw`.
 
-- **`scene-view`** (Matrix display, 100 ms ticker). It polls `status`
-  when the mount is a `scenefs` (reload only on a new `gen`), else falls
-  back to a count+mtime scan of the directories.  It keeps looking for a
-  `status` file, because Matrix starts display modules before the
-  services that may mount the scene. It follows the shared camera in
-  `view` and writes its own pan/zoom/select back to `ctl`, so viewers and
-  agents stay in step. Keys: `+`/`-` zoom, `h/j/k/l` pan, `f` fit,
-  space play/pause, `.`/`,` step, `L` live.
-- **`scenerender`** draws headless, as an image on standard output:
-
-  ```
-  scenerender [-w 1024] [-h 768] [-t T] [-v 'center A B zoom Z'] [-F font] [-n] [-l] scene-dir|-r recording > out.bit
-  ```
-
-  With `-r`, the recording is replayed to time `T` (default: the end)
-  and trails are built from the full history — whole trajectories for a
-  report or a sweep's figure.
+- **`wm/scene`** (a window, 100 ms ticker). It polls `status` when the
+  directory is a `scenefs` (reload only on a new `gen`), else falls back
+  to a signature scan of the directories.  It keeps looking for a
+  `status` file, because a scene may be mounted after the window starts.
+  It follows the shared camera in `view` and writes its own
+  pan/zoom/select back to `ctl`, so viewers and agents stay in step.
+  Keys: `+`/`-` zoom, `h/j/k/l` pan, `f` fit; button 3 for a menu.  In
+  Matrix it is an `app` region (`top app /dis/wm/scene.dis /mnt/scene`),
+  so the same program is the standalone viewer and the composed pane.
 - **Pictures are files.** Images stay in the Inferno image format inside
   the system: `present` shows `.bit` files. Conversion happens once, at
   the edge, when an image leaves (`tools/p9img2png.py` on the host).
-  Capturing a window as it is on screen is a window-system question,
-  under design (a read-only window image served by `wmsrv`).
+  A window's picture, as it is on screen, is a file too: `wmsrv` serves
+  each client's window read-only (wmsrv(2) `wsys`, the rio
+  `/dev/wsys/<id>/window` shape), and a Lucifer activity's agent reads
+  its own activity's windows with the `window` tool.
 - **Agents** need nothing new. An agent granted `/mnt/scene` reads
   `status`, `view` and the stanza files, blocks on `event` for what a
-  human selects, and steers with `ctl` (`follow`, `seek`, `select`) —
-  the human's `scene-view` moves with it. To show a picture it runs
-  `scenerender` and hands the file to `present`.
+  human selects, and steers with `ctl` (`follow`, `select`, `center`) —
+  the human's window moves with it. To show a picture it saves the
+  window with the `window` tool and hands the file to `present`.
 
 ---
 
@@ -362,5 +375,6 @@ Step 1 is a prerequisite for 2 and 3 and is worth doing on its own.
   only.
 - Interpolation between producer updates (the producer's tick rate is the
   display's motion rate).
-- Seek cost is O(recording) and the history is in memory — fine to ~10⁵
-  records; keyframes and a spill file later.
+- Seeking a long recording: `scenereplay -t` reads from the start, O(recording).
+  Periodic full-state stanzas (the `clear` a new reader gets) would allow
+  an index; not needed yet.
