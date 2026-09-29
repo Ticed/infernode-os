@@ -43,44 +43,6 @@ struct Pool
 
 void*	initbrk(ulong);
 
-/*
- * Image memory's arenas, for drawing hardware that works on images
- * where they are (memhw in memdraw.h): each is recorded and announced
- * to imagarenahook as it is made.
- */
-enum
-{
-	Nimagarena	= 256,
-};
-static struct
-{
-	void	*base;
-	ulong	len;
-} imagarenas[Nimagarena];
-static int	nimagarena;
-void	(*imagarenahook)(void*, ulong);
-
-static void
-newimagarena(void *base, ulong len)
-{
-	if(nimagarena < Nimagarena){
-		imagarenas[nimagarena].base = base;
-		imagarenas[nimagarena++].len = len;
-	}
-	if(imagarenahook != nil)
-		imagarenahook(base, len);
-}
-
-/* the arenas made so far */
-void
-imagarenaeach(void (*fn)(void*, ulong))
-{
-	int i;
-
-	for(i = 0; i < nimagarena; i++)
-		fn(imagarenas[i].base, imagarenas[i].len);
-}
-
 struct
 {
 	int	n;
@@ -430,8 +392,6 @@ dopoolalloc(Pool *p, ulong asize, ulong pc)
 		unlock(&p->l);
 		return nil;
 	}
-	if(p == imagmem)
-		newimagarena(t, alloc);
 #ifdef __NetBSD__
 	/* Align allocations to 16 bytes */
 	{

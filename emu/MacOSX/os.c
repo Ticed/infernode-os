@@ -537,8 +537,6 @@ emuinit_worker(void *arg)
 }
 #endif
 
-void	memhwinit(void);
-
 void
 libinit(char *imod)
 {
@@ -576,8 +574,6 @@ libinit(char *imod)
     
     up->env->uid = getuid();
     up->env->gid = getgid();
-
-    memhwinit();	/* the GPU for libmemdraw, if DRAWHW=1 (memhw.c) */
 
 #ifdef GUI_SDL3
     /* SDL3/Cocoa: Spawn emuinit on worker thread so main thread stays free for NSRunLoop */
