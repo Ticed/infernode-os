@@ -167,6 +167,20 @@ geomw := 0;		# -g: standalone geometry request (0 = adapt to host)
 geomh := 0;
 
 focusmod: MatrixDisplay;	# module with keyboard focus
+focusleaf: ref LayoutNode.Leaf;	# ... and its region
+
+# Per-region redraw.  Each display region keeps its last drawing in an
+# off-screen image; a module's draw() runs only when its region went
+# stale — update() reported a change, it consumed input, it was
+# resized or rethemed.  Otherwise the frame is composited from the
+# cached images, so a 25 fps video pane no longer repaints a map and
+# every gauge 25 times a second.  The module interface is unchanged.
+LeafCache: adt {
+	leaf:	ref LayoutNode.Leaf;
+	img:	ref Image;
+	stale:	int;
+};
+leafcaches: list of ref LeafCache;
 tkfocus: int;		# 1: keys go to the Tk engine (a hosted region has focus)
 tkregionseq: int;	# widget-path allocator for hosted regions (.r<seq>)
 mtxitem: string;	# canvas item id of the composited-frame image
@@ -1336,6 +1350,7 @@ allocframe(wd, ht: int)
 	if(ht < 1) ht = 1;
 	winr = Rect((0,0), (wd, ht));
 	mtximg = display_g.newimage(winr, display_g.image.chans, 0, Draw->Nofill);
+	staleall();
 	# Hosted-app windows live in frame coordinates; a new frame
 	# needs a new base (the resize walker then pushes reshapes so
 	# each app re-acquires a window on it).
@@ -1485,6 +1500,7 @@ guiloop()
 			tk->cmd(top, ". configure -background " + bgcolstr);
 			tk->cmd(top, ".c configure -background " + bgcolstr);
 			rethemedisplaymodules(comp.layout);
+			staleall();
 			dirty = 1;
 		}
 	}
@@ -1681,7 +1697,20 @@ drawlayout(dst: ref Image, node: ref LayoutNode)
 		}
 	Leaf =>
 		if(n.mod != nil) {
-			n.mod->draw(dst);
+			lc := cacheof(n);
+			if(lc.img == nil || !lc.img.r.eq(n.r)) {
+				lc.img = display_g.newimage(n.r, dst.chans, 0, Draw->Nofill);
+				lc.stale = 1;
+			}
+			if(lc.img == nil) {	# out of image memory: draw direct
+				n.mod->draw(dst);
+				return;
+			}
+			if(lc.stale) {
+				n.mod->draw(lc.img);
+				lc.stale = 0;
+			}
+			dst.draw(n.r, lc.img, nil, n.r.min);
 		} else if(n.tkmod != nil) {
 			;	# a live Tk frame overlays this rect
 		} else if(n.modname == "app" && n.apppid > 0) {
@@ -1704,6 +1733,28 @@ drawlayout(dst: ref Image, node: ref LayoutNode)
 					textcolor, (0, 0), font_g, "failed — " + lerr);
 		}
 	}
+}
+
+cacheof(n: ref LayoutNode.Leaf): ref LeafCache
+{
+	for(l := leafcaches; l != nil; l = tl l)
+		if((hd l).leaf == n)
+			return hd l;
+	lc := ref LeafCache(n, nil, 1);
+	leafcaches = lc :: leafcaches;
+	return lc;
+}
+
+markstale(n: ref LayoutNode.Leaf)
+{
+	if(n != nil)
+		cacheof(n).stale = 1;
+}
+
+staleall()
+{
+	for(l := leafcaches; l != nil; l = tl l)
+		(hd l).stale = 1;
 }
 
 # Access rect of any layout node
@@ -2252,8 +2303,12 @@ updatedisplaymodules(node: ref LayoutNode): int
 				return 0;
 			t.acc = 0;
 		}
-		if(n.mod != nil)
-			return n.mod->update();
+		if(n.mod != nil) {
+			ch := n.mod->update();
+			if(ch)
+				markstale(n);
+			return ch;
+		}
 		if(n.tkmod != nil)
 			return n.tkmod->update();
 	}
@@ -2269,6 +2324,7 @@ resizedisplaymodules(node: ref LayoutNode)
 		resizedisplaymodules(n.child1);
 		resizedisplaymodules(n.child2);
 	Leaf =>
+		markstale(n);
 		if(n.mod != nil)
 			n.mod->resize(n.r);
 		if(n.tkmod != nil) {
@@ -2512,8 +2568,13 @@ routeptr(node: ref LayoutNode, p, rawp: ref Pointer): int
 	Leaf =>
 		if(n.mod != nil && n.r.contains(p.xy)) {
 			focusmod = n.mod;
+			focusleaf = n;
 			tkfocus = 0;
-			return n.mod->pointer(p);
+			if(n.mod->pointer(p)) {
+				markstale(n);
+				return 1;
+			}
+			return 0;
 		}
 		if(n.tkmod != nil && n.r.contains(p.xy)) {
 			# Tk hit-tests, fires bindings, and manages widget
@@ -2581,8 +2642,10 @@ handlekey(k: int)
 		}
 		return;
 	}
-	if(focusmod != nil && focusmod->key(k))
+	if(focusmod != nil && focusmod->key(k)) {
+		markstale(focusleaf);
 		dirty = 1;
+	}
 }
 
 # ── Watch rules ─────────────────────────────────────────────
@@ -2725,6 +2788,8 @@ reloadcomposition(text: string)
 	# The focused module may just have been shut down; don't route
 	# keys into a dead instance.
 	focusmod = nil;
+	focusleaf = nil;
+	leafcaches = nil;	# the new layout's leaves are new objects
 
 	if(old != nil) {
 		shutdowndisplaymodules(old.layout);
