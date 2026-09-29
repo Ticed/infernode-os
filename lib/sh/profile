@@ -180,13 +180,28 @@ if {ftest -f /usr/inferno/audit/on} {
 }
 
 # ── Secstored (persistent encrypted key storage) ──────────
-# Kill stale secstored from a previous emu session — a stale
-# instance with different PAK data causes login to hang indefinitely.
+# One secstored per host user, on 127.0.0.1:5356, over the store in
+# ~/.infernode/usr/inferno/secstore. If the port is already served, it
+# is served by another InferNode of this same user -- secstored runs
+# inside an emulator, so a live holder of the port is a live instance,
+# and it serves the same store this one would -- and this instance uses
+# it rather than starting a second that could not bind anyway.
+#
+# This used to kill whatever held the port first ("lsof -ti :5356 |
+# xargs kill"), meant for a stale
+# server with different key data that made login hang. But nothing
+# stale can hold it: an emulator that is gone has released its sockets.
+# What it killed was the user's other InferNode -- their running
+# desktop, the moment a second instance (a remote-desktop viewer, a
+# test shell) started with sh -l.
+#
+# So on macOS and Linux: always start one. If the port is taken, this
+# one cannot announce and exits quietly, and the one already there
+# serves. Windows keeps its taskkill of secstored.exe unchanged: that
+# is a host program there, it can outlive an emulator, and this change
+# has not been run on Windows.
 if {~ $emuhost Nt} {
-	# Windows: kill stale secstored — os without backticks (fire and forget)
 	os cmd /c 'taskkill /F /IM secstored.exe >nul 2>&1' >[2] /dev/null
-}{
-	os sh -c 'lsof -ti :5356 2>/dev/null | xargs kill 2>/dev/null; sleep 1; true' >[2] /dev/null
 }
 mkdir -p /usr/inferno/secstore >[2] /dev/null
 auth/secstored >[2] /dev/null &
