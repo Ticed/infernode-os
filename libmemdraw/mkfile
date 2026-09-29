@@ -4,6 +4,7 @@ LIB=libmemdraw.a
 
 COMMONFILES=\
 	aa.$O\
+	hw.$O\
 	aapath.$O\
 	arc.$O\
 	cmap.$O\

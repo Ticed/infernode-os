@@ -38,13 +38,15 @@ TMP="${TMPDIR:-/tmp}/bench-draw.$$"
 mkdir -p "$TMP"
 trap 'rm -rf "$TMP"' EXIT
 
-for side in A B; do
-	eval cmd=\$$side
-	i=0
-	while [ $i -lt $RUNS ]; do
+# A and B alternate, so a machine whose load changes during the test
+# weighs on both alike
+i=0
+while [ $i -lt $RUNS ]; do
+	for side in A B; do
+		eval cmd=\$$side
 		(cd "$ROOT" && eval "$cmd -c1 -r. /dis/drawbench.dis -f $FRAMES") > "$TMP/$side.$i" 2>&1
-		i=$((i+1))
 	done
+	i=$((i+1))
 done
 
 python3 - "$TMP" "$RUNS" "$A" "$B" <<'EOF'

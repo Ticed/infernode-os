@@ -24,6 +24,8 @@ struct Memdata
 	int		ref;		/* number of Memimages using this data */
 	void*	imref;
 	int		allocd;	/* is this malloc'd? */
+	ulong	hwread;	/* the memhwgen of queued hardware work reading it */
+	ulong	hwwrite;	/* ... and writing it */
 };
 
 enum {
@@ -110,6 +112,59 @@ struct	Memdrawparam
 	ulong srgba;	/* sval in rgba */
 	ulong sdval;	/* sval in dst format */
 };
+
+/*
+ * Drawing hardware (hw.c): a platform may offer a device, a GPU, that
+ * does some of memimagedraw's work on images whose memory it shares with
+ * the CPU.  memimagedraw describes what it can hand over as a Memhwop,
+ * exactly as the software path would draw it, and the device queues it;
+ * the CPU waits for queued work before it touches pixels the work reads
+ * or writes.  With no device, or memhwon 0, nothing changes.
+ */
+typedef struct Memhw	Memhw;
+typedef struct Memhwop	Memhwop;
+
+enum
+{
+	Hwfill	= 1,	/* value, as a pixel, into every pixel */
+	Hwcopy,		/* src's bytes onto dst's; they do not overlap */
+	Hwcover,	/* the rgba value S over D through the GREY8 mask (coverdraw) */
+	Hwblend,	/* src, or the rgba value if src is nil, S over D (blenddraw) */
+};
+
+struct Memhwop
+{
+	int	kind;
+	int	w, h;		/* pixels */
+	uchar	*dst;		/* the first pixel */
+	long	dstride;	/* bytes from a row to the next */
+	int	dnb;		/* bytes a pixel, 3 or 4 */
+	int	dshift[4];	/* red, green, blue, alpha (-1: none) */
+	uchar	*src;
+	long	sstride;
+	int	sshift[4];
+	uchar	*mask;
+	long	mstride;
+	ulong	value;		/* Hwfill: a pixel; else r<<24|g<<16|b<<8|a, premultiplied */
+	Memdata	*ddata, *sdata, *mdata;
+};
+
+struct Memhw
+{
+	char	*name;
+	int	(*run)(Memhwop*);	/* queue it; 0 if it cannot */
+	void	(*sync)(void);	/* wait for everything queued */
+	int	minpixels;	/* smaller work is left to the CPU unless work is queued */
+};
+
+extern	Memhw	*memhw;
+extern	int	memhwon;
+extern	int	memhwbusy;
+extern	ulong	memhwgen;
+extern	int	_memhwdraw(Memdrawparam*);
+extern	void	memhwsync(void);
+extern	void	memhwwrite(Memdata*);
+extern	void	memhwread(Memdata*);
 
 /*
  * Memimage management

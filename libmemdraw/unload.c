@@ -8,6 +8,7 @@ unloadmemimage(Memimage *i, Rectangle r, uchar *data, int ndata)
 	int y, l;
 	uchar *q;
 
+	memhwread(i->data);
 	if(!rectinrect(r, i->r))
 		return -1;
 	l = bytesperline(r, i->depth);

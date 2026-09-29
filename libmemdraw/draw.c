@@ -182,6 +182,16 @@ DBG print("hwdraw handled\n");
 		return;
 	}
 	/*
+	 * Drawing hardware (hw.c), if the platform has any; otherwise the
+	 * CPU draws, once the hardware has finished with these images.
+	 */
+	if(_memhwdraw(&par))
+		return;
+	memhwwrite(dst->data);
+	memhwread(src->data);
+	memhwread(mask->data);
+
+	/*
 	 * Optimizations using memmove and memset.
 	 */
 DBG print("test memoptdraw\n");
@@ -2705,6 +2715,7 @@ memfillcolor(Memimage *i, ulong val)
 	int d, y;
 	uchar p[4];
 
+	memhwwrite(i->data);
 	if(val == DNofill)
 		return;
 
