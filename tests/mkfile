@@ -186,6 +186,7 @@ SYSMODULES=\
 	arg.m\
 	cowfs.m\
 	dial.m\
+	scene.m\
 	factotum.m\
 	html.m\
 	imap.m\

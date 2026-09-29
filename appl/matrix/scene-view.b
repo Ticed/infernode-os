@@ -53,6 +53,22 @@ cam: ref Cam;
 trails: ref Trails;
 lastgen := -1;
 lastscan := "";
+lastsub := "";
+nextscan := 0;		# when a directory signature may next be taken
+
+# A signature reads the directory: over a slow server that costs.  Take
+# one no more often than three times what the last one cost, so a pane
+# never spends most of its time watching.
+scanok(): int
+{
+	return sys->millisec() >= nextscan;
+}
+
+scanned(t0: int)
+{
+	cost := sys->millisec() - t0;
+	nextscan = sys->millisec() + 3 * cost;
+}
 lastview := "";
 fitseq := 0;		# the last fit request this pane answered
 pendfit := 0;		# the request the server shows (0: none)
@@ -128,9 +144,18 @@ update(): int
 			mode = md;
 			dirty = 1;
 		}
-		if(gen != lastgen) {
+		# the server's gen covers its own objects; scenes its scene
+		# layers overlay are other servers, watched by their signatures
+		sub := lastsub;
+		if(scanok()) {
+			t0 := sys->millisec();
+			sub = scene->subsignature(m);
+			scanned(t0);
+		}
+		if(gen != lastgen || sub != lastsub) {
 			lastgen = gen;
 			reload();
+			lastsub = sub;
 			dirty = 1;
 		}
 		if(!dragging) {
@@ -150,7 +175,12 @@ update(): int
 			dirty = 1;
 		}
 	} else {
-		sc := scanall();
+		sc := lastscan;
+		if(scanok()) {
+			t0 := sys->millisec();
+			sc = scene->signature(mountpath);
+			scanned(t0);
+		}
 		if(sc != lastscan) {
 			lastscan = sc;
 			reload();
@@ -228,38 +258,6 @@ fieldafter(s, k: string): string
 		if(hd toks == k)
 			return hd tl toks;
 	return nil;
-}
-
-# A plain directory's change signature: the clock, and per subdirectory
-# the count, max mtime, and sum of versions and lengths.
-scanall(): string
-{
-	s := "";
-	(ok, d) := sys->stat(mountpath + "/meta");
-	if(ok >= 0)
-		s += sys->sprint("m%d ", d.mtime);
-	# a synthetic server's files have no useful mtime or length (the
-	# usual 9P convention): the clock's value catches every tick
-	s += "t" + readfile(mountpath + "/time") + " ";
-	for(k := Scene->ENT; k <= Scene->LAYER; k++) {
-		fd := sys->open(mountpath + "/" + scene->dirname(k), Sys->OREAD);
-		if(fd == nil)
-			continue;
-		n := 0; mx := 0; vs := big 0;
-		for(;;) {
-			(nd, da) := sys->dirread(fd);
-			if(nd <= 0)
-				break;
-			for(i := 0; i < nd; i++) {
-				n++;
-				if(da[i].mtime > mx)
-					mx = da[i].mtime;
-				vs += big da[i].qid.vers + da[i].length;
-			}
-		}
-		s += sys->sprint("%d:%d:%d:%bd ", k, n, mx, vs);
-	}
-	return s;
 }
 
 # ── draw ───────────────────────────────────────────────────

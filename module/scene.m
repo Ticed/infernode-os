@@ -61,9 +61,12 @@ Scene: module
 		dash:	int;
 		radius:	real;
 		step:	real;		# grid layer
-		opacity: int;		# image layer 0..255
+		opacity: int;		# image and scene layers, 0..255
 		file:	string;		# image layer
 		bounds:	array of (real, real);	# image layer: two corners
+		dir:	string;		# scene layer: the scene it draws
+		sub:	cyclic ref Model;	# scene layer: that scene, as read
+		hide:	int;		# hide=1: not drawn
 
 		get:	fn(o: self ref Obj, k: string): string;
 		text:	fn(o: self ref Obj): string;	# stanza, one attr per line
@@ -84,8 +87,11 @@ Scene: module
 		tabs:	array of ref Tab;	# by kind (internal)
 
 		new:	fn(): ref Model;
-		# Read a scene directory (meta, time, entities/, features/, layers/).
+		# Read a scene directory (meta, time, entities/, features/,
+		# layers/), and the scenes its scene layers name.
 		read:	fn(dir: string): ref Model;
+		# (Re)read the scenes this model's scene layers name.
+		resolve: fn(m: self ref Model);
 
 		# Apply one record (docs/scene-design.md §3.2).  nil or error.
 		apply:	fn(m: self ref Model, rec: string): string;
@@ -174,6 +180,13 @@ Scene: module
 
 	# The entity nearest p within radius px, or nil.
 	hit:	fn(m: ref Model, c: ref Cam, p: Draw->Point, radius: int): string;
+
+	# A scene directory's change signature, its scene layers' included:
+	# it changes when anything the renderer would draw does (for a
+	# synthetic server with no useful mtimes, through the clock).
+	signature: fn(dir: string): string;
+	# The signatures of a model's scene layers alone.
+	subsignature: fn(m: ref Model): string;
 
 	# Parse helpers, exported for servers and tests.
 	stanza:	fn(text: string): list of (string, string);	# ndb stanza

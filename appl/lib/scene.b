@@ -325,6 +325,7 @@ parseobj(o: ref Obj, f: int)
 		o.width = 1;
 	o.dash = getattr(kv, "dash") == "1";
 	o.dim = getattr(kv, "dim") == "1";
+	o.hide = getattr(kv, "hide") == "1";
 	case o.kind {
 	ENT =>
 		if(o.label == nil)
@@ -358,6 +359,7 @@ parseobj(o: ref Obj, f: int)
 		o.typ = getattr(kv, "kind");
 		(nil, o.step) = realattr(kv, "step");
 		o.file = getattr(kv, "file");
+		o.dir = getattr(kv, "dir");
 		o.bounds = parsepts(getattr(kv, "bounds"));
 		o.opacity = 255;
 		if((s = getattr(kv, "opacity")) != nil)
@@ -632,7 +634,39 @@ goodid(id: string): int
 	return 1;
 }
 
+MAXDEPTH: con 4;	# scene layers nest; a scene that layers itself stops here
+
 Model.read(dir: string): ref Model
+{
+	return readat(dir, 0);
+}
+
+readat(dir: string, depth: int): ref Model
+{
+	m := readflat(dir);
+	resolveat(m, depth);
+	return m;
+}
+
+Model.resolve(m: self ref Model)
+{
+	resolveat(m, 0);
+}
+
+# Read the scenes a model's scene layers name.  The names resolve in the
+# reader's namespace: a viewer overlays what it can see.
+resolveat(m: ref Model, depth: int)
+{
+	layers := m.objs(LAYER);
+	for(i := 0; i < len layers; i++) {
+		l := layers[i];
+		l.sub = nil;
+		if(l.typ == "scene" && l.dir != nil && depth < MAXDEPTH)
+			l.sub = readat(l.dir, depth + 1);
+	}
+}
+
+readflat(dir: string): ref Model
 {
 	m := Model.new();
 	(ok, nil) := sys->stat(dir + "/meta");
@@ -672,6 +706,25 @@ Model.extent(m: self ref Model): (int, real, real, real, real)
 				(ok, a0, b0, a1, b1) = grow(ok, a0, b0, a1, b1, pa, pb);
 		}
 	}
+	# the layers' extents too: a stack may have nothing of its own
+	layers := m.objs(LAYER);
+	for(i = 0; i < len layers; i++) {
+		l := layers[i];
+		if(l.hide)
+			continue;
+		if(l.typ == "scene" && l.sub != nil && l.sub.frame == m.frame) {
+			(sok, sa0, sb0, sa1, sb1) := l.sub.extent();
+			if(sok) {
+				(ok, a0, b0, a1, b1) = grow(ok, a0, b0, a1, b1, sa0, sb0);
+				(ok, a0, b0, a1, b1) = grow(ok, a0, b0, a1, b1, sa1, sb1);
+			}
+		} else if(l.typ == "image" && len l.bounds >= 2) {
+			for(j := 0; j < 2; j++) {
+				(ia, ib) := l.bounds[j];
+				(ok, a0, b0, a1, b1) = grow(ok, a0, b0, a1, b1, ia, ib);
+			}
+		}
+	}
 	if(!ok) {
 		bd := parsepts(getattr(m.meta, "bounds"));
 		if(len bd >= 2) {
@@ -693,6 +746,58 @@ grow(ok: int, a0, b0, a1, b1, a, b: real): (int, real, real, real, real)
 	if(b < b0) b0 = b;
 	if(b > b1) b1 = b;
 	return (1, a0, b0, a1, b1);
+}
+
+# ── Change signatures ────────────────────────────────────────
+
+signature(dir: string): string
+{
+	initbase();
+	return sigat(dir, 0);
+}
+
+# The contents themselves, hashed: mtimes have one-second grain and a
+# synthetic server's files have none, so nothing cheaper is reliable.
+# (A plain directory is the simple path; scenefs's gen is the fast one.)
+sigat(dir: string, depth: int): string
+{
+	s := sys->sprint("m%ux t%ux ", hash(readfile(dir + "/meta")), hash(readfile(dir + "/time")));
+	for(k := ENT; k <= LAYER; k++) {
+		d := dir + "/" + dirname(k);
+		h := 0;
+		n := 0;
+		for(nl := filenames(d); nl != nil; nl = tl nl) {
+			text := readfile(d + "/" + hd nl);
+			h += hash(hd nl + "\n" + text);	# order-free: a sum
+			n++;
+			if(k == LAYER && depth < MAXDEPTH) {
+				kv := stanza(text);
+				if(getattr(kv, "kind") == "scene" && (sd := getattr(kv, "dir")) != nil)
+					s += "[" + sigat(sd, depth + 1) + "]";
+			}
+		}
+		s += sys->sprint("%d:%d:%ux ", k, n, h);
+	}
+	return s;
+}
+
+hash(s: string): int
+{
+	h := 5381;
+	for(i := 0; i < len s; i++)
+		h = (h * 33) ^ s[i];
+	return h;
+}
+
+subsignature(m: ref Model): string
+{
+	initbase();
+	s := "";
+	layers := m.objs(LAYER);
+	for(i := 0; i < len layers; i++)
+		if(layers[i].typ == "scene" && layers[i].dir != nil)
+			s += "[" + sigat(layers[i].dir, 1) + "]";
+	return s;
 }
 
 # ── Camera ───────────────────────────────────────────────────
@@ -988,19 +1093,20 @@ Label: adt {
 	halo:	int;
 };
 labels: list of ref Label;
+LABELGAP: con 3;	# px kept clear around a label
 obstacles: list of Rect;
 
 addlabel(s: string, col: ref Image, cands: list of Point, prio, halo: int)
 {
 	if(s == nil || font == nil)
 		return;
-	labels = ref Label(s, col, cands, prio, halo) :: labels;
+	labels = ref Label(s, col, cands, prio + labeldepth * 4, halo) :: labels;
 }
 
 placelabels(dst: ref Image, bounds: Rect)
 {
 	halo := color(withalpha(bgc, 200));
-	for(prio := 0; prio <= 3; prio++)
+	for(prio := 0; prio < (MAXDEPTH + 1) * 4; prio++)
 		for(l := revlabels(labels); l != nil; l = tl l) {
 			lb := hd l;
 			if(lb.prio != prio)
@@ -1008,7 +1114,7 @@ placelabels(dst: ref Image, bounds: Rect)
 			w := font.width(lb.s);
 			for(c := lb.cands; c != nil; c = tl c) {
 				r := Rect(hd c, (hd c).add((w, font.height)));
-				if(!r.inrect(bounds) || collides(r.inset(-3), obstacles))
+				if(!r.inrect(bounds) || collides(r.inset(-LABELGAP), obstacles))
 					continue;
 				obstacles = r :: obstacles;
 				if(lb.halo)
@@ -1049,53 +1155,108 @@ render(dst: ref Image, m: ref Model, c: ref Cam, tr: ref Trails, flags: int, hud
 	dst.draw(r, color(bgc), nil, (0, 0));
 	labels = nil;
 	obstacles = nil;
+	layeralpha = 255;
+	labeldepth = 0;
 	if(flags & RHUD)
 		obstacles = hudrects(m, c, hud);
 	if(flags & RCHIPS) {
 		(zi, nil, zf) := chiprects(c);
 		obstacles = Rect(zi.min, zf.max).inset(-2) :: obstacles;
 	}
-
-	layers := m.objs(LAYER);
-	grid := 0;
-	for(i := 0; i < len layers; i++) {
-		l := layers[i];
-		case l.typ {
-		"grid" =>
-			drawgrid(dst, m, c, l);
-			grid = 1;
-		"image" =>
-			drawimagelayer(dst, m, c, l);
-		}
-	}
-	if(!grid && (flags & RGRID))
+	if(!drawlayers(dst, m, c, 0) && (flags & RGRID))
 		drawgrid(dst, m, c, nil);
-
-	feats := m.objs(FEAT);
-	for(i = 0; i < len feats; i++)
-		if(feats[i].hasfill)
-			drawfeature(dst, m, c, feats[i]);
-	for(i = 0; i < len feats; i++)
-		if(!feats[i].hasfill)
-			drawfeature(dst, m, c, feats[i]);
-
-	ents := m.objs(ENT);
-	if(tr != nil)
-		for(i = 0; i < len ents; i++)
-			drawtrail(dst, m, c, ents[i], tr.get(ents[i].id));
-	# the selection draws last, so it is never hidden under another glyph
-	for(i = 0; i < len ents; i++)
-		if(ents[i].id != c.sel)
-			drawentity(dst, m, c, ents[i]);
-	if(c.sel != nil && (e := m.find(ENT, c.sel)) != nil)
-		drawentity(dst, m, c, e);
-
+	drawcontent(dst, m, c, tr);
+	# every layer's labels, placed together
 	placelabels(dst, r);
 	if(flags & RHUD)
 		drawhud(dst, m, c, hud);
 	if(flags & RCHIPS)
 		drawchips(dst, c);
 	dst.clipr = oclip;
+}
+
+# The layer stack, in name order, under the scene's own features and
+# entities.  Returns 1 if a grid layer was drawn.
+#
+# A scene layer is another scene (kind=scene dir=...) drawn with the
+# same camera: the stack composes, and nests.  Its labels join the one
+# placement pass; at an opacity below 255 its geometry is drawn off
+# screen and blended in, so overlaps within it do not double up.
+layeralpha := 255;	# the opacity of the scene layer being drawn
+labeldepth := 0;	# its depth: the scene in view labels first, its layers after
+
+drawlayers(dst: ref Image, m: ref Model, c: ref Cam, depth: int): int
+{
+	grid := 0;
+	layers := m.objs(LAYER);
+	for(i := 0; i < len layers; i++) {
+		l := layers[i];
+		if(l.hide)
+			continue;
+		case l.typ {
+		"grid" =>
+			drawgrid(dst, m, c, l);
+			grid = 1;
+		"image" =>
+			drawimagelayer(dst, m, c, l);
+		"scene" =>
+			if(l.sub == nil || l.sub.frame != m.frame || depth >= MAXDEPTH)
+				continue;	# a scene in another frame cannot share the camera
+			a := l.opacity;
+			if(a <= 0)
+				continue;
+			if(a > 255)
+				a = 255;
+			oa := layeralpha;
+			layeralpha = layeralpha * a / 255;
+			labeldepth = depth + 1;
+			if(a == 255) {
+				drawlayers(dst, l.sub, c, depth + 1);
+				drawcontent(dst, l.sub, c, nil);
+			} else {
+				off := display.newimage(c.r, Draw->RGBA32, 0, Draw->Transparent);
+				if(off != nil) {
+					drawlayers(off, l.sub, c, depth + 1);
+					drawcontent(off, l.sub, c, nil);
+					dst.draw(c.r, off, display.color(premul((a << 24) | (a << 16) | (a << 8) | a)), c.r.min);
+				}
+			}
+			layeralpha = oa;
+			labeldepth = depth;
+		}
+	}
+	return grid;
+}
+
+# A scene's own features, trails and entities.
+drawcontent(dst: ref Image, m: ref Model, c: ref Cam, tr: ref Trails)
+{
+	feats := m.objs(FEAT);
+	for(i := 0; i < len feats; i++)
+		if(feats[i].hasfill && !feats[i].hide)
+			drawfeature(dst, m, c, feats[i]);
+	for(i = 0; i < len feats; i++)
+		if(!feats[i].hasfill && !feats[i].hide)
+			drawfeature(dst, m, c, feats[i]);
+
+	ents := m.objs(ENT);
+	if(tr != nil)
+		for(i = 0; i < len ents; i++)
+			if(!ents[i].hide)
+				drawtrail(dst, m, c, ents[i], tr.get(ents[i].id));
+	# the selection draws last, so it is never hidden under another glyph
+	for(i = 0; i < len ents; i++)
+		if(ents[i].id != c.sel && !ents[i].hide)
+			drawentity(dst, m, c, ents[i]);
+	if(c.sel != nil && (e := m.find(ENT, c.sel)) != nil && !e.hide)
+		drawentity(dst, m, c, e);
+}
+
+lcol(cv: int): ref Image
+{
+	if(layeralpha < 255)
+		cv = withalpha(cv, layeralpha);
+	return color(cv);
 }
 
 isdim(m: ref Model, e: ref Obj): int
@@ -1138,14 +1299,15 @@ drawentity(dst: ref Image, m: ref Model, c: ref Cam, e: ref Obj)
 		g := sz;
 		if(e.id == c.sel)	# clear the selection ring
 			g = 2*sz + 1;
-		cands := Point(p.x + g + 4, p.y - h/2) ::	# right
-			Point(p.x - g - 4 - w, p.y - h/2) ::	# left
-			Point(p.x - w/2, p.y - g - 2 - h) ::	# above
-			Point(p.x - w/2, p.y + g + 2) :: nil;	# below
+		# clear of the glyph (and of the gap labels keep, LABELGAP)
+		cands := Point(p.x + g + 6, p.y - h/2) ::	# right
+			Point(p.x - g - 6 - w, p.y - h/2) ::	# left
+			Point(p.x - w/2, p.y - g - 5 - h) ::	# above
+			Point(p.x - w/2, p.y + g + 6) :: nil;	# below
 		prio := 1;
 		if(e.id == c.sel)
 			prio = 0;
-		addlabel(e.label, col, cands, prio, 1);
+		addlabel(e.label, lcol(cv), cands, prio, 1);
 	}
 }
 
@@ -1250,7 +1412,7 @@ drawfeature(dst: ref Image, m: ref Model, c: ref Cam, f: ref Obj)
 			stroke(dst, pa, f.width, f.dash, col);
 	}
 	if(f.label != nil && len f.pts > 0 && font != nil)
-		addlabel(f.label, col, featlabelpos(m, c, f), 2, 1);
+		addlabel(f.label, lcol(cv), featlabelpos(m, c, f), 2, 1);
 }
 
 # Where a feature's label may go: above a circle, inside the top-left
@@ -1608,7 +1770,7 @@ hit(m: ref Model, c: ref Cam, p: Point, radius: int): string
 	ents := m.objs(ENT);
 	for(i := 0; i < len ents; i++) {
 		e := ents[i];
-		if(!e.haspos)
+		if(!e.haspos || e.hide)
 			continue;
 		q := c.fwd(m, e.a, e.b);
 		d := iabs(q.x - p.x) + iabs(q.y - p.y);

@@ -13,8 +13,10 @@ READS
 			stale= trail= dim= (kind= affil= also understood)
 	features/<id>	ndb stanza: type=(point|polyline|polygon|circle)
 			points= radius= color= fill= width= dash= label=
-	layers/<id>	ndb stanza: kind=grid step= color=, or
-			kind=image file= bounds= opacity=
+	layers/<id>	ndb stanza: kind=grid step= color=,
+			kind=image file= bounds= opacity=, or
+			kind=scene dir= opacity= (another scene, stacked)
+			hide=1 on any object hides it
 	status, view	when the mount is a scenefs (docs/scene-design.md §3)
 
 WRITES

@@ -96,17 +96,49 @@ As in the earlier geo contract: `type=point|polyline|polygon|circle`,
 `color=`, `fill=`, `width=`, `label=`. Plus `dash=1` for a dashed
 stroke. Features are drawn in file-name order, filled ones first.
 
-### 2.4 Layer (background)
+### 2.4 Layers: the stack
 
 ```
 kind=grid   step=100  color=223044FF          # a regular grid in frame units (auto step if absent)
-kind=image  file=/lib/scene/floor.png  bounds=x0,y0 x1,y1  opacity=160
+kind=image  file=/lib/scene/floor.bit  bounds=x0,y0 x1,y1  opacity=160
+kind=scene  dir=/n/mosaic/truth/scene  opacity=100
 ```
 
-Layers draw below features, in name order. `grid` replaces the default
-graticule/grid; `image` is a raster pinned to frame coordinates and is
-resampled to the current camera (cached until the camera moves).
-A scene with no `layers/` gets the default grid.
+Layers draw below the scene's own features and entities, in name order
+(so `10-terrain`, `20-coverage` stack as they sort). `grid` replaces the
+default graticule/grid; `image` is a raster pinned to frame coordinates,
+resampled to the camera and cached until it moves.
+
+**A layer can be a scene.** `kind=scene dir=...` draws another scene
+directory — plain files, a `scenefs`, a remote server's tree — with the
+same camera, under this one. That is the whole composition model: a
+stack is a scene whose layers are scenes, and it nests (to a depth of
+4, so a scene that layers itself stops). At `opacity` below 255 the
+layer's geometry is drawn off screen and blended once, so its own
+overlaps do not double up. Labels from every layer are placed in one
+pass, the scene in view first and deeper layers after, so the stack
+never overprints. A layer in another frame is skipped (geo and xy
+cannot share a camera).
+
+The `dir` name resolves **in the viewer's namespace**: a viewer overlays
+what it can see, and granting a scene grants nothing it names. So a
+judge's display composes the commander's picture with the truth:
+
+```
+mkdir -p /tmp/judge/layers
+echo 'frame=xy' > /tmp/judge/meta
+{echo 'kind=scene'; echo 'dir=/n/mosaic/view/scene'} > /tmp/judge/layers/10-view
+{echo 'kind=scene'; echo 'dir=/n/mosaic/truth/scene'; echo 'opacity=90'} > /tmp/judge/layers/20-truth
+wm/matrix ...   # with: top scene-view /tmp/judge
+```
+
+and the commander's own display, granted only `/n/mosaic/view`, cannot.
+Any object — entity, feature or layer — with `hide=1` is not drawn, so a
+human or an agent toggles a layer with one write. A scene with no
+`layers/` gets the default grid; so does one whose layers draw no grid.
+
+The other composition is the namespace's own: a union `bind` of several
+producers' `entities/` directories is one scene with all their entities.
 
 ### 2.5 Clock
 
@@ -328,6 +360,8 @@ Step 1 is a prerequisite for 2 and 3 and is worth doing on its own.
 
 - Tile pyramids (`layers/<id>` with `kind=tiles`); only single images
   today.
+- Selecting an entity in a scene layer: `hit` looks at the scene in view
+  only.
 - Interpolation between producer updates (the producer's tick rate is the
   display's motion rate).
 - Seek cost is O(recording) and the history is in memory — fine to ~10⁵

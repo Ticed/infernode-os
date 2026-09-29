@@ -290,6 +290,88 @@ testAA(t: ref T)
 	t.asserteq(int px[0], 0, "outside the polygon is empty");
 }
 
+writefile(path, text: string)
+{
+	fd := sys->create(path, Sys->OWRITE, 8r666);
+	if(fd == nil)
+		return;
+	b := array of byte text;
+	sys->write(fd, b, len b);
+}
+
+mkscene(dir, meta: string)
+{
+	sys->create(dir, Sys->OREAD, Sys->DMDIR|8r777);
+	for(l := "entities" :: "features" :: "layers" :: nil; l != nil; l = tl l)
+		sys->create(dir + "/" + hd l, Sys->OREAD, Sys->DMDIR|8r777);
+	writefile(dir + "/meta", meta);
+}
+
+pixel(img: ref Image, p: Point): (int, int, int)
+{
+	px := array[3] of byte;
+	img.readpixels(Rect(p, p.add((1, 1))), px);
+	return (int px[2], int px[1], int px[0]);
+}
+
+testLayers(t: ref T)
+{
+	B := "/tmp/scene_test_base";
+	O := "/tmp/scene_test_over";
+	mkscene(B, "frame=xy\n");
+	mkscene(O, "frame=xy\n");
+	writefile(O + "/entities/e", "x=0\ny=0\ncolor=FF0000\nsize=8\nlabel=\n");
+	writefile(B + "/layers/over", "kind=scene\ndir=" + O + "\n");
+	m := Model.read(B);
+	l := m.find(Scene->LAYER, "over");
+	t.assert(l != nil && l.sub != nil, "a scene layer reads its scene");
+	t.assert(l.sub.find(Scene->ENT, "e") != nil, "with its entities");
+
+	# a scene that layers itself stops at the depth limit
+	writefile(B + "/layers/self", "kind=scene\ndir=" + B + "\n");
+	m = Model.read(B);
+	d := 0;
+	for(x := m; x != nil && (sl := x.find(Scene->LAYER, "self")) != nil; x = sl.sub)
+		d++;
+	t.assert(d > 0 && d <= 5, "self-layering is bounded");
+	sys->remove(B + "/layers/self");
+
+	sig := scene->signature(B);
+	writefile(O + "/entities/e", "x=0\ny=0\ncolor=FF0000\nsize=9\nlabel=\n");
+	t.assert(scene->signature(B) != sig, "the signature sees a change in an overlaid scene");
+
+	if(display != nil) {
+		scene->init(display, nil);
+		r := Rect((0, 0), (100, 100));
+		img := display.newimage(r, Draw->RGB24, 0, Draw->Black);
+		c := Cam.new(r);
+		c.zoom = 0.0;
+		m = Model.read(B);
+		scene->render(img, m, c, nil, 0, nil);
+		(red, nil, nil) := pixel(img, Point(50, 50));
+		t.assert(red > 200, "the layer's entity is drawn");
+
+		writefile(B + "/layers/over", "kind=scene\ndir=" + O + "\nopacity=128\n");
+		m = Model.read(B);
+		scene->render(img, m, c, nil, 0, nil);
+		(red, nil, nil) = pixel(img, Point(50, 50));
+		t.assert(red > 80 && red < 180, sys->sprint("opacity=128 is about half: %d", red));
+
+		writefile(B + "/layers/over", "kind=scene\ndir=" + O + "\nhide=1\n");
+		m = Model.read(B);
+		scene->render(img, m, c, nil, 0, nil);
+		(red, nil, nil) = pixel(img, Point(50, 50));
+		t.assert(red < 60, "hide=1 hides it");
+
+		writefile(B + "/meta", "frame=geo\n");
+		writefile(B + "/layers/over", "kind=scene\ndir=" + O + "\n");
+		m = Model.read(B);
+		scene->render(img, m, c, nil, 0, nil);
+		(red, nil, nil) = pixel(img, Point(50, 50));
+		t.assert(red < 60, "a scene in another frame is not drawn");
+	}
+}
+
 init(nil: ref Draw->Context, args: list of string)
 {
 	sys = load Sys Sys->PATH;
@@ -320,6 +402,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("Hit", testHit);
 	run("Render", testRender);
 	run("AA", testAA);
+	run("Layers", testLayers);
 
 	if(testing->summary(passed, failed, skipped) > 0)
 		raise "fail:tests failed";

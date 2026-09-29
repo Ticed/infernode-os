@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# p9img2png.py — decode an Inferno/Plan9 image (x8r8g8b8, compressed or not) to PNG.
+# p9img2png.py — decode an Inferno/Plan9 image ([xa]8r8g8b8 or r8g8b8, compressed or not) to PNG.
 #
 # The Tk offscreen test harness renders a window to an in-memory image and
 # dumps it with Display.writeimage(); that produces the "compressed" image
@@ -50,8 +50,9 @@ def main(path,outpng):
     hdr=data[off:off+60]; off+=60
     chan=hdr[0:11].strip().decode()
     minx=int(hdr[12:24]); miny=int(hdr[24:36]); maxx=int(hdr[36:48]); maxy=int(hdr[48:60])
-    w=maxx-minx; h=maxy-miny; bpp=4
-    assert chan=='x8r8g8b8', f'chan={chan!r}'
+    w=maxx-minx; h=maxy-miny
+    bpp={'x8r8g8b8':4,'a8r8g8b8':4,'r8g8b8':3}.get(chan)
+    assert bpp, f'chan={chan!r}'
     rows=bytearray(); y=miny
     if not compressed:	# uncompressed: the pixels follow the header
         rows=bytearray(data[off:off+w*h*bpp]); y=maxy
@@ -63,7 +64,7 @@ def main(path,outpng):
         y=bmaxy
     rgb=bytearray(w*h*3)
     for p in range(w*h):
-        b=rows[p*4+0]; g=rows[p*4+1]; r=rows[p*4+2]
+        b=rows[p*bpp+0]; g=rows[p*bpp+1]; r=rows[p*bpp+2]
         rgb[p*3]=r; rgb[p*3+1]=g; rgb[p*3+2]=b
     def chunk(t,d):
         c=t+d; return struct.pack('>I',len(d))+c+struct.pack('>I',zlib.crc32(c)&0xffffffff)

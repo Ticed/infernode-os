@@ -10,6 +10,7 @@ Model, Cam, Trails, Obj: import scene;
 
 Model.new:     fn(): ref Model;
 Model.read:    fn(dir: string): ref Model;
+m.resolve:     fn();
 m.apply:       fn(rec: string): string;
 m.set:         fn(kind: int, id: string, attrs: list of (string, string));
 m.del:         fn(kind: int, id: string): int;
@@ -32,6 +33,8 @@ init:    fn(d: ref Draw->Display, f: ref Draw->Font);
 render:  fn(dst: ref Draw->Image, m: ref Model, c: ref Cam,
              tr: ref Trails, flags: int, hud: string);
 hit:     fn(m: ref Model, c: ref Cam, p: Draw->Point, radius: int): string;
+signature:    fn(dir: string): string;
+subsignature: fn(m: ref Model): string;
 .EE
 .SH DESCRIPTION
 .I Scene
@@ -58,7 +61,12 @@ positions are latitude, longitude;
 .BR XY :
 x, y with y up).
 .B Read
-loads a scene directory;
+loads a scene directory, and the scenes its scene layers
+.RB ( kind=scene ,
+.BR dir= )
+name, resolved in the caller's namespace;
+.B resolve
+rereads just those;
 .B apply
 applies one record
 .RB ( "time" ,
@@ -116,6 +124,20 @@ Shapes are anti-aliased with
 returns the entity nearest
 .IR p ,
 or nil.
+.PP
+Layers draw in name order under the scene's own objects; a scene layer
+is drawn with the same camera, blended at its
+.BR opacity ,
+and its labels are placed with everyone else's.
+Objects with
+.B hide=1
+are not drawn.
+.PP
+.B Signature
+hashes what the renderer would draw from a directory, scene layers
+included, so a viewer can tell when to reread;
+.B subsignature
+covers only a model's scene layers.
 .SH SOURCE
 .B /appl/lib/scene.b
 .SH SEE ALSO

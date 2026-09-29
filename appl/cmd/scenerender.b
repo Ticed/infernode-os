@@ -77,6 +77,7 @@ init(nil: ref Draw->Context, argv: list of string)
 	tr: ref Trails;
 	if(rec != nil) {
 		(m, tr) = replay(rec, t, hast);
+		m.resolve();	# scene layers name live scenes
 	} else
 		m = Model.read(hd argv);
 
