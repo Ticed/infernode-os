@@ -111,6 +111,15 @@ As with 9front's additions, a client sends the new messages only when
 it draws a path, so an older draw server fails only for a program that
 uses them.
 
+The draw device itself is one source, `port/devdraw.c`, compiled into
+both kernels through a short wrapper each (`emu/port/devdraw.c`,
+`os/port/devdraw.c`) that supplies that kernel's headers, sleep and
+wakeup, cursor hooks, colour map and device table.  It was two copies
+that had drifted apart: the native one had `/dev/screen`, which the
+emulator now has too, and loaded font glyphs with `S` (as Plan 9 does:
+a cache slot is replaced, not composited over) where the emulator used
+`SoverD`.
+
 ## 5. Client interfaces
 
 - **C** (`libdraw/path.c`, `draw.h`): `allocpath`, `pathmove`,
