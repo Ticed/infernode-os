@@ -1,0 +1,42 @@
+NAME
+	scene-view (display) - draw a 2-D scene (entities, features, layers, trails, clock) in a geo or xy frame, with a camera shared through scenefs
+
+INTERFACE
+	display (MatrixDisplay, MatrixTicker 100 ms)
+
+READS
+	meta		ndb stanza: frame=(geo|xy) projection= units=
+			title= trail= bounds=
+	time		the scene clock (one number)
+	entities/<id>	ndb stanza: x= y= (xy) or lat= lon= (geo),
+			label= shape= color= group= course= size=
+			stale= trail= dim= (kind= affil= also understood)
+	features/<id>	ndb stanza: type=(point|polyline|polygon|circle)
+			points= radius= color= fill= width= dash= label=
+	layers/<id>	ndb stanza: kind=grid step= color=, or
+			kind=image file= bounds= opacity=
+	status, view	when the mount is a scenefs (docs/scene-design.md §3)
+
+WRITES
+	<mount>/ctl	when the mount is a scenefs: center, zoom, select,
+			deselect, unfollow on this pane's pan, zoom and
+			click; play, pause, step, seek, live on its keys
+
+DESCRIPTION
+	Renders through lib/scene: anti-aliased shapes, heading arrows,
+	fading trails, labels placed without overlap, a scale bar, and
+	a HUD with the frame, zoom, clock and playback mode.  Entities
+	past their stale= time are drawn dimmed.
+
+	On a scenefs mount the pane reloads only when status reports a
+	new gen, adopts the server's camera (so agents writing ctl move
+	the picture), and publishes its own; a fit request (ctl fit) is
+	answered by each viewer for its own size.  On a plain directory
+	it rescans on a count+mtime change and the camera is local.
+
+	Keys: + - zoom, h j k l pan, f fit, space play/pause, . step,
+	, step back, L live.  Pointer: drag pans, wheel zooms about the
+	pointer, click selects.
+
+SEE ALSO
+	scene-fixture, geo-fixture, scenefs(4), scenerender(1), scene(2)

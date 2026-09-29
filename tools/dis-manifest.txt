@@ -535,7 +535,6 @@ dis/matrix/alert-watcher.dis
 dis/matrix/comp-list.dis
 dis/matrix/cpu-gauge.dis
 dis/matrix/geo-fixture.dis
-dis/matrix/geo-map.dis
 dis/matrix/line-plot.dis
 dis/matrix/llm-context.dis
 dis/matrix/llm-recorder.dis
@@ -545,6 +544,8 @@ dis/matrix/net-gauge.dis
 dis/matrix/position-table.dis
 dis/matrix/proc-list.dis
 dis/matrix/risk-gauge.dis
+dis/matrix/scene-fixture.dis
+dis/matrix/scene-view.dis
 dis/matrix/signal-feed.dis
 dis/matrix/sparkline.dis
 dis/matrix/sysmon-svc.dis
