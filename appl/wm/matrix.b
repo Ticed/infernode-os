@@ -197,6 +197,7 @@ appscreen: ref Screen;
 appwmchan: chan of (string, chan of (string, ref Draw->Wmcontext));
 applk: chan of int;	# guards apppendq/apprecs
 apppendq: list of ref LayoutNode.Leaf;	# launches awaiting their join
+apptokens: list of (int, ref LayoutNode.Leaf);	# a launch's registration token -> its region
 apprecs: list of (ref LayoutNode.Leaf, ref Wmsrv->Client);
 appkbd: ref Wmsrv->Client;	# app with keyboard focus (pointer-follows)
 
@@ -336,8 +337,11 @@ init(ctxt: ref Draw->Context, args: list of string)
 
 	if(guimode) {
 		initgui(ctxt);
-		loaddisplaymodules();
+		# Services first: an app region runs in a copy of our namespace
+		# taken when it starts, so whatever a service mounts in init
+		# (the scene a viewer shows, say) must already be there.
 		loadservicemodules();
+		loaddisplaymodules();
 		startwatchers();
 		guiloop();
 	} else {
@@ -2050,7 +2054,12 @@ runapp(n: ref LayoutNode.Leaf)
 		(nil, atoks) := sys->tokenize(n.appargs, " \t");
 		argv = n.mount :: atoks;
 	}
-	actxt := ref Draw->Context(display_g, nil, appwmchan);
+	# The app's own connection channel: its registration passes through
+	# appwmrelay, which notes which region it is for, so the join lands
+	# in the right region whatever order apps connect in.
+	wmc := chan of (string, chan of (string, ref Draw->Wmcontext));
+	spawn appwmrelay(n, wmc);
+	actxt := ref Draw->Context(display_g, nil, wmc);
 	{
 		mod->init(actxt, argv);
 	} exception {
@@ -2119,18 +2128,57 @@ reshaperect(s: string): Rect
 	return Rect((minx, miny), (maxx, maxy));
 }
 
+# Forward an app's registration to our wmsrv, noting its token's region
+# first.  (The pattern lucifer uses to route an app to its task.)
+appwmrelay(n: ref LayoutNode.Leaf, wmc: chan of (string, chan of (string, ref Draw->Wmcontext)))
+{
+	(tok, rc) := <-wmc;
+	<-applk;
+	apptokens = (int tok, n) :: apptokens;
+	applk <-= 1;
+	appwmchan <-= (tok, rc);
+}
+
+# The region whose launch registered this token, taken off the token and
+# pending lists; else the oldest pending launch (an app that connected
+# some other way, through /chan/wmctl).  Called with applk held.
+takeappleaf(token: int): ref LayoutNode.Leaf
+{
+	n: ref LayoutNode.Leaf;
+	nt: list of (int, ref LayoutNode.Leaf);
+	for(l := apptokens; l != nil; l = tl l) {
+		(t, ln) := hd l;
+		if(n == nil && t == token)
+			n = ln;
+		else
+			nt = hd l :: nt;
+	}
+	apptokens = nt;
+	if(n == nil) {
+		if(apppendq == nil)
+			return nil;
+		n = hd apppendq;
+	}
+	np: list of ref LayoutNode.Leaf;
+	for(q := apppendq; q != nil; q = tl q)
+		if(hd q != n)
+			np = hd q :: np;
+	apppendq = nil;
+	for(; np != nil; np = tl np)
+		apppendq = hd np :: apppendq;
+	return n;
+}
+
 appwmloop(join: chan of (ref Wmsrv->Client, chan of string),
 	  req: chan of (ref Wmsrv->Client, array of byte, Sys->Rwrite))
 {
 	for(;;) alt {
 	(c, rc) := <-join =>
-		# Launches are serialised through apppendq; joins arrive in
-		# launch order.
+		# Joins arrive in the order apps connect, not the order they
+		# were launched: match each to its launch by token.
 		<-applk;
-		if(apppendq != nil) {
-			apprecs = (hd apppendq, c) :: apprecs;
-			apppendq = tl apppendq;
-		}
+		if((n := takeappleaf(c.token)) != nil)
+			apprecs = (n, c) :: apprecs;
 		applk <-= 1;
 		rc <-= nil;
 
@@ -2803,12 +2851,12 @@ reloadcomposition(text: string)
 		shutdownservices(old.services);
 	}
 
+	loadservicemodules();				# starts only new services; first, as at startup
 	if(guimode && comp.layout != nil) {
 		computelayout(comp.layout, winr);
 		resizedisplaymodules(comp.layout);	# kept modules get new rects
 		loaddisplaymodules();			# fills only empty leaves
 	}
-	loadservicemodules();				# starts only new services
 	syncmodslots();
 	vers++;
 	startwatchers();
