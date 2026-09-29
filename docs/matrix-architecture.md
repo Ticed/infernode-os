@@ -544,8 +544,6 @@ headless mode, locally, or remotely.
     ctl                         # Write commands, read status
     composition                 # Current composition (text, rw)
     notifications               # Runtime event log (read-only ring)
-    image                       # The composited window, Inferno image format (GUI mode):
-                                #   cp it like /dev/screen; each open is a snapshot
     modules/
         <name>/
             ctl                 # Module status: running|stopped

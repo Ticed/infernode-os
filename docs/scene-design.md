@@ -288,17 +288,15 @@ and cached; glyphs are anti-aliased through `lib/aadraw`.
   and trails are built from the full history — whole trajectories for a
   report or a sweep's figure.
 - **Pictures are files.** Images stay in the Inferno image format inside
-  the system: `present` shows `.bit` files, and a running Matrix serves
-  its composited window as `/mnt/matrix/image`, so `cp
-  /mnt/matrix/image /tmp/now.bit` is a screenshot of exactly what the
-  human sees, as `cp /dev/screen` is on Plan 9.  Conversion happens once,
-  at the edge, when an image leaves (`tools/p9img2png.py` on the host).
+  the system: `present` shows `.bit` files. Conversion happens once, at
+  the edge, when an image leaves (`tools/p9img2png.py` on the host).
+  Capturing a window as it is on screen is a window-system question,
+  under design (a read-only window image served by `wmsrv`).
 - **Agents** need nothing new. An agent granted `/mnt/scene` reads
   `status`, `view` and the stanza files, blocks on `event` for what a
   human selects, and steers with `ctl` (`follow`, `seek`, `select`) —
   the human's `scene-view` moves with it. To show a picture it runs
-  `scenerender` (or copies `/mnt/matrix/image`) and hands the file to
-  `present`.
+  `scenerender` and hands the file to `present`.
 
 ---
 
