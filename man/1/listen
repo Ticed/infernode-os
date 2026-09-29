@@ -12,6 +12,9 @@ listen, styxlisten, dial \- network connections
 .B -L
 .I maxauth
 ] [
+.B -P
+.I persource
+] [
 .B -R
 .I authrate
 ] [
@@ -39,6 +42,9 @@ listen, styxlisten, dial \- network connections
 ]... [
 .B -L
 .I maxauth
+] [
+.B -P
+.I persource
 ] [
 .B -R
 .I authrate
@@ -112,13 +118,20 @@ expensive key exchange.  At most
 .I maxauth
 authentication exchanges may be active at once (32 by default), and at most
 .I authrate
-new exchanges may start in each one-second window (8 by default).  Connections
-over either limit are closed before authentication output or cryptographic work.
+new exchanges may start in each one-second window (8 by default), and at most
+.I persource
+of the active exchanges may come from any one remote address (4 by default),
+so that a single host cannot hold every slot with silent connections.
+Connections over any limit are closed before authentication output or
+cryptographic work.
 The
-.B -L
-and
+.BR -L ,
 .B -R
-options set these limits; values below one are rejected.  The
+and
+.B -P
+options set these limits; values below one are rejected, except that
+.B "-P 0"
+removes the per-source limit.  The
 .B -T
 option sets the authentication deadline in milliseconds (30000 by default and
 1000 minimum).  These controls do not apply with
