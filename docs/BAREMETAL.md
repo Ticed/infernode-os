@@ -353,6 +353,7 @@ bench machine depending on what these say. All are optional.
 | `bt` | one `/net/bt` ctl line per line (`#` comments). Typically `firmware /n/dos/firmware/BCM4345C0.hcd`, `up`, `name …`, `pairable on`, `discoverable on` | Bluetooth, via `bt9p` on `/dev/eia0`. `firmware` must precede `up`. Absent = no Bluetooth. See [BLUETOOTH.md](BLUETOOTH.md). |
 | `btkeys` | factotum key syntax | Where `bt9p` keeps link keys so pairings survive a reboot. |
 | `netconsole` | empty, or a token on the first line | A shell on **TCP 17010**, section 7. Absent = off. |
+| `cpulisten` | empty, or an address (`tcp!*!17030`) on the first line | The remote-desktop listener: `cpu(1)` from another InferNode runs programs here that draw on its screen, authenticated by certificate and encrypted (AES-256). Needs this machine's certificate in `usr/inferno/keyring/default`, or it refuses to start. Runs in the desktop's narrowed namespace, headless or not. Empty = `tcp!*!rstyx` (6668). Absent = off. See [REMOTE-DESKTOP.md](REMOTE-DESKTOP.md). |
 | `firmware/` | | Radio firmware, as above. |
 | `infernode8.img`, `tryboot.img`, `tryboot.cmd` | | The kernel, a candidate, and the word `tryboot` — section 4. |
 
@@ -417,6 +418,12 @@ answer before giving it anything. The token crosses the network in the
 clear; it stops a port scan and a curious neighbour, nothing more. Each
 connection gets its own forked namespace and a plain `sh` (no profile,
 so `load std` yourself); a mount made in a session dies with it.
+
+**A remote desktop**: with a `cpulisten` file and a certificate on the
+card, another InferNode runs `cpu` to get this machine's desktop in a
+window on its own screen — [REMOTE-DESKTOP.md](REMOTE-DESKTOP.md). It
+has the desktop's powers (no raw card, pins or sysctl), not the
+consoles'.
 
 **`/dev/sysctl`** (host owner only). Reading gives the version string.
 
