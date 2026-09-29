@@ -259,6 +259,7 @@ extern void	rdb(void);
 extern int		iprint(char*, ...);
 #pragma varargck argpos iprint 1
 extern int		drawdebug;
+extern int		memdrawfast;	/* 0: no special cases, to test them */
 
 /*
  * doprint interface: numbconv bit strings

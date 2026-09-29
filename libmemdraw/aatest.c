@@ -518,6 +518,73 @@ testroundtrip(void)
 	freepath(w);
 }
 
+/*
+ * The coverage fast path (coverdraw in draw.c) against the general
+ * alphadraw: random masks and colours, opaque and translucent, onto
+ * every 24- and 32-bit layout, compared byte for byte.
+ */
+static void
+testfastpath(void)
+{
+	ulong chans[] = {XRGB32, ARGB32, RGBA32, ABGR32, XBGR32, RGB24, BGR24};
+	char *names[] = {"XRGB32", "ARGB32", "RGBA32", "ABGR32", "XBGR32", "RGB24", "BGR24"};
+	Memimage *a, *b, *mask, *src;
+	Rectangle r;
+	Point mp;
+	int c, trial, i, n, srcalpha;
+	ulong seed, col, al;
+	uchar *pa, *pb;
+
+	seed = 777;
+	mask = allocmemimage(Rect(0, 0, 61, 37), GREY8);
+	for(c = 0; c < nelem(chans); c++){
+		a = allocmemimage(Rect(-5, -3, 56, 34), chans[c]);
+		b = allocmemimage(a->r, chans[c]);
+		for(trial = 0; trial < 40; trial++){
+			n = Dy(a->r)*a->width*sizeof(ulong);
+			pa = (uchar*)a->data->bdata;
+			pb = (uchar*)b->data->bdata;
+			for(i = 0; i < n; i++)
+				pa[i] = pb[i] = RND();
+			pa = byteaddr(mask, mask->r.min);
+			for(i = 0; i < Dy(mask->r)*mask->width*sizeof(ulong); i++){
+				switch(RND()%4){
+				case 0:	pa[i] = 0; break;
+				case 1:	pa[i] = 255; break;
+				default: pa[i] = RND(); break;
+				}
+			}
+			/* a premultiplied colour, sometimes opaque, with or without an alpha channel */
+			srcalpha = trial%2;
+			al = !srcalpha || trial%3 == 0 ? 255 : RND()&0xFF;
+			col = ((RND()%(al+1)) << 24) | ((RND()%(al+1)) << 16) | ((RND()%(al+1)) << 8) | al;
+			src = allocmemimage(Rect(0, 0, 1, 1), srcalpha ? RGBA32 : RGB24);
+			src->flags |= Frepl;
+			src->clipr = Rect(-0x3FFFFFF, -0x3FFFFFF, 0x3FFFFFF, 0x3FFFFFF);
+			memfillcolor(src, col);
+			r = Rect(RND()%10 - 5, RND()%8 - 3, 20 + RND()%36, 12 + RND()%22);
+			mp = Pt(RND()%5, RND()%5);
+			memdrawfast = 1;
+			memimagedraw(a, r, src, ZP, mask, mp, SoverD);
+			memdrawfast = 0;
+			memimagedraw(b, r, src, ZP, mask, mp, SoverD);
+			memdrawfast = 1;
+			freememimage(src);
+			pa = (uchar*)a->data->bdata;
+			pb = (uchar*)b->data->bdata;
+			for(i = 0; i < n; i++)
+				if(pa[i] != pb[i]){
+					fail("fast path: %s, trial %d (colour %.8lux%s): byte %d is %d, general path %d",
+						names[c], trial, col, srcalpha ? "" : ", opaque source", i, pa[i], pb[i]);
+					break;
+				}
+		}
+		freememimage(a);
+		freememimage(b);
+	}
+	freememimage(mask);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -533,6 +600,7 @@ main(int argc, char **argv)
 	testtiles();
 	testdecode();
 	testroundtrip();
+	testfastpath();
 	if(failed){
 		print("aatest: %d failed\n", failed);
 		return 1;
