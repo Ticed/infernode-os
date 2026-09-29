@@ -429,6 +429,7 @@ dis/lib/regexutils.dis
 dis/lib/registries.dis
 dis/lib/rfc3339.dis
 dis/lib/rfc822.dis
+dis/lib/scene.dis
 dis/lib/scoretable.dis
 dis/lib/secstore.dis
 dis/lib/selectfile.dis
@@ -609,6 +610,9 @@ dis/rm.dis
 dis/rng.dis
 dis/runas.dis
 dis/scap.dis
+dis/scenedemo.dis
+dis/scenefs.dis
+dis/scenerender.dis
 dis/sed.dis
 dis/sendmail.dis
 dis/seq.dis
@@ -715,6 +719,7 @@ dis/tests/fdclose_test.dis
 dis/tests/font_format_test.dis
 dis/tests/fractal_tool_test.dis
 dis/tests/geomap_test.dis
+dis/tests/scene_test.dis
 dis/tests/git_test.dis
 dis/tests/goroutine_leak_test.dis
 dis/tests/gpu_bench.dis

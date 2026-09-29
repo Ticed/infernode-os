@@ -1,0 +1,103 @@
+.TH SCENERENDER 1
+.SH NAME
+scenerender, scenedemo \- render a scene to an image; drive a scene with a demo
+.SH SYNOPSIS
+.B scenerender
+[
+.B -w
+.I width
+] [
+.B -h
+.I height
+] [
+.B -t
+.I time
+] [
+.B -v
+.I view
+] [
+.B -F
+.I font
+] [
+.B -n
+] [
+.B -l
+]
+.I dir
+.I out
+.br
+.B scenerender
+[
+.I options
+]
+.B -r
+.I recording
+.I out
+.PP
+.B scenedemo
+[
+.B -n
+.I ticks
+] [
+.B -d
+.I ms
+] [
+.I scene
+]
+.SH DESCRIPTION
+.I Scenerender
+draws a scene with the same renderer as the Matrix
+.I scene-view
+module and writes it to
+.IR out :
+as PNG when the name ends in
+.BR .png ,
+otherwise in Inferno image format.
+No window system is needed.
+.PP
+The scene is a directory \(em a
+.IR scenefs (4)
+mount or plain stanza files \(em or, with
+.BR -r ,
+a recording such as
+.BR /mnt/scene/history ,
+replayed up to
+.I time
+(default: the end) with every entity's trail built from the whole
+history.
+The camera fits the data unless
+.B -v
+supplies a view line
+.RB ( "center" " a b " "zoom" " z " "sel" " id " "follow" " id" ).
+.B -n
+leaves out the HUD,
+.B -l
+the default grid.
+.PP
+.I Scenedemo
+writes a synthetic field survey \(em rovers mowing lanes, a relay, a
+base and its radio range \(em as records to
+.IB scene /log
+(default
+.BR /mnt/scene ),
+one tick per second of scene time, every
+.I ms
+milliseconds (default 200; 0 as fast as possible), for
+.I ticks
+ticks (default: forever).
+.SH EXAMPLES
+.EX
+mount -c {scenefs} /mnt/scene
+scenedemo -n 600 -d 0
+scenerender /mnt/scene /tmp/now.png
+cat /mnt/scene/history > /tmp/run.scene
+scenerender -t 300 -v 'zoom -1 follow rover3' -r /tmp/run.scene /tmp/t300.png
+.EE
+.SH SOURCE
+.B /appl/cmd/scenerender.b
+.br
+.B /appl/cmd/scenedemo.b
+.SH SEE ALSO
+.IR scenefs (4),
+.IR scene (2),
+.IR imagefile (2)
