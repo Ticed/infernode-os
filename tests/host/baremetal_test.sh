@@ -4807,10 +4807,11 @@ else
     fail "virt: screen -- '$scr'"
 fi
 vrefute "nothing panics with every device attached" "panic:"
-if grep -aq '^VIRT-DATE.* 20[2-9][0-9]' <<<"$OUT"; then
+# the shell's prompt can land on the line before the output: "; VIRT-DATE ..."
+if grep -aqE '^(; )*VIRT-DATE.* 20[2-9][0-9]' <<<"$OUT"; then
     pass "virt: date(1) has the PL031's year, with no time server"
 else
-    fail "virt: date -- $(grep -a '^VIRT-DATE' <<<"$OUT" | head -1)"
+    fail "virt: date -- $(grep -aE '^(; )*VIRT-DATE' <<<"$OUT" | head -1)"
 fi
 
 #
