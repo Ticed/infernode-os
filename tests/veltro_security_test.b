@@ -1283,6 +1283,105 @@ gitGenericHiddenWorker(result: chan of string)
 }
 
 
+# /mnt/wsys (wmsrv window pictures, one tree per Lucifer activity) is a
+# fixed-function grant: only the window tool gets it, and only its own
+# activity's tree, bound over /mnt/wsys so no other activity is nameable.
+WSYSA: con 41011;
+WSYSB: con 41012;
+
+testRestrictNsWsysPerActivity(t: ref T)
+{
+	made: list of string;
+	for(p := "/mnt" :: "/mnt/wsys" ::
+			"/mnt/wsys/" + string WSYSA :: "/mnt/wsys/" + string WSYSA + "/7" ::
+			"/mnt/wsys/" + string WSYSB :: "/mnt/wsys/" + string WSYSB + "/9" :: nil;
+			p != nil; p = tl p) {
+		(ok, nil) := sys->stat(hd p);
+		if(ok < 0) {
+			if(sys->create(hd p, Sys->OREAD, Sys->DMDIR | 8r755) == nil) {
+				t.skip("cannot create " + hd p + " test fixture");
+				return;
+			}
+			made = hd p :: made;
+		}
+	}
+	for(w := "/mnt/wsys/" + string WSYSA + "/7/window" ::
+			"/mnt/wsys/" + string WSYSB + "/9/window" :: nil; w != nil; w = tl w) {
+		if(sys->create(hd w, Sys->OWRITE, 8r644) == nil) {
+			t.skip("cannot create " + hd w);
+			return;
+		}
+		made = hd w :: made;
+	}
+
+	result := chan of string;
+	spawn wsysOwnWorker(result);
+	r := <-result;
+	if(r == "") {
+		spawn wsysGenericHiddenWorker(result);
+		r = <-result;
+	}
+
+	for(; made != nil; made = tl made)
+		sys->remove(hd made);
+	for(a := WSYSA :: WSYSB :: nil; a != nil; a = tl a)
+		sys->remove("/tmp/veltro/scratch/" + string hd a);
+	if(r != "")
+		t.error(r);
+}
+
+wsysOwnWorker(result: chan of string)
+{
+	sys->pctl(Sys->FORKNS, nil);
+	caps := ref NsConstruct->Capabilities(
+		"window" :: nil,
+		nil, nil, nil,
+		0 :: 1 :: 2 :: nil,
+		nil, 0, 0, WSYSA, nil
+	, nil);
+	err := nsconstruct->restrictns(caps);
+	if(err != nil) {
+		result <-= sys->sprint("restrictns (window tool) failed: %s", err);
+		return;
+	}
+	(ok, nil) := sys->stat("/mnt/wsys/7/window");
+	if(ok < 0) {
+		result <-= "window tool cannot see its own activity's window";
+		return;
+	}
+	for(p := "/mnt/wsys/9" :: "/mnt/wsys/" + string WSYSB ::
+			"/mnt/wsys/" + string WSYSA :: nil; p != nil; p = tl p) {
+		(ok, nil) = sys->stat(hd p);
+		if(ok >= 0) {
+			result <-= "window tool can name another activity's windows: " + hd p;
+			return;
+		}
+	}
+	result <-= "";
+}
+
+wsysGenericHiddenWorker(result: chan of string)
+{
+	sys->pctl(Sys->FORKNS, nil);
+	caps := ref NsConstruct->Capabilities(
+		"read" :: nil,
+		nil, nil, nil,
+		0 :: 1 :: 2 :: nil,
+		nil, 0, 0, WSYSA, nil
+	, nil);
+	err := nsconstruct->restrictns(caps);
+	if(err != nil) {
+		result <-= sys->sprint("restrictns (generic tool) failed: %s", err);
+		return;
+	}
+	(ok, nil) := sys->stat("/mnt/wsys");
+	if(ok >= 0) {
+		result <-= "/mnt/wsys visible to a tool without the window capability";
+		return;
+	}
+	result <-= "";
+}
+
 # Combined /mnt grants must compose rather than replace one another.
 testRestrictNsMntCombined(t: ref T)
 {
@@ -2079,6 +2178,9 @@ privilegedGrantPathsWorker(result: chan of string)
 		"/mnt/audit/chain",
 		"/mnt/matrix",
 		"/mnt/matrix/composition",
+		"/mnt/wsys",
+		"/mnt/wsys/0",
+		"/mnt/wsys/0/1/window",
 		"/n/git",
 		"/n/git/ctl",
 		"/mnt/gpu",
@@ -2683,6 +2785,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("RestrictDirExclusion", testRestrictDirExclusion);
 	run("BindReplaceIdempotent", testBindReplaceIdempotent);
 	run("RestrictNs", testRestrictNs);
+	run("RestrictNsWsysPerActivity", testRestrictNsWsysPerActivity);
 	run("TaskMetadataCapability", testTaskMetadataCapability);
 	run("TmpVeltroIpcHidden", testTmpVeltroIpcHidden);
 	run("TmpVeltroExplicitGrant", testTmpVeltroExplicitGrant);
