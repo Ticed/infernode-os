@@ -91,7 +91,10 @@ pt := 0.0;		# playhead time
 sgen := 0;		# bumped whenever what is served changes
 
 # the recording
-hist: array of string;
+# The history is one byte buffer (what history serves) and the offset of
+# each record in it: two objects the collector need not look inside,
+# rather than one string per record, which it would walk for ever.
+hoff: array of int;
 nhist := 0;
 lastclear := 0;		# index of the last "clear": replay starts there
 hidx := 0;		# replay cursor into hist (records applied to shown)
@@ -148,7 +151,7 @@ init(nil: ref Draw->Context, argv: list of string)
 	live = Model.new();
 	shown = live;
 	cam = Cam.new(((0, 0), (0, 0)));
-	hist = array[1024] of string;
+	hoff = array[1024] of int;
 	histb = array[65536] of byte;
 	slotids = array[3] of array of string;
 	nslots = array[3] of {* => 0};
@@ -621,14 +624,14 @@ record(rec: string)
 
 push(s: string)
 {
-	if(nhist == len hist) {
-		nh := array[2 * len hist] of string;
-		nh[0:] = hist;
-		hist = nh;
+	if(nhist == len hoff) {
+		nh := array[2 * len hoff] of int;
+		nh[0:] = hoff;
+		hoff = nh;
 	}
 	if(s == "clear")
 		lastclear = nhist;
-	hist[nhist++] = s;
+	hoff[nhist++] = nhistb;
 	b := array of byte (s + "\n");
 	if(nhistb + len b > len histb) {
 		n := 2 * len histb;
@@ -640,6 +643,15 @@ push(s: string)
 	}
 	histb[nhistb:] = b;
 	nhistb += len b;
+}
+
+# Record i of the history, without its newline.
+hist(i: int): string
+{
+	e := nhistb;
+	if(i + 1 < nhist)
+		e = hoff[i + 1];
+	return string histb[hoff[i]:e - 1];
 }
 
 # After a (batch of) change(s): tell the watchers.
@@ -684,7 +696,7 @@ advance(t: real)
 	}
 	pt = t;
 	while(hidx < nhist) {
-		r := hist[hidx];
+		r := hist(hidx);
 		if(len r > 5 && r[0:5] == "time " && real r[5:] > pt)
 			break;
 		shown.apply(r);
@@ -812,7 +824,7 @@ ctl(line: string): string
 nexttime(): real
 {
 	for(i := hidx; i < nhist; i++) {
-		r := hist[i];
+		r := hist(i);
 		if(len r > 5 && r[0:5] == "time " && real r[5:] > pt)
 			return real r[5:];
 	}
