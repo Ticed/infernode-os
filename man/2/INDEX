@@ -90,6 +90,8 @@ readprotostring fsproto
 geodesy geodesy
 hash hash
 hashtable hash
+i420 i420
+rgb24 i420
 imagefile imagefile
 readgif imagefile
 readjpg imagefile
