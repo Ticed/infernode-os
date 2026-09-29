@@ -24,7 +24,7 @@ include "sys.m";
 
 include "draw.m";
 	draw: Draw;
-	Display, Font, Image, Point, Rect, Pointer, Screen: import draw;
+	Display, Font, Image, Point, Rect, Pointer, Screen, Chans: import draw;
 
 include "arg.m";
 
@@ -79,7 +79,7 @@ MINTICK_MS: con 40;	# fastest per-module cadence (25 fps)
 
 # Fixed nodes.
 Qroot, Qctl, Qcomposition, Qmoddir, Qlibdir,
-Qlibcompsdir, Qlibmodsdir, Qnotifications, Qlibmandir, Qlibindex: con iota;
+Qlibcompsdir, Qlibmodsdir, Qnotifications, Qlibmandir, Qlibindex, Qimage: con iota;
 
 # Per-module nodes (module slot packed into bits 8..19).
 Qmoddirent:	con 16;	# modules/<name>/
@@ -459,6 +459,8 @@ Serve:
 				break;
 			}
 			c.data = nil;
+			if(c.path == big Qimage)	# a snapshot, like /dev/screen
+				c.data = frameimage();
 			qid := Qid(c.path, 0, c.qtype);
 			c.open(mode, qid);
 			srv.reply(ref Rmsg.Open(m.tag, qid, srv.iounit()));
@@ -496,6 +498,13 @@ Serve:
 
 			Qlibindex =>
 				srv.reply(styxservers->readbytes(m, array of byte synthindex()));
+
+			Qimage =>
+				if(c.data == nil) {
+					srv.reply(ref Rmsg.Error(m.tag, "no frame: matrix is headless"));
+					break;
+				}
+				srv.reply(styxservers->readbytes(m, c.data));
 
 			Qmodctl =>
 				ms := liveslot(c.path);
@@ -958,6 +967,8 @@ dirgen(p: big): (ref Sys->Dir, string)
 		return (dir(Qid(p, vers, Sys->QTDIR), ".", big 0, 8r755), nil);
 	Qctl =>
 		return (dir(Qid(p, vers, Sys->QTFILE), "ctl", big 0, 8r644), nil);
+	Qimage =>
+		return (dir(Qid(p, vers, Sys->QTFILE), "image", big 0, 8r444), nil);
 	Qcomposition =>
 		return (dir(Qid(p, vers, Sys->QTFILE), "composition", big 0, 8r644), nil);
 	Qmoddir =>
@@ -1076,6 +1087,8 @@ matrixnavigator(navops: chan of ref Navop)
 					n.path = big Qlibdir;
 				"notifications" =>
 					n.path = big Qnotifications;
+				"image" =>
+					n.path = big Qimage;
 				* =>
 					n.reply <-= (nil, Enotfound);
 					continue;
@@ -1186,7 +1199,7 @@ matrixnavigator(navops: chan of ref Navop)
 			Qroot =>
 				replyfixed(n, array[] of {
 					big Qctl, big Qcomposition, big Qmoddir,
-					big Qlibdir, big Qnotifications});
+					big Qlibdir, big Qnotifications, big Qimage});
 
 			Qmoddir =>
 				i := n.offset;
@@ -1755,6 +1768,25 @@ staleall()
 {
 	for(l := leafcaches; l != nil; l = tl l)
 		(hd l).stale = 1;
+}
+
+# The composited frame in the (uncompressed) Inferno image format,
+# as /mnt/matrix/image serves it: cp it like /dev/screen.
+frameimage(): array of byte
+{
+	img := mtximg;
+	if(img == nil)
+		return nil;
+	hdr := array of byte sys->sprint("%11s %11d %11d %11d %11d ",
+		img.chans.text(), img.r.min.x, img.r.min.y, img.r.max.x, img.r.max.y);
+	bpl := (img.r.dx() * img.depth + 7) / 8;
+	px := array[bpl * img.r.dy()] of byte;
+	if(img.readpixels(img.r, px) != len px)
+		return nil;
+	b := array[len hdr + len px] of byte;
+	b[0:] = hdr;
+	b[len hdr:] = px;
+	return b;
 }
 
 # Access rect of any layout node

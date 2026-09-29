@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# p9img2png.py — decode an Inferno/Plan9 compressed image (x8r8g8b8) to PNG.
+# p9img2png.py — decode an Inferno/Plan9 image (x8r8g8b8, compressed or not) to PNG.
 #
 # The Tk offscreen test harness renders a window to an in-memory image and
 # dumps it with Display.writeimage(); that produces the "compressed" image
@@ -45,13 +45,16 @@ def decomp_block(data, w, nrows, bpp):
     return out
 def main(path,outpng):
     data=open(path,'rb').read(); off=0
-    if data[:11]==b'compressed\n': off=11
+    compressed=data[:11]==b'compressed\n'
+    if compressed: off=11
     hdr=data[off:off+60]; off+=60
     chan=hdr[0:11].strip().decode()
     minx=int(hdr[12:24]); miny=int(hdr[24:36]); maxx=int(hdr[36:48]); maxy=int(hdr[48:60])
     w=maxx-minx; h=maxy-miny; bpp=4
     assert chan=='x8r8g8b8', f'chan={chan!r}'
     rows=bytearray(); y=miny
+    if not compressed:	# uncompressed: the pixels follow the header
+        rows=bytearray(data[off:off+w*h*bpp]); y=maxy
     while y<maxy:
         sub=data[off:off+24]; off+=24
         bmaxy=int(sub[0:12]); nb=int(sub[12:24])

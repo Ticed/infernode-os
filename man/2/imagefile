@@ -1,6 +1,6 @@
 .TH IMAGEFILE 2
 .SH NAME
-imagefile: readgif, readjpg, readpicfile, readpng, readxbitmap, remap, writegif, writepng \- processing external image file formats
+imagefile: readgif, readjpg, readpicfile, readpng, readxbitmap, remap \- processing external image file formats
 .SH SYNOPSIS
 .EX
 include "imagefile.m";
@@ -12,9 +12,6 @@ picreader  := load RImagefile RImagefile->READPICPATH;
 pngreader := load RImagefile RImagefile->READPNGPATH;
 
 imageremap := load Imageremap Imageremap->PATH;
-
-gifwriter := load WImagefile WImagefile->WRITEGIFPATH;
-pngwriter := load WImagefile WImagefile->WRITEPNGPATH;
 
 Rawimage: adt
 {
@@ -140,13 +137,6 @@ function a
 .B Bufio->Iobuf
 representing the output stream and an image of type
 .B Draw->Image.
-.I Writegif
-writes a colour-mapped GIF;
-.I writepng
-writes an 8-bit truecolour PNG, with an alpha channel only when the
-image has transparent pixels.
-Any channel layout is accepted: the image is first drawn into an RGBA32
-image, and premultiplied alpha is divided back out.
 .PP
 These functions are split into separate modules to give applications control over
 the memory they need to process images.
@@ -160,12 +150,8 @@ the memory they need to process images.
 .B /appl/lib/readpicfile.b
 .br
 .B /appl/lib/readpng.b
-.br
-.B /appl/lib/writegif.b
-.br
-.B /appl/lib/writepng.b
 .SH NOTES
 The JPEG reader handles only the Baseline sequential format as defined by
 the JFIF 1.02 file exchange format.
 .PP
-Only GIF and PNG can be written.
+Functions to write these formats are as yet unimplemented.

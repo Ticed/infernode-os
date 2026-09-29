@@ -2,7 +2,7 @@ implement SceneTest;
 
 #
 # scene_test - lib/scene (model, record grammar, camera, trails, hit,
-# rendering), lib/aadraw coverage, and lib/writepng round trip.
+# rendering) and lib/aadraw coverage.
 #
 # The drawing tests need /dev/draw (any emu: the headless build has a
 # memory screen) and skip without it.
@@ -16,7 +16,6 @@ include "draw.m";
 include "bufio.m";
 	bufio: Bufio;
 	Iobuf: import bufio;
-include "imagefile.m";
 include "aadraw.m";
 include "scene.m";
 	scene: Scene;
@@ -291,33 +290,6 @@ testAA(t: ref T)
 	t.asserteq(int px[0], 0, "outside the polygon is empty");
 }
 
-testPNG(t: ref T)
-{
-	needdisplay(t);
-	wr := load WImagefile WImagefile->WRITEPNGPATH;
-	rd := load RImagefile RImagefile->READPNGPATH;
-	t.assert(wr != nil && rd != nil, "load png modules");
-	wr->init(bufio);
-	rd->init(bufio);
-	img := display.newimage(Rect((0, 0), (7, 5)), Draw->RGB24, 0, Draw->Black);
-	img.draw(Rect((0, 0), (3, 5)), display.color(int 16r336699FF), nil, (0, 0));
-	path := "/tmp/scene_test.png";
-	fd := bufio->create(path, Bufio->OWRITE, 8r600);
-	t.assert(fd != nil, "create");
-	t.assertnil(wr->writeimage(fd, img), "writeimage");
-	fd.close();
-	in := bufio->open(path, Bufio->OREAD);
-	(raw, err) := rd->read(in);
-	t.assertnil(err, "readpng accepts it");
-	t.assert(raw != nil && raw.r.dx() == 7 && raw.r.dy() == 5, "size");
-	t.asserteq(raw.chandesc, RImagefile->CRGB, "opaque image written as RGB");
-	t.asserteq(int raw.chans[0][0], 16r33, "red");
-	t.asserteq(int raw.chans[1][0], 16r66, "green");
-	t.asserteq(int raw.chans[2][0], 16r99, "blue");
-	t.asserteq(int raw.chans[0][6], 0, "the other side is black");
-	sys->remove(path);
-}
-
 init(nil: ref Draw->Context, args: list of string)
 {
 	sys = load Sys Sys->PATH;
@@ -348,7 +320,6 @@ init(nil: ref Draw->Context, args: list of string)
 	run("Hit", testHit);
 	run("Render", testRender);
 	run("AA", testAA);
-	run("PNG", testPNG);
 
 	if(testing->summary(passed, failed, skipped) > 0)
 		raise "fail:tests failed";

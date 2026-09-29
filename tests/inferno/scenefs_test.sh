@@ -150,14 +150,14 @@ if {echo 'nonsense record' > $S/log >[2] /dev/null} {
 cat $S/history > /tmp/scenefs_test.scene
 # (A machine with no draw device at all is the one tolerated failure.)
 if {ftest -f /dis/scenerender.dis} {
-	rm -f /tmp/scenefs_test.png /tmp/scenefs_test.err
-	scenerender -w 200 -h 150 -r /tmp/scenefs_test.scene /tmp/scenefs_test.png >[2] /tmp/scenefs_test.err
-	if {! ftest -f /tmp/scenefs_test.png} {
+	rm -f /tmp/scenefs_test.bit /tmp/scenefs_test.err
+	scenerender -w 200 -h 150 -r /tmp/scenefs_test.scene > /tmp/scenefs_test.bit >[2] /tmp/scenefs_test.err
+	if {! ~ `{read 11 < /tmp/scenefs_test.bit} compressed r8g8b8} {
 		if {! grep -s 'cannot allocate display' /tmp/scenefs_test.err} {
 			raise 'fail:scenerender: '^`{cat /tmp/scenefs_test.err}
 		}
 	}
-	rm -f /tmp/scenefs_test.png /tmp/scenefs_test.err
+	rm -f /tmp/scenefs_test.bit /tmp/scenefs_test.err
 }
 rm -f /tmp/scenefs_test.scene
 unmount $S

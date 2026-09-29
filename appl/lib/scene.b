@@ -1008,7 +1008,7 @@ placelabels(dst: ref Image, bounds: Rect)
 			w := font.width(lb.s);
 			for(c := lb.cands; c != nil; c = tl c) {
 				r := Rect(hd c, (hd c).add((w, font.height)));
-				if(!r.inrect(bounds) || collides(r, obstacles))
+				if(!r.inrect(bounds) || collides(r.inset(-3), obstacles))
 					continue;
 				obstacles = r :: obstacles;
 				if(lb.halo)

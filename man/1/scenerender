@@ -1,6 +1,6 @@
 .TH SCENERENDER 1
 .SH NAME
-scenerender, scenedemo \- render a scene to an image; drive a scene with a demo
+scenerender, scenedemo \- draw a scene as an image; drive a scene with a demo
 .SH SYNOPSIS
 .B scenerender
 [
@@ -24,7 +24,6 @@ scenerender, scenedemo \- render a scene to an image; drive a scene with a demo
 .B -l
 ]
 .I dir
-.I out
 .br
 .B scenerender
 [
@@ -32,7 +31,6 @@ scenerender, scenedemo \- render a scene to an image; drive a scene with a demo
 ]
 .B -r
 .I recording
-.I out
 .PP
 .B scenedemo
 [
@@ -48,11 +46,11 @@ scenerender, scenedemo \- render a scene to an image; drive a scene with a demo
 .I Scenerender
 draws a scene with the same renderer as the Matrix
 .I scene-view
-module and writes it to
-.IR out :
-as PNG when the name ends in
-.BR .png ,
-otherwise in Inferno image format.
+module and writes it to standard output in the Inferno image format
+.RI ( image (6)),
+which
+.I present
+displays and any file operation can copy.
 No window system is needed.
 .PP
 The scene is a directory \(em a
@@ -89,9 +87,9 @@ ticks (default: forever).
 .EX
 mount -c {scenefs} /mnt/scene
 scenedemo -n 600 -d 0
-scenerender /mnt/scene /tmp/now.png
+scenerender /mnt/scene > /tmp/now.bit
 cat /mnt/scene/history > /tmp/run.scene
-scenerender -t 300 -v 'zoom -1 follow rover3' -r /tmp/run.scene /tmp/t300.png
+scenerender -t 300 -v 'zoom -1 follow rover3' -r /tmp/run.scene > /tmp/t300.bit
 .EE
 .SH SOURCE
 .B /appl/cmd/scenerender.b
@@ -100,4 +98,4 @@ scenerender -t 300 -v 'zoom -1 follow rover3' -r /tmp/run.scene /tmp/t300.png
 .SH SEE ALSO
 .IR scenefs (4),
 .IR scene (2),
-.IR imagefile (2)
+.IR image (6)

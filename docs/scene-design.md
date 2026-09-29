@@ -3,17 +3,17 @@
 **Status:** implemented — `lib/scene` (model, camera, renderer),
 `scenefs` (the served scene: camera, clock, record/replay),
 `scene-view` (Matrix display module, replacing `geo-map`),
-`scenerender` (headless → PNG), `scenedemo` (a synthetic producer),
-`writepng`.  Man pages: scene(2), scenefs(4), scenerender(1),
-imagefile(2); the Matrix library pages for `scene-view` and
+`scenerender` (headless, to an image on standard output), `scenedemo`
+(a synthetic producer).  Man pages: scene(2), scenefs(4),
+scenerender(1); the Matrix library pages for `scene-view` and
 `scene-fixture`.
 
 Scene generalises the earlier geo-map contract
 from "georeferenced units on a Mercator map" to "things in a 2-D space,
 over time": a simulation on a local metre grid, a board game, a network
 laid out in the plane, a test rig replaying a log, and — unchanged — a
-map. The same data drives a live Matrix pane, a PNG written by a batch
-job, and an agent that reads and steers the view through files.
+map. The same data drives a live Matrix pane, an image written by a
+batch job, and an agent that reads and steers the view through files.
 
 Nothing here is domain-specific. The renderer knows shapes, colours,
 labels, headings and time; it does not know what the things are.
@@ -27,8 +27,7 @@ labels, headings and time; it does not know what the things are.
 | `module/scene.m`, `appl/lib/scene.b` | library | The model (entities, features, layers, meta, clock), the record grammar, frames and camera, the renderer, hit-testing. Every other piece is a thin client of it. |
 | `scenefs` (`appl/cmd/scenefs.b`) | 9P server | Serves one live scene at `/mnt/scene`: producers write it, viewers read it, anyone steers it through `ctl`. Owns the camera and the playhead, records every change, replays a recording. |
 | `scene-view` (`appl/matrix/scene-view.b`) | Matrix display | Draws a scene directory — a `scenefs` mount or a plain directory — into a Matrix region. |
-| `scenerender` (`appl/cmd/scenerender.b`) | command | Renders a scene directory, or a recording at time *t*, to PNG (or an Inferno image). No window system needed. |
-| `writepng` (`appl/lib/writepng.b`) | library | PNG encoder (`WImagefile`), so any Draw client can write a standard image. |
+| `scenerender` (`appl/cmd/scenerender.b`) | command | Draws a scene directory, or a recording at time *t*, as an Inferno image on standard output. No window system needed. |
 | `scenedemo` (`appl/cmd/scenedemo.b`) | command | A synthetic producer (a field survey) writing records to a scene's `log`: a demo and a test load. |
 | `scene-fixture` (`appl/matrix/scene-fixture.b`) | Matrix service | Mounts a `scenefs` and runs `scenedemo`, so `lib/matrix/compositions/scene-demo` works from the picker. |
 
@@ -247,22 +246,27 @@ and cached; glyphs are anti-aliased through `lib/aadraw`.
   `view` and writes its own pan/zoom/select back to `ctl`, so viewers and
   agents stay in step. Keys: `+`/`-` zoom, `h/j/k/l` pan, `f` fit,
   space play/pause, `.`/`,` step, `L` live.
-- **`scenerender`** renders headless:
+- **`scenerender`** draws headless, as an image on standard output:
 
   ```
-  scenerender [-w 1024] [-h 768] [-t T] [-v 'center A B zoom Z'] [-F font] [-n] [-l] scene-dir|-r recording out
+  scenerender [-w 1024] [-h 768] [-t T] [-v 'center A B zoom Z'] [-F font] [-n] [-l] scene-dir|-r recording > out.bit
   ```
 
   With `-r`, the recording is replayed to time `T` (default: the end)
   and trails are built from the full history — whole trajectories for a
-  report or a sweep's figure. The PNG is a plain file: `present` can show
-  it to a human, a Veltro agent can inspect it with `vision`.
-
+  report or a sweep's figure.
+- **Pictures are files.** Images stay in the Inferno image format inside
+  the system: `present` shows `.bit` files, and a running Matrix serves
+  its composited window as `/mnt/matrix/image`, so `cp
+  /mnt/matrix/image /tmp/now.bit` is a screenshot of exactly what the
+  human sees, as `cp /dev/screen` is on Plan 9.  Conversion happens once,
+  at the edge, when an image leaves (`tools/p9img2png.py` on the host).
 - **Agents** need nothing new. An agent granted `/mnt/scene` reads
   `status`, `view` and the stanza files, blocks on `event` for what a
   human selects, and steers with `ctl` (`follow`, `seek`, `select`) —
   the human's `scene-view` moves with it. To show a picture it runs
-  `scenerender` and hands the PNG to `present`.
+  `scenerender` (or copies `/mnt/matrix/image`) and hands the file to
+  `present`.
 
 ---
 

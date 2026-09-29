@@ -1,18 +1,19 @@
 implement Scenerender;
 
 #
-# scenerender — render a scene to an image file, without a window system.
+# scenerender — draw a scene, without a window system, as an image on
+# standard output (the Inferno image format: display it, cp it,
+# convert it at the edge of the system if it must leave).
 #
-#	scenerender [-w width] [-h height] [-t time] [-v view] [-n] [-l] dir out
-#	scenerender [...] -r recording out
+#	scenerender [-w width] [-h height] [-t time] [-v view] [-F font] [-n] [-l] dir
+#	scenerender [...] -r recording
 #
 # The scene is a directory (docs/scene-design.md §2: a scenefs mount or
 # plain files) or, with -r, a recording of records (§3.2), replayed up
 # to -t (default: the end) with every entity's trail built from the
 # whole history.  -v adopts a view line ("center A B zoom Z sel ID");
 # otherwise the camera fits the data.  -n drops the HUD, -l the default
-# grid.  out ending in .png is written as PNG; anything else in the
-# Inferno image format.
+# grid.
 #
 
 include "sys.m";
@@ -24,7 +25,6 @@ include "bufio.m";
 	bufio: Bufio;
 	Iobuf: import bufio;
 include "arg.m";
-include "imagefile.m";
 include "scene.m";
 	scene: Scene;
 	Model, Cam, Trails: import scene;
@@ -47,7 +47,7 @@ init(nil: ref Draw->Context, argv: list of string)
 		fatal(sys->sprint("cannot load %s: %r", Scene->PATH));
 	arg := load Arg Arg->PATH;
 	arg->init(argv);
-	arg->setusage("scenerender [-w width] [-h height] [-t time] [-v view] [-F font] [-n] [-l] [-r recording | dir] out");
+	arg->setusage("scenerender [-w width] [-h height] [-t time] [-v view] [-F font] [-n] [-l] [-r recording | dir]");
 	w := 1024;
 	h := 768;
 	t := -1.0;
@@ -68,13 +68,10 @@ init(nil: ref Draw->Context, argv: list of string)
 		* =>	arg->usage();
 		}
 	argv = arg->argv();
-	if(rec == nil && len argv != 2 || rec != nil && len argv != 1)
+	if(rec == nil && len argv != 1 || rec != nil && argv != nil)
 		arg->usage();
 	if(w <= 0 || h <= 0 || w > 16384 || h > 16384)
 		fatal("bad size");
-	out := hd argv;
-	if(rec == nil)
-		out = hd tl argv;
 
 	m: ref Model;
 	tr: ref Trails;
@@ -104,24 +101,8 @@ init(nil: ref Draw->Context, argv: list of string)
 	}
 	scene->render(img, m, cam, tr, flags, nil);
 
-	if(len out > 4 && out[len out - 4:] == ".png") {
-		wr := load WImagefile WImagefile->WRITEPNGPATH;
-		if(wr == nil)
-			fatal(sys->sprint("cannot load %s: %r", WImagefile->WRITEPNGPATH));
-		wr->init(bufio);
-		fd := bufio->create(out, Bufio->OWRITE, 8r664);
-		if(fd == nil)
-			fatal(sys->sprint("cannot create %s: %r", out));
-		if((err := wr->writeimage(fd, img)) != nil)
-			fatal(err);
-		fd.close();
-	} else {
-		fd := sys->create(out, Sys->OWRITE, 8r664);
-		if(fd == nil)
-			fatal(sys->sprint("cannot create %s: %r", out));
-		if(display.writeimage(fd, img) < 0)
-			fatal(sys->sprint("writeimage: %r"));
-	}
+	if(display.writeimage(sys->fildes(1), img) < 0)
+		fatal(sys->sprint("writeimage: %r"));
 }
 
 # Apply a recording up to time t (all of it if !hast), noting trail
