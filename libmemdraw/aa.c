@@ -102,6 +102,19 @@ aapixels(Aapoly *p)
 }
 
 typedef struct Acc Acc;
+typedef struct Span Span;
+
+struct Span
+{
+	int	x0, x1;	/* [x0, x1) in cells */
+};
+
+/*
+ * The cells of a band.  cover and area are kept zero but where an edge
+ * has touched them: each row lists the cells it touched (with repeats),
+ * so a row is read, and cleared, in the time its edges take, not its
+ * width.
+ */
 struct Acc
 {
 	int	*cover;
@@ -109,6 +122,10 @@ struct Acc
 	int	w;	/* cells in a row */
 	int	x0;	/* the pixel x of cell 0 */
 	int	y0;	/* the pixel y of the band's first row */
+	int	*touch[Band];	/* each row's touched cells */
+	int	ntouch[Band];
+	int	atouch[Band];
+	int	err;
 };
 
 /*
@@ -120,18 +137,51 @@ struct Acc
 static void
 addcell(Acc *a, int r, int c, int cover, int area)
 {
-	int i;
+	int i, *t, n;
 
 	c -= a->x0;
 	if(c >= a->w)
 		return;
-	i = (r - a->y0)*(a->w+1);
 	if(c < 0){
-		a->cover[i] += cover;
-		return;
+		c = 0;
+		area = 0;
 	}
-	a->cover[i+c] += cover;
-	a->area[i+c] += area;
+	r -= a->y0;
+	i = r*(a->w+1) + c;
+	if(a->cover[i] == 0 && a->area[i] == 0){
+		if(a->ntouch[r] == a->atouch[r]){
+			n = 2*a->atouch[r] + 16;
+			t = realloc(a->touch[r], n*sizeof(int));
+			if(t == nil){
+				a->err = 1;
+				return;
+			}
+			a->touch[r] = t;
+			a->atouch[r] = n;
+		}
+		a->touch[r][a->ntouch[r]++] = c;
+	}
+	a->cover[i] += cover;
+	a->area[i] += area;
+}
+
+static void
+sortints(int *v, int n)
+{
+	int i, j, t;
+
+	for(i = 1; i < n; i++){
+		t = v[i];
+		for(j = i; j > 0 && v[j-1] > t; j--)
+			v[j] = v[j-1];
+		v[j] = t;
+	}
+}
+
+static int
+spancmp(void *a, void *b)
+{
+	return ((Span*)a)->x0 - ((Span*)b)->x0;
 }
 
 /*
@@ -279,6 +329,95 @@ alpha(vlong v, int evenodd)
  * the destination pixel p is p+d.  Only pixels in clipr change.
  * Wind is as for fillpoly: 1 is even-odd, anything else non-zero.
  */
+/*
+ * One row of the band into row m of the mask: runs between touched
+ * cells have the coverage of the winding so far (0 or full, for a
+ * closed shape), touched cells their own.  The row's non-zero runs are
+ * added to spans; its cells are cleared for the next band.
+ */
+static void
+maskrow(Acc *a, int r, uchar *m, int evenodd, Span **spans, int *nspan, int *aspan)
+{
+	int *t, n, i, c, x, v, x0, *cover, *area;
+	vlong acc;
+	Span *s;
+
+	t = a->touch[r];
+	n = a->ntouch[r];
+	sortints(t, n);
+	cover = a->cover + r*(a->w+1);
+	area = a->area + r*(a->w+1);
+	acc = 0;
+	x = 0;
+	x0 = -1;	/* the start of the non-zero run being built */
+#define	RUN(a0, a1)	{ \
+		if(x0 < 0) x0 = (a0); \
+	}
+#define	ENDRUN(at)	{ \
+		if(x0 >= 0){ \
+			if(*nspan == *aspan){ \
+				*aspan = 2**aspan + 32; \
+				s = realloc(*spans, *aspan*sizeof(Span)); \
+				if(s == nil){ a->err = 1; return; } \
+				*spans = s; \
+			} \
+			(*spans)[*nspan].x0 = x0; \
+			(*spans)[(*nspan)++].x1 = (at); \
+			x0 = -1; \
+		} \
+	}
+	for(i = 0; i < n; i++){
+		c = t[i];
+		if(i > 0 && c == t[i-1])
+			continue;
+		if(c > x){
+			v = alpha(acc << (Aashift+1), evenodd);
+			if(v != 0){
+				memset(m+x, v, c-x);
+				RUN(x, c);
+			}else
+				ENDRUN(x);
+		}
+		acc += cover[c];
+		v = alpha((acc << (Aashift+1)) - area[c], evenodd);
+		m[c] = v;
+		if(v != 0)
+			RUN(c, c+1)
+		else
+			ENDRUN(c);
+		cover[c] = 0;
+		area[c] = 0;
+		x = c+1;
+	}
+	if(x < a->w){
+		v = alpha(acc << (Aashift+1), evenodd);
+		if(v != 0){
+			memset(m+x, v, a->w-x);
+			RUN(x, a->w);
+			x = a->w;
+		}
+	}
+	ENDRUN(x);
+#undef RUN
+#undef ENDRUN
+	a->ntouch[r] = 0;
+}
+
+/*
+ * Draw src through the polygon's coverage onto dst, which is not a
+ * layer.  The polygon is offset by off pixels; the source pixel for
+ * the destination pixel p is p+d.  Only pixels in clipr change.
+ * Wind is as for fillpoly: 1 is even-odd, anything else non-zero.
+ *
+ * A band is drawn as the few rectangles that hold its coverage — the
+ * row runs of every row, merged where they overlap or nearly meet — so
+ * a thin stroke across the screen costs its length, not the screen.
+ */
+enum
+{
+	Spangap	= 16,	/* runs closer than this are drawn as one rectangle */
+};
+
 void
 _memaadraw(Memimage *dst, Aapoly *poly, Point off, int wind, Memimage *src, Point d, Rectangle clipr, int op)
 {
@@ -286,9 +425,9 @@ _memaadraw(Memimage *dst, Aapoly *poly, Point off, int wind, Memimage *src, Poin
 	Memimage *mask;
 	Acc a;
 	Aaedge *e, **act, *sorted;
-	int i, n, nact, next, row, x, y, y0, y1, v, bx0, bx1, evenodd;
-	vlong acc;
-	uchar *m;
+	Span *spans, *rows[Band];
+	int i, j, k, n, nact, next, y, y0, y1, evenodd, nspan, aspan, nrow[Band], arow[Band];
+	int sx0, sx1;
 
 	if(poly->err)
 		return;
@@ -307,31 +446,34 @@ _memaadraw(Memimage *dst, Aapoly *poly, Point off, int wind, Memimage *src, Poin
 			e->y1 += off.y << Aashift;
 		}
 	}
+	memset(&a, 0, sizeof a);
+	memset(rows, 0, sizeof rows);
+	memset(nrow, 0, sizeof nrow);
+	memset(arow, 0, sizeof arow);
 	a.w = Dx(r);
 	a.x0 = r.min.x;
 	n = Band*(a.w+1);
-	sorted = nil;
-	act = nil;
-	a.cover = malloc(n*sizeof(int));
-	a.area = malloc(n*sizeof(int));
+	spans = nil;
+	nspan = aspan = 0;
+	a.cover = mallocz(n*sizeof(int), 1);
+	a.area = mallocz(n*sizeof(int), 1);
 	act = malloc((poly->ne+1)*sizeof(Aaedge*));
 	sorted = malloc((poly->ne+1)*sizeof(Aaedge));
 	mask = allocmemimage(Rect(0, 0, a.w, Band), GREY8);
 	if(a.cover == nil || a.area == nil || act == nil || sorted == nil || mask == nil)
 		goto Out;
+	memfillcolor(mask, DTransparent);
 	sortedges(poly->e, sorted, poly->ne);
 
 	oclipr = dst->clipr;
 	dst->clipr = clipr;
 	nact = 0;
 	next = 0;
-	for(y0 = r.min.y; y0 < r.max.y; y0 = y1){
+	for(y0 = r.min.y; y0 < r.max.y && !a.err; y0 = y1){
 		y1 = y0 + Band;
 		if(y1 > r.max.y)
 			y1 = r.max.y;
 		a.y0 = y0;
-		memset(a.cover, 0, n*sizeof(int));
-		memset(a.area, 0, n*sizeof(int));
 
 		/* edges that reach this band */
 		while(next < poly->ne && poly->e[next].y0 < y1 << Aashift)
@@ -345,28 +487,43 @@ _memaadraw(Memimage *dst, Aapoly *poly, Point off, int wind, Memimage *src, Poin
 			i++;
 		}
 
-		bx0 = a.w;
-		bx1 = 0;
+		/* the mask, and each row's runs */
 		for(y = y0; y < y1; y++){
-			row = (y - y0)*(a.w+1);
-			m = byteaddr(mask, Pt(0, y - y0));
-			acc = 0;
-			for(x = 0; x < a.w; x++){
-				acc += a.cover[row+x];
-				v = alpha((acc << (Aashift+1)) - a.area[row+x], evenodd);
-				m[x] = v;
-				if(v != 0){
-					if(x < bx0)
-						bx0 = x;
-					if(x >= bx1)
-						bx1 = x+1;
+			k = y - y0;
+			nrow[k] = 0;
+			maskrow(&a, k, byteaddr(mask, Pt(0, k)), evenodd, &rows[k], &nrow[k], &arow[k]);
+		}
+
+		/* the runs of all rows, merged into rectangles */
+		nspan = 0;
+		for(k = 0; k < y1-y0; k++)
+			for(j = 0; j < nrow[k]; j++){
+				if(nspan == aspan){
+					aspan = 2*aspan + 32;
+					if((spans = realloc(spans, aspan*sizeof(Span))) == nil){
+						a.err = 1;
+						break;
+					}
 				}
+				spans[nspan++] = rows[k][j];
 			}
+		if(a.err)
+			break;
+		qsort(spans, nspan, sizeof(Span), spancmp);
+		for(i = 0; i < nspan; i = j){
+			sx0 = spans[i].x0;
+			sx1 = spans[i].x1;
+			for(j = i+1; j < nspan && spans[j].x0 <= sx1 + Spangap; j++)
+				if(spans[j].x1 > sx1)
+					sx1 = spans[j].x1;
+			br = Rect(r.min.x+sx0, y0, r.min.x+sx1, y1);
+			memimagedraw(dst, br, src, addpt(br.min, d), mask, Pt(sx0, 0), op);
 		}
-		if(bx0 < bx1){
-			br = Rect(r.min.x+bx0, y0, r.min.x+bx1, y1);
-			memimagedraw(dst, br, src, addpt(br.min, d), mask, Pt(bx0, 0), op);
-		}
+
+		/* clear what the band wrote to the mask */
+		for(k = 0; k < y1-y0; k++)
+			for(j = 0; j < nrow[k]; j++)
+				memset(byteaddr(mask, Pt(rows[k][j].x0, k)), 0, rows[k][j].x1 - rows[k][j].x0);
 	}
 	dst->clipr = oclipr;
 
@@ -380,6 +537,11 @@ _memaadraw(Memimage *dst, Aapoly *poly, Point off, int wind, Memimage *src, Poin
 			e->y1 -= off.y << Aashift;
 		}
 	}
+	for(k = 0; k < Band; k++){
+		free(a.touch[k]);
+		free(rows[k]);
+	}
+	free(spans);
 	free(a.cover);
 	free(a.area);
 	free(act);
