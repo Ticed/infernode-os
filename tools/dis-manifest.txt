@@ -718,6 +718,7 @@ dis/tests/fdclose_test.dis
 dis/tests/font_format_test.dis
 dis/tests/fractal_tool_test.dis
 dis/tests/geomap_test.dis
+dis/tests/sam_test.dis
 dis/tests/scene_test.dis
 dis/tests/git_test.dis
 dis/tests/goroutine_leak_test.dis
@@ -951,6 +952,7 @@ dis/wm/presrender.dis
 dis/wm/rt.dis
 dis/wm/sam.dis
 dis/wm/samengine.dis
+dis/wm/samrx.dis
 dis/wm/samstub.dis
 dis/wm/samtk.dis
 dis/wm/scene.dis

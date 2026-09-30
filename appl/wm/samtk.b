@@ -12,6 +12,8 @@ Context, Flayer, Text, Section: import Samterm;
 
 include "tkclient.m";
 
+include "lucitheme.m";
+
 include "samtk.m";
 
 ctxt: ref Context;
@@ -58,6 +60,17 @@ tkcmdlist := array[] of {
 
 menuidx := array[2] of {"0","0"};
 
+# text widget colours from the Lucifer theme ("" keeps Tk's defaults)
+textcolours := "";
+
+col(rgba: int): string
+{
+	return sprint("#%06xff", (rgba >> 8) & 16rFFFFFF);
+}
+
+# one input pump per window, parallel to ctxt.flayers
+pumps: array of chan of int;
+
 init(c: ref Context)
 {
 	ctxt = c;
@@ -67,6 +80,13 @@ init(c: ref Context)
 
 	tkclient = load Tkclient Tkclient->PATH;
 	tkclient->init();
+
+	lucitheme := load Lucitheme Lucitheme->PATH;
+	if (lucitheme != nil) {
+		th := lucitheme->gettheme();
+		textcolours = sprint(" -background %s -foreground %s -selectbackground %s -selectforeground %s",
+			col(th.editbg), col(th.edittext), col(th.accent), col(th.editbg));
+	}
 
 	scrollpos = scrolllines = 0;
 }
@@ -101,6 +121,8 @@ newflayer(tag, tp: int): ref Flayer
 	}
 
 	n := chanadd();
+	pumps[n] = chan[1] of int;
+	spawn pump(t, pumps[n]);
 	ctxt.titlesel[n] = cmdc;
 	tk->namechan(t, ctxt.menu3sel[n], "menu3");
 	tk->namechan(t, ctxt.menu2sel[n], "menu2");
@@ -120,6 +142,8 @@ newflayer(tag, tp: int): ref Flayer
 		mkmenu2(t);
 	}
 	mkmenu3(t);
+	if (textcolours != "")
+		tk->cmd(t, ".w.t configure" + textcolours);
 	tkcmds(t, tkcmdlist);
 
 	# Appl-mode toplevels are created hidden; reveal it and wire up
@@ -192,7 +216,7 @@ mkmenu3(t: ref Tk->Toplevel)
 		menus[i+1] = addmenuitem(3, "menu3", menu3str[i]);
 	}
 	for (i = 0; i < len ctxt.menus; i++) {
-		menus[i+NMENU3+1] = addmenuitem(3, "menu3", ctxt.menus[i].name);
+		menus[i+NMENU3+1] = addmenuitem(3, "menu3", menulabel(ctxt.menus[i].name));
 	}
 	tkcmds(t, menus);
 }
@@ -203,8 +227,17 @@ addmenuitem(d: int, m, s: string): string
 		d, s, m, s);
 }
 
+# the menu3 entry for a file name; an unnamed file still needs a label
+menulabel(s: string): string
+{
+	if (s == "")
+		return Unnamed;
+	return s;
+}
+
 menuins(pos: int, s: string)
 {
+	s = menulabel(s);
 	for (i := 0; i < len ctxt.flayers; i++)
 	   tk->cmd(ctxt.flayers[i].t,
 	      sprint(".m3 insert %d command -text %s -command {send menu3 %s}",
@@ -387,7 +420,7 @@ buttonselect(fl: ref Flayer, s: string): int
 	if (hd l == "1" || hd l == "3") return 0;
 
 	if (ctxt.which != fl) {
-		if (ctxt.menus[i].text != ctxt.cmd)
+		if (t != ctxt.cmd)
 			ctxt.work = fl;
 		newcur(t, fl);
 #		setdot(fl, fl.dot.first, fl.dot.first);
@@ -632,9 +665,35 @@ rasplines(scts: list of ref Section, pos, nlines: int): (int, int)
 	}
 }
 
+# Feed a window's keyboard, mouse and window-manager traffic to Tk.
+# Tk turns them into the bindings' sends (keys, button1, menu2 ...),
+# which samterm's main loop reads.  A separate process, so input keeps
+# reaching Tk while the main loop waits for the host; Tk's send never
+# blocks (it queues), so this cannot deadlock against the main loop's
+# tk->cmd calls.  Stops when the window is deleted.
+pump(t: ref Tk->Toplevel, kill: chan of int)
+{
+	for(;;) alt {
+	<-kill =>
+		return;
+	c := <-t.ctxt.kbd =>
+		tk->keyboard(t, c);
+	p := <-t.ctxt.ptr =>
+		tk->pointer(t, *p);
+	c := <-t.ctxt.ctl or
+	c = <-t.wreq =>
+		tkclient->wmctl(t, c);
+	}
+}
+
 chanadd(): int
 {
 	l := len ctxt.flayers;
+
+	np := array [l+1] of chan of int;
+	if (l > 0)
+		np[0:] = pumps[0:l];
+	pumps = np;
 
 	keysel := array [l+1] of chan of string;
 	keysel[0:] = ctxt.keysel;
@@ -672,6 +731,17 @@ chandel(n: int)
 	l := len ctxt.flayers;
 	if (n >= l)
 		panic("chandel");
+
+	alt {
+	pumps[n] <-= 1 =>
+		;
+	* =>
+		;
+	}
+	np := array [l-1] of chan of int;
+	np[0:] = pumps[0:n];
+	np[n:] = pumps[n+1:];
+	pumps = np;
 
 	keysel := array [l-1] of chan of string;
 	keysel[0:] = ctxt.keysel[0:n];

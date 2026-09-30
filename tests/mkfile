@@ -155,6 +155,7 @@ TARG=\
 	lucifer_helpers_test.dis\
 	geomap_test.dis\
 	scene_test.dis\
+	sam_test.dis\
 	matrix_perfdashboard_test.dis\
 	matrix_sysmon_test.dis\
 	matrix_test.dis\

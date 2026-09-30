@@ -544,16 +544,18 @@ hclose(m: int)
 {
 	i: int;
 
-	# close LAST window of a file
+	# close every window of a file
 	if((m = whichmenu(m)) < 0) panic("hclose: whichmenu");
 	t := ctxt.menus[m].text;
-	if (tl t.flayers != nil) panic("hclose: flayers");
-	fl := hd t.flayers;
-	fl.t = nil;
-	for (i = 0; i< len ctxt.flayers; i++)
-		if (ctxt.flayers[i] == fl) break;
-	if (i == len ctxt.flayers) panic("hclose: ctxt.flayers");
-	samtk->chandel(i);
+	if (t == nil) return;
+	for (fls := t.flayers; fls != nil; fls = tl fls) {
+		fl := hd fls;
+		for (i = 0; i< len ctxt.flayers; i++)
+			if (ctxt.flayers[i] == fl) break;
+		if (i == len ctxt.flayers) panic("hclose: ctxt.flayers");
+		samtk->chandel(i);
+		fl.t = nil;
+	}
 	t.flayers = nil;
 	for (i = 0; i< len ctxt.texts; i++)
 		if (ctxt.texts[i] == ctxt.menus[m].text) break;
@@ -675,25 +677,28 @@ hcut(m, where, howmuch: int)
 	t := ctxt.menus[m].text;
 	if (t == nil) panic("hcut -- no text");
 
-#	sctdump(t.sects, "Hcut, before");
 	t.nrunes -= howmuch;
 	t.sects = sctdelete(t.sects, where, howmuch);
-#	sctdump(t.sects, "Hcut, after");
 	for (fls := t.flayers; fls != nil; fls = tl fls) {
 		fl := hd fls;
-		if (where < fl.scope.first) {
-			if (where + howmuch <= fl.scope.first)
-				fl.scope.first -= howmuch;
-			else
-				fl.scope.first = where;
+		if (where + howmuch <= fl.scope.first) {
+			# wholly above the window: it just moves up
+			fl.scope.first -= howmuch;
+			fl.scope.last -= howmuch;
+			continue;
 		}
-		if (where < fl.scope.last) {
-			if (where + howmuch <= fl.scope.last)
-				fl.scope.last -= howmuch;
-			else
-				fl.scope.last = where;
-		}
+		if (where < fl.scope.first)
+			fl.scope.first = where;
+		if (where <= fl.scope.last)
+			redraw(fl);
 	}
+}
+
+# A change from the host touched what fl shows: draw it again from the
+# rasp (asking for any holes), keeping its origin.
+redraw(fl: ref Flayer)
+{
+	scrollto(fl, fl.scope.first);
 }
 
 hgrow(tag, l1, l2: int)
@@ -730,7 +735,11 @@ hgrowdata(tag, l1, l2: int, s: string)
 	if (t == nil) panic("hdata -- no text");
 	grow(t, l1, l2);
 	t.sects = sctput(t.sects, l1, s);
-	updatefls(t, l1, s);
+	for (fls := t.flayers; fls != nil; fls = tl fls) {
+		fl := hd fls;
+		if (l1 >= fl.scope.first && l1 <= fl.scope.last)
+			redraw(fl);
+	}
 }
 
 hsetdot(m, l1, l2: int)
@@ -1115,7 +1124,7 @@ cut(t: ref Text, fl: ref Flayer)
 paste(t: ref Text, fl: ref Flayer)
 {
 	if (fl.typepoint >= 0) panic("paste: typepoint");
-	if (snarflen == 0) return;
+	# the snarf buffer is the system's; it may hold text from elsewhere
 	if (fl.dot.first < fl.dot.last) cut(t, fl);
 	outTsl(Tpaste, fl.tag, fl.dot.first);
 }
