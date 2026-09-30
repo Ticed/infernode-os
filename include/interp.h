@@ -469,6 +469,7 @@ extern	void		initarray(Type*, Array*);
 extern	void		initmem(Type*, void*);
 extern	void		irestore(Prog*);
 extern	Prog*		isave(void);
+extern	void		i420modinit(void);
 extern	void		keyringmodinit(void);
 extern	void		killcomm(Progq **p);
 extern	int		killprog(Prog*, char*);
