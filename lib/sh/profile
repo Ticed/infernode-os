@@ -34,11 +34,11 @@ if {~ $emuhost MacOSX Linux Nt}{
 		# Windows: mount C:\ at /n/local. Profiles live at C:\Users\<name>,
 		# so /n/local/Users/$user matches macOS's /n/local/Users/$user.
 		trfs '#UC:/' /n/local >[2] /dev/null
-		ls /n/local >[2] /dev/null		# settle the EXPASYNC export/mount before first use (host-root trfs race)
+		ls /n/local > /dev/null >[2] /dev/null		# settle the EXPASYNC export/mount before first use (host-root trfs race)
 		ghome=/n/local/Users/^$user
 	}{
 		trfs '#U*' /n/local >[2] /dev/null
-		ls /n/local >[2] /dev/null		# settle the EXPASYNC export/mount before first use (host-root trfs race)
+		ls /n/local > /dev/null >[2] /dev/null		# settle the EXPASYNC export/mount before first use (host-root trfs race)
 		ghome=/n/local/^`{echo 'echo $HOME' | os sh}
 	}
 	home=$ghome
@@ -241,17 +241,25 @@ if {! ftest -f /mnt/factotum/proto}{
 # Add a service to the lists below to provision it the same way.
 fn provisionkey {
 	# $1 = service name, $2 = host env var
-	_pk=`{os sh -c 'printf %s "${'^$2^'}"' >[2] /dev/null}
+	# The arguments are copied first: a {block} has its own $*, so a $1 or
+	# $2 written inside a backquote is the block's (empty) argument, and
+	# the concatenation failed -- "null list in concatenation" at every
+	# hosted login, and the function stopped there.
+	_pksvc=$1
+	_pkvar=$2
+	_pk=`{os sh -c 'printf %s "${'^$_pkvar^'}"' >[2] /dev/null}
 	if {~ $#_pk 0} {
-		_pk=`{cat /lib/veltro/keys/$1 >[2] /dev/null}
+		_pk=`{cat /lib/veltro/keys/$_pksvc >[2] /dev/null}
 	}
 	if {! ~ $#_pk 0} {
 		echo 'key proto=pass service='^$1^' user=apikey !password='^$_pk > /mnt/factotum/ctl >[2] /dev/null
 	}
 }
 fn provisionkeyfile {
-	# Windows: os sh in backticks hangs, so file-only. $1 = service name.
-	_pk=`{cat /lib/veltro/keys/$1 >[2] /dev/null}
+	# Windows: os sh in backticks hangs, so file-only. $1 = service name,
+	# copied first for the reason given in provisionkey.
+	_pksvc=$1
+	_pk=`{cat /lib/veltro/keys/$_pksvc >[2] /dev/null}
 	if {! ~ $#_pk 0} {
 		echo 'key proto=pass service='^$1^' user=apikey !password='^$_pk > /mnt/factotum/ctl >[2] /dev/null
 	}
