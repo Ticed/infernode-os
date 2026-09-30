@@ -282,6 +282,10 @@ serve(tree: ref Tree)
 		if(nframes == 0 && width <= 0)
 			; # geometry already set by startstream via geoc
 		grow(fr);
+		# a playhead following the live edge moves with each frame:
+		# left to the ticker (sleep(40), ~46 ms in practice) it
+		# stepped ~22 times a second and skipped frames of a 25 fps feed
+		advance();
 		wakeparked();
 
 	<-eofc =>
