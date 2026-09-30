@@ -103,15 +103,73 @@ typedef struct {
 extern int dladdr(const void*, Dlinfo*);
 
 enum {
+	Gregrbp	= 10,	/* REG_RBP */
+	Gregrsp	= 15,	/* REG_RSP */
 	Gregrip	= 16,	/* REG_RIP */
 	Gregeip	= 14,	/* REG_EIP */
+	Nframes	= 8,	/* callers reported after a fault */
 };
+
+/*
+ * dladdr() only sees the dynamic symbol table, so a fault in a static
+ * function (e.g. the JIT's own genw/typecom) resolves the image but
+ * leaves dli_sname nil.  Reporting that as "not in any image" is wrong
+ * and actively misleading: it sent INFR-421 chasing JIT-generated code
+ * when the PC was in emu's own text the whole time.  Distinguish the
+ * three cases: named symbol, image-but-no-symbol, and truly no image.
+ */
+static void
+whereis(char *what, void *pc)
+{
+	Dlinfo di;
+
+	if(dladdr(pc, &di) == 0)
+		fprint(2, "  %s %p not in any loaded image (JIT-generated code?)\n", what, pc);
+	else if(di.dli_sname != nil)
+		fprint(2, "  %s in %s+%#lx\n", what, di.dli_sname,
+			(ulong)((uintptr)pc - (uintptr)di.dli_saddr));
+	else
+		fprint(2, "  %s in %s+%#lx (no exported symbol; static function — addr2line the offset)\n",
+			what, di.dli_fname != nil ? di.dli_fname : "?",
+			(ulong)((uintptr)pc - (uintptr)di.dli_fbase));
+}
+
+/*
+ * The callers, by the frame-pointer chain (the Linux builds keep frame
+ * pointers): a fault in a leaf such as _tas, the lock primitive, names
+ * only the leaf, and the question is who took the lock.  (A leaf with no
+ * frame of its own, _tas included, leaves its direct caller -- lock --
+ * out of the chain; the next one up is the one that matters.)  Each frame
+ * holds the previous frame pointer and then the return address; the
+ * walk follows only frames that are aligned, above the stack pointer,
+ * strictly rising and within 8 MB of it, so a corrupt chain ends it
+ * rather than faulting again in the handler.
+ */
+#if defined(__x86_64__) || defined(__aarch64__)
+static void
+callers(uintptr sp, uintptr fp)
+{
+	uintptr *f;
+	int i;
+
+	for(i = 0; i < Nframes; i++){
+		if(fp < sp || fp - sp > 8*1024*1024 || fp & (sizeof(uintptr)-1))
+			return;
+		f = (uintptr*)fp;
+		if(f[1] == 0)
+			return;
+		whereis("caller", (void*)f[1]);
+		if(f[0] <= fp)
+			return;
+		fp = f[0];
+	}
+}
+#endif
 
 static void
 faultwhere(void *a)
 {
 	ucontext_t *uc;
-	Dlinfo di;
 	void *pc;
 
 	if(a == nil)
@@ -130,23 +188,12 @@ faultwhere(void *a)
 	return;
 #endif
 	fprint(2, "  PC=%p\n", pc);
-	/*
-	 * dladdr() only sees the dynamic symbol table, so a fault in a static
-	 * function (e.g. the JIT's own genw/typecom) resolves the image but
-	 * leaves dli_sname nil.  Reporting that as "not in any image" is wrong
-	 * and actively misleading: it sent INFR-421 chasing JIT-generated code
-	 * when the PC was in emu's own text the whole time.  Distinguish the
-	 * three cases: named symbol, image-but-no-symbol, and truly no image.
-	 */
-	if(dladdr(pc, &di) == 0)
-		fprint(2, "  PC not in any loaded image (JIT-generated code?)\n");
-	else if(di.dli_sname != nil)
-		fprint(2, "  PC in %s+%#lx\n", di.dli_sname,
-			(ulong)((uintptr)pc - (uintptr)di.dli_saddr));
-	else
-		fprint(2, "  PC in %s+%#lx (no exported symbol; static function — addr2line the offset)\n",
-			di.dli_fname != nil ? di.dli_fname : "?",
-			(ulong)((uintptr)pc - (uintptr)di.dli_fbase));
+	whereis("PC", pc);
+#if defined(__x86_64__)
+	callers(uc->uc_mcontext.gregs[Gregrsp], uc->uc_mcontext.gregs[Gregrbp]);
+#elif defined(__aarch64__)
+	callers(uc->uc_mcontext.sp, uc->uc_mcontext.regs[29]);
+#endif
 	if(up != nil && up->nlocks > 0)
 		fprint(2, "  holding %d lock(s)\n", up->nlocks);
 }
