@@ -175,6 +175,8 @@ TOOL_PATHS := array[] of {
 	("man", "/dis/veltro/tools/man.dis"),
 	# Matrix compositional module runtime (requires wm/matrix running)
 	("matrix", "/dis/veltro/tools/matrix.dis"),
+	# Pictures of this activity's windows (wmsrv wsys at /mnt/wsys)
+	("window", "/dis/veltro/tools/window.dis"),
 	# Task delegation (requires luciuisrv)
 	("task",    "/dis/veltro/tools/task.dis"),
 	# Structured planning
@@ -949,6 +951,7 @@ calendarcontrolpath(path: string): int
 fixedservicecontrolpath(path: string): int
 {
 	return path == "/mnt/matrix" || prefix(path, "/mnt/matrix/") ||
+		path == "/mnt/wsys" || prefix(path, "/mnt/wsys/") ||
 		path == "/mnt/git" || prefix(path, "/mnt/git/") ||
 		path == "/n/git" || prefix(path, "/n/git/") ||
 		path == "/mnt/gpu" || prefix(path, "/mnt/gpu/") ||

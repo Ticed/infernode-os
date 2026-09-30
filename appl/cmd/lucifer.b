@@ -1225,6 +1225,7 @@ newtaskpres(id: int): ref TaskPres
 		sys->fprint(stderr, "lucifer: wmsrv init failed for task %d\n", id);
 		return nil;
 	}
+	mountwsys(tp.wmsrvmod, id);
 	# Initialize app slot infrastructure
 	tp.appslots = array[MAXAPPSLOTS] of ref AppSlot;
 	tp.nappslots = 0;
@@ -1244,6 +1245,29 @@ newtaskpres(id: int): ref TaskPres
 	}
 
 	return tp;
+}
+
+# mountwsys: serve activity id's windows (wmsrv->wsys: <client>/window,
+# read-only) at /mnt/wsys/<id> in the session namespace.  Agents reach
+# their own activity's through the window tool, which nsconstruct narrows
+# to /mnt/wsys/<id>; apps launched into an activity have /mnt/wsys hidden
+# (launchappns).  Activity 0 runs no ordinary apps, only the delegating
+# agent and a few listed ones.
+mountwsys(m: Wmsrv, id: int)
+{
+	fd := m->wsys();
+	if(fd == nil) {
+		sys->fprint(stderr, "lucifer: wsys for activity %d: %r\n", id);
+		return;
+	}
+	dir := "/mnt/wsys/" + string id;
+	for(d := "/mnt/wsys" :: dir :: nil; d != nil; d = tl d) {
+		(ok, nil) := sys->stat(hd d);
+		if(ok < 0)
+			sys->create(hd d, Sys->OREAD, Sys->DMDIR|8r755);
+	}
+	if(sys->mount(fd, nil, dir, Sys->MREPL, nil) < 0)
+		sys->fprint(stderr, "lucifer: mount %s: %r\n", dir);
 }
 
 # joinrelay: forward join events from a task's wmsrv to the main preswmloop.
@@ -3174,6 +3198,9 @@ launchappns(tp: ref TaskPres, guimod: GuiApp,
 		srcpath := "/chan/" + wmname;
 		# Verify source file exists before bind
 		sys->bind(srcpath, "/chan/wmctl", Sys->MREPL);
+		# no activity's windows, this one's included: an empty srv
+		# instance over /mnt/wsys hides every /mnt/wsys/<id> mount
+		sys->bind("#s", "/mnt/wsys", Sys->MREPL);
 	}
 	guimod->init(ctxt, args);
 }

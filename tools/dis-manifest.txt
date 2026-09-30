@@ -892,6 +892,7 @@ dis/veltro/tools/limbo.dis
 dis/veltro/tools/list.dis
 dis/veltro/tools/man.dis
 dis/veltro/tools/matrix.dis
+dis/veltro/tools/window.dis
 dis/veltro/tools/memory.dis
 dis/veltro/tools/mount.dis
 dis/veltro/tools/payfetch.dis
