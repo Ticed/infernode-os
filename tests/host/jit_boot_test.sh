@@ -62,7 +62,9 @@ rm -f "$BOOTSCRIPT" "$ROOT/tmp_jit_boot_test.sh"
 FAIL=0
 
 # Check for crash signatures
-for pat in "exNomem" "SIGSEGV" "alloc:D2B" "panic:" "POOL CORRUPTION"; do
+# (the emulator's own fault report reads "SEGV: addr=..." or "BUS: addr=...",
+# not SIGSEGV: without them a crash was reported only by its effects)
+for pat in "exNomem" "SIGSEGV" "SEGV: addr=" "BUS: addr=" "alloc:D2B" "panic:" "POOL CORRUPTION"; do
     if grep -q "$pat" "$LOG"; then
         echo "FAIL: found '$pat' in boot log"
         grep "$pat" "$LOG" | head -3

@@ -629,6 +629,11 @@ dumpbuf(char *s, Buffer b, int n)
  * and, as alphadraw's writebyte does, clears the unused byte of a
  * 32-bit pixel with no alpha, even where the mask is 0.  The output is
  * the same, bit for bit (tested).
+ *
+ * MUL assigns its temporary, so the two products of a sum need two
+ * temporaries, as alphadraw's s and t: with one, the assignments are
+ * unsequenced and gcc interleaves them, so both products read the
+ * second (glyphs came out black whatever the colour).
  */
 static int
 coverdraw(Memdrawparam *par)
@@ -637,7 +642,7 @@ coverdraw(Memdrawparam *par)
 	Rectangle r;
 	int x, y, dx, nb, ma, fd, sa, sr, sg, sb, hasalpha;
 	int shr, shg, shb, sha;
-	ulong u, t, dr, dg, db, da;
+	ulong u, s, t, dr, dg, db, da;
 	uchar *d, *m;
 
 	dst = par->dst;
@@ -678,11 +683,11 @@ coverdraw(Memdrawparam *par)
 			da = hasalpha ? (u >> sha) & 0xFF : 0;
 			if(ma != 0){
 				fd = 255 - MUL(sa, ma, t);
-				dr = MUL(ma, sr, t) + MUL(fd, dr, t);
-				dg = MUL(ma, sg, t) + MUL(fd, dg, t);
-				db = MUL(ma, sb, t) + MUL(fd, db, t);
+				dr = MUL(ma, sr, s) + MUL(fd, dr, t);
+				dg = MUL(ma, sg, s) + MUL(fd, dg, t);
+				db = MUL(ma, sb, s) + MUL(fd, db, t);
 				if(hasalpha)
-					da = MUL(ma, sa, t) + MUL(fd, da, t);
+					da = MUL(ma, sa, s) + MUL(fd, da, t);
 			}
 			u = dr<<shr | dg<<shg | db<<shb;
 			if(hasalpha)
