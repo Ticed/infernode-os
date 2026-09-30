@@ -17,6 +17,7 @@ init:   fn():
     chan of (ref Client, array of byte, Sys->Rwrite));
 find:   fn(p: Draw->Point): ref Client;
 top:    fn(): ref Client;
+wsys:   fn(): ref Sys->FD;
 
 Window: adt {
     tag:    string;
@@ -276,6 +277,38 @@ Send the client's windows below the other clients' windows.
 .TP
 .IB c .remove()
 Remove the client and its windows from wmsrv's window stack.
+.PP
+.B Wsys
+serves the window manager's windows as a read-only file tree on the
+returned file descriptor, which the caller mounts where it chooses:
+.RS
+.TP
+.IB id /window
+the image of client
+.IR id 's
+main window, in the format of
+.BR /dev/screen :
+an uncompressed
+.IR image (6),
+snapshot when the file is opened.
+.RE
+.IP
+A client's main window is its oldest, whatever its tag.
+Windows are allocated with backing store, so a covered window reads as
+itself.
+Nothing is served until
+.B wsys
+is called, and nothing is mounted by
+.IR wmsrv :
+the window manager decides whose namespace gets the tree.
+.IR Lucifer ,
+for instance, mounts each activity's at
+.BI /mnt/wsys/ activity
+and hides
+.B /mnt/wsys
+from the applications it launches.
+This is rio's
+.BI /dev/wsys/ id /window .
 .SH FILES
 .TP 10
 .B /chan/wm

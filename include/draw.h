@@ -84,6 +84,24 @@ enum
 #define	ARROW(a, b, c)	(Endarrow|((a)<<5)|((b)<<14)|((c)<<23))
 
 /*
+ * Anti-aliased paths (see draw(3), fillpath in draw(2)): coordinates
+ * are fixed point, Pathunit to a pixel, and the pixel (x, y) covers
+ * [x, x+1) × [y, y+1).
+ */
+enum
+{
+	Pathunit	= 1<<8,
+
+	/* stroke ends and joins */
+	Capbutt		= 0,
+	Capround,
+	Capsquare,
+	Joinmiter	= 0,
+	Joinround,
+	Joinbevel,
+};
+
+/*
  * image channel descriptors 
  */
 enum {
@@ -155,6 +173,16 @@ struct	Point
 {
 	int	x;
 	int	y;
+};
+
+typedef struct Path Path;
+struct Path
+{
+	uchar	*buf;	/* encoded as the draw device takes it */
+	int	n;
+	int	nalloc;
+	Point	last;	/* the last point encoded */
+	int	err;
 };
 
 struct Rectangle
@@ -424,6 +452,21 @@ extern void	poly(Image*, Point*, int, int, int, int, Image*, Point);
 extern void	polyop(Image*, Point*, int, int, int, int, Image*, Point, Drawop);
 extern void	fillpoly(Image*, Point*, int, int, Image*, Point);
 extern void	fillpolyop(Image*, Point*, int, int, Image*, Point, Drawop);
+extern Path*	allocpath(void);
+extern void	freepath(Path*);
+extern void	pathmove(Path*, Point);
+extern void	pathline(Path*, Point);
+extern void	pathquad(Path*, Point, Point);
+extern void	pathcurve(Path*, Point, Point, Point);
+extern void	pathellipse(Path*, Point, int, int);
+extern void	pathclose(Path*);
+extern int	_pathverb(uchar*, Point*, int, Point*, int);
+extern void	fillpath(Image*, Path*, int, Image*, Point);
+extern void	fillpathop(Image*, Path*, int, Image*, Point, Drawop);
+extern void	strokepath(Image*, Path*, int, int, int, Image*, Point);
+extern void	strokepathop(Image*, Path*, int, int, int, Image*, Point, Drawop);
+extern void	_fillpath(Image*, uchar*, int, int, Image*, Point, Drawop);
+extern void	_strokepath(Image*, uchar*, int, int, int, int, int, Image*, Point, Drawop);
 extern Point	string(Image*, Point, Image*, Point, Font*, char*);
 extern Point	stringop(Image*, Point, Image*, Point, Font*, char*, Drawop);
 extern Point	stringn(Image*, Point, Image*, Point, Font*, char*, int);

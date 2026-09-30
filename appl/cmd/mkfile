@@ -66,6 +66,7 @@ TARG=\
 	disdep.dis\
 	disdump.dis\
 	dossrv.dis\
+	drawbench.dis\
 	du.dis\
 	echo.dis\
 	ed.dis\
@@ -159,6 +160,9 @@ TARG=\
 	rng.dis\
 	runas.dis\
 	scap.dis\
+	scenedemo.dis\
+	scenefs.dis\
+	scenereplay.dis\
 	sed.dis\
 	sendmail.dis\
 	seq.dis\
@@ -237,6 +241,7 @@ SYSMODULES=\
 	dial.m\
 	dis.m\
 	draw.m\
+	scene.m\
 	ecmascript.m\
 	encoding.m\
 	env.m\

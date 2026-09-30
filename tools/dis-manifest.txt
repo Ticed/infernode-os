@@ -185,6 +185,7 @@ dis/disk/mkfs.dis
 dis/disk/pedit.dis
 dis/disk/prep.dis
 dis/dossrv.dis
+dis/drawbench.dis
 dis/du.dis
 dis/echo.dis
 dis/ed.dis
@@ -288,7 +289,6 @@ dis/js.dis
 dis/kill.dis
 dis/lan78stats.dis
 dis/ktrans.dis
-dis/lib/aadraw.dis
 dis/lib/acmewin.dis
 dis/lib/arg.dis
 dis/lib/asn1.dis
@@ -429,6 +429,7 @@ dis/lib/regexutils.dis
 dis/lib/registries.dis
 dis/lib/rfc3339.dis
 dis/lib/rfc822.dis
+dis/lib/scene.dis
 dis/lib/scoretable.dis
 dis/lib/secstore.dis
 dis/lib/selectfile.dis
@@ -533,7 +534,6 @@ dis/matrix/alert-watcher.dis
 dis/matrix/comp-list.dis
 dis/matrix/cpu-gauge.dis
 dis/matrix/geo-fixture.dis
-dis/matrix/geo-map.dis
 dis/matrix/line-plot.dis
 dis/matrix/llm-context.dis
 dis/matrix/llm-recorder.dis
@@ -543,6 +543,7 @@ dis/matrix/net-gauge.dis
 dis/matrix/position-table.dis
 dis/matrix/proc-list.dis
 dis/matrix/risk-gauge.dis
+dis/matrix/scene-fixture.dis
 dis/matrix/signal-feed.dis
 dis/matrix/sparkline.dis
 dis/matrix/sysmon-svc.dis
@@ -608,6 +609,9 @@ dis/rm.dis
 dis/rng.dis
 dis/runas.dis
 dis/scap.dis
+dis/scenedemo.dis
+dis/scenefs.dis
+dis/scenereplay.dis
 dis/sed.dis
 dis/sendmail.dis
 dis/seq.dis
@@ -714,6 +718,7 @@ dis/tests/fdclose_test.dis
 dis/tests/font_format_test.dis
 dis/tests/fractal_tool_test.dis
 dis/tests/geomap_test.dis
+dis/tests/scene_test.dis
 dis/tests/git_test.dis
 dis/tests/goroutine_leak_test.dis
 dis/tests/gpu_bench.dis
@@ -892,6 +897,7 @@ dis/veltro/tools/limbo.dis
 dis/veltro/tools/list.dis
 dis/veltro/tools/man.dis
 dis/veltro/tools/matrix.dis
+dis/veltro/tools/window.dis
 dis/veltro/tools/memory.dis
 dis/veltro/tools/mount.dis
 dis/veltro/tools/payfetch.dis
@@ -947,6 +953,7 @@ dis/wm/sam.dis
 dis/wm/samengine.dis
 dis/wm/samstub.dis
 dis/wm/samtk.dis
+dis/wm/scene.dis
 dis/wm/settings.dis
 dis/wm/sh.dis
 dis/wm/shell.dis

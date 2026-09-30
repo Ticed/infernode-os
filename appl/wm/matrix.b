@@ -69,6 +69,7 @@ Matrix: module
 
 UPDATE_MS: con 2000;
 MINTICK_MS: con 40;	# fastest per-module cadence (25 fps)
+APPTICK_MS: con 100;	# how often an app region's window is re-copied into the frame
 
 # ── 9P qid space ───────────────────────────────────────────
 #
@@ -167,6 +168,20 @@ geomw := 0;		# -g: standalone geometry request (0 = adapt to host)
 geomh := 0;
 
 focusmod: MatrixDisplay;	# module with keyboard focus
+focusleaf: ref LayoutNode.Leaf;	# ... and its region
+
+# Per-region redraw.  Each display region keeps its last drawing in an
+# off-screen image; a module's draw() runs only when its region went
+# stale — update() reported a change, it consumed input, it was
+# resized or rethemed.  Otherwise the frame is composited from the
+# cached images, so a 25 fps video pane no longer repaints a map and
+# every gauge 25 times a second.  The module interface is unchanged.
+LeafCache: adt {
+	leaf:	ref LayoutNode.Leaf;
+	img:	ref Image;
+	stale:	int;
+};
+leafcaches: list of ref LeafCache;
 tkfocus: int;		# 1: keys go to the Tk engine (a hosted region has focus)
 tkregionseq: int;	# widget-path allocator for hosted regions (.r<seq>)
 mtxitem: string;	# canvas item id of the composited-frame image
@@ -182,6 +197,7 @@ appscreen: ref Screen;
 appwmchan: chan of (string, chan of (string, ref Draw->Wmcontext));
 applk: chan of int;	# guards apppendq/apprecs
 apppendq: list of ref LayoutNode.Leaf;	# launches awaiting their join
+apptokens: list of (int, ref LayoutNode.Leaf);	# a launch's registration token -> its region
 apprecs: list of (ref LayoutNode.Leaf, ref Wmsrv->Client);
 appkbd: ref Wmsrv->Client;	# app with keyboard focus (pointer-follows)
 
@@ -321,8 +337,11 @@ init(ctxt: ref Draw->Context, args: list of string)
 
 	if(guimode) {
 		initgui(ctxt);
-		loaddisplaymodules();
+		# Services first: an app region runs in a copy of our namespace
+		# taken when it starts, so whatever a service mounts in init
+		# (the scene a viewer shows, say) must already be there.
 		loadservicemodules();
+		loaddisplaymodules();
 		startwatchers();
 		guiloop();
 	} else {
@@ -1336,6 +1355,7 @@ allocframe(wd, ht: int)
 	if(ht < 1) ht = 1;
 	winr = Rect((0,0), (wd, ht));
 	mtximg = display_g.newimage(winr, display_g.image.chans, 0, Draw->Nofill);
+	staleall();
 	# Hosted-app windows live in frame coordinates; a new frame
 	# needs a new base (the resize walker then pushes reshapes so
 	# each app re-acquires a window on it).
@@ -1494,6 +1514,7 @@ guiloop()
 			tk->cmd(top, ". configure -background " + bgcolstr);
 			tk->cmd(top, ".c configure -background " + bgcolstr);
 			rethemedisplaymodules(comp.layout);
+			staleall();
 			dirty = 1;
 		}
 	}
@@ -1690,7 +1711,20 @@ drawlayout(dst: ref Image, node: ref LayoutNode)
 		}
 	Leaf =>
 		if(n.mod != nil) {
-			n.mod->draw(dst);
+			lc := cacheof(n);
+			if(lc.img == nil || !lc.img.r.eq(n.r)) {
+				lc.img = display_g.newimage(n.r, dst.chans, 0, Draw->Nofill);
+				lc.stale = 1;
+			}
+			if(lc.img == nil) {	# out of image memory: draw direct
+				n.mod->draw(dst);
+				return;
+			}
+			if(lc.stale) {
+				n.mod->draw(lc.img);
+				lc.stale = 0;
+			}
+			dst.draw(n.r, lc.img, nil, n.r.min);
 		} else if(n.tkmod != nil) {
 			;	# a live Tk frame overlays this rect
 		} else if(n.modname == "app" && n.apppid > 0) {
@@ -1713,6 +1747,28 @@ drawlayout(dst: ref Image, node: ref LayoutNode)
 					textcolor, (0, 0), font_g, "failed — " + lerr);
 		}
 	}
+}
+
+cacheof(n: ref LayoutNode.Leaf): ref LeafCache
+{
+	for(l := leafcaches; l != nil; l = tl l)
+		if((hd l).leaf == n)
+			return hd l;
+	lc := ref LeafCache(n, nil, 1);
+	leafcaches = lc :: leafcaches;
+	return lc;
+}
+
+markstale(n: ref LayoutNode.Leaf)
+{
+	if(n != nil)
+		cacheof(n).stale = 1;
+}
+
+staleall()
+{
+	for(l := leafcaches; l != nil; l = tl l)
+		(hd l).stale = 1;
 }
 
 # Access rect of any layout node
@@ -1967,6 +2023,10 @@ loadappleaf(n: ref LayoutNode.Leaf)
 		sys->fprint(stderr, "matrix: app hosting unavailable: %s\n", err);
 		return;
 	}
+	# An app draws into its own window and nothing tells us when, so its
+	# region is re-copied at a fixed cadence (without this a composition
+	# of apps alone never repainted: only a changing module did it).
+	settick(n.name, APPTICK_MS);
 	<-applk;
 	apppendq = append2q(apppendq, n);
 	applk <-= 1;
@@ -2003,7 +2063,12 @@ runapp(n: ref LayoutNode.Leaf)
 		(nil, atoks) := sys->tokenize(n.appargs, " \t");
 		argv = n.mount :: atoks;
 	}
-	actxt := ref Draw->Context(display_g, nil, appwmchan);
+	# The app's own connection channel: its registration passes through
+	# appwmrelay, which notes which region it is for, so the join lands
+	# in the right region whatever order apps connect in.
+	wmc := chan of (string, chan of (string, ref Draw->Wmcontext));
+	spawn appwmrelay(n, wmc);
+	actxt := ref Draw->Context(display_g, nil, wmc);
 	{
 		mod->init(actxt, argv);
 	} exception {
@@ -2072,18 +2137,57 @@ reshaperect(s: string): Rect
 	return Rect((minx, miny), (maxx, maxy));
 }
 
+# Forward an app's registration to our wmsrv, noting its token's region
+# first.  (The pattern lucifer uses to route an app to its task.)
+appwmrelay(n: ref LayoutNode.Leaf, wmc: chan of (string, chan of (string, ref Draw->Wmcontext)))
+{
+	(tok, rc) := <-wmc;
+	<-applk;
+	apptokens = (int tok, n) :: apptokens;
+	applk <-= 1;
+	appwmchan <-= (tok, rc);
+}
+
+# The region whose launch registered this token, taken off the token and
+# pending lists; else the oldest pending launch (an app that connected
+# some other way, through /chan/wmctl).  Called with applk held.
+takeappleaf(token: int): ref LayoutNode.Leaf
+{
+	n: ref LayoutNode.Leaf;
+	nt: list of (int, ref LayoutNode.Leaf);
+	for(l := apptokens; l != nil; l = tl l) {
+		(t, ln) := hd l;
+		if(n == nil && t == token)
+			n = ln;
+		else
+			nt = hd l :: nt;
+	}
+	apptokens = nt;
+	if(n == nil) {
+		if(apppendq == nil)
+			return nil;
+		n = hd apppendq;
+	}
+	np: list of ref LayoutNode.Leaf;
+	for(q := apppendq; q != nil; q = tl q)
+		if(hd q != n)
+			np = hd q :: np;
+	apppendq = nil;
+	for(; np != nil; np = tl np)
+		apppendq = hd np :: apppendq;
+	return n;
+}
+
 appwmloop(join: chan of (ref Wmsrv->Client, chan of string),
 	  req: chan of (ref Wmsrv->Client, array of byte, Sys->Rwrite))
 {
 	for(;;) alt {
 	(c, rc) := <-join =>
-		# Launches are serialised through apppendq; joins arrive in
-		# launch order.
+		# Joins arrive in the order apps connect, not the order they
+		# were launched: match each to its launch by token.
 		<-applk;
-		if(apppendq != nil) {
-			apprecs = (hd apppendq, c) :: apprecs;
-			apppendq = tl apppendq;
-		}
+		if((n := takeappleaf(c.token)) != nil)
+			apprecs = (n, c) :: apprecs;
 		applk <-= 1;
 		rc <-= nil;
 
@@ -2261,10 +2365,16 @@ updatedisplaymodules(node: ref LayoutNode): int
 				return 0;
 			t.acc = 0;
 		}
-		if(n.mod != nil)
-			return n.mod->update();
+		if(n.mod != nil) {
+			ch := n.mod->update();
+			if(ch)
+				markstale(n);
+			return ch;
+		}
 		if(n.tkmod != nil)
 			return n.tkmod->update();
+		if(n.modname == "app" && n.apppid > 0)
+			return 1;	# its window may have changed: re-copy it
 	}
 	return 0;
 }
@@ -2278,6 +2388,7 @@ resizedisplaymodules(node: ref LayoutNode)
 		resizedisplaymodules(n.child1);
 		resizedisplaymodules(n.child2);
 	Leaf =>
+		markstale(n);
 		if(n.mod != nil)
 			n.mod->resize(n.r);
 		if(n.tkmod != nil) {
@@ -2521,8 +2632,13 @@ routeptr(node: ref LayoutNode, p, rawp: ref Pointer): int
 	Leaf =>
 		if(n.mod != nil && n.r.contains(p.xy)) {
 			focusmod = n.mod;
+			focusleaf = n;
 			tkfocus = 0;
-			return n.mod->pointer(p);
+			if(n.mod->pointer(p)) {
+				markstale(n);
+				return 1;
+			}
+			return 0;
 		}
 		if(n.tkmod != nil && n.r.contains(p.xy)) {
 			# Tk hit-tests, fires bindings, and manages widget
@@ -2590,8 +2706,10 @@ handlekey(k: int)
 		}
 		return;
 	}
-	if(focusmod != nil && focusmod->key(k))
+	if(focusmod != nil && focusmod->key(k)) {
+		markstale(focusleaf);
 		dirty = 1;
+	}
 }
 
 # ── Watch rules ─────────────────────────────────────────────
@@ -2734,18 +2852,20 @@ reloadcomposition(text: string)
 	# The focused module may just have been shut down; don't route
 	# keys into a dead instance.
 	focusmod = nil;
+	focusleaf = nil;
+	leafcaches = nil;	# the new layout's leaves are new objects
 
 	if(old != nil) {
 		shutdowndisplaymodules(old.layout);
 		shutdownservices(old.services);
 	}
 
+	loadservicemodules();				# starts only new services; first, as at startup
 	if(guimode && comp.layout != nil) {
 		computelayout(comp.layout, winr);
 		resizedisplaymodules(comp.layout);	# kept modules get new rects
 		loaddisplaymodules();			# fills only empty leaves
 	}
-	loadservicemodules();				# starts only new services
 	syncmodslots();
 	vers++;
 	startwatchers();
