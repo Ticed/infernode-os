@@ -904,7 +904,7 @@ SBEOF
     # all RAM without PXN/UXN) and flush the icache with cacheiflush.
     #
     # Also excluded:
-    # the optional modules draw/gpu/crypt/ipint/math, each of which
+    # the optional modules draw/gpu/crypt/ipint/math/i420, each of which
     # needs its own limbo-generated header. A minimal kernel needs only
     # the sys module.
     for f in "$ROOT"/libinterp/*.c; do
@@ -913,6 +913,7 @@ SBEOF
         comp-arm64.c) ;;			# the one we want
         comp-*.c) continue;;			# every other code generator
         gpu.c|crypt.c) continue;;
+        i420.c) continue;;			# $I420: registered by the emulators only
         # ipint.c stays: keyring's public-key paths stand on IPint_*.
         esac
         o="$BUILD/libinterp-$(basename "$f").o"

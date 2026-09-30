@@ -239,10 +239,6 @@ agentlib_test.dis: agentlib_test.b $ROOT/appl/veltro/agentlib.m
 agentlib_mcp_test.dis: agentlib_mcp_test.b $ROOT/appl/veltro/agentlib.m
 	limbo -I$ROOT/module -I$ROOT/appl/veltro -gw agentlib_mcp_test.b
 
-# i420_test needs -I for appl/mpeg/mpegio.m
-i420_test.dis: i420_test.b $ROOT/appl/mpeg/mpegio.m $ROOT/module/i420.m
-	limbo -I$ROOT/module -I$ROOT/appl/mpeg -gw i420_test.b
-
 # tooluse_test needs -I for appl/veltro/agentlib.m
 tooluse_test.dis: tooluse_test.b $ROOT/appl/veltro/agentlib.m
 	limbo -I$ROOT/module -I$ROOT/appl/veltro -gw tooluse_test.b

@@ -13,7 +13,7 @@ include "sys.m";
 
 include "draw.m";
 
-include "mpegio.m";
+include "../appl/mpeg/mpegio.m";
 	Mpegi, YCbCr: import Mpegio;
 
 include "i420.m";

@@ -295,6 +295,7 @@ build_kernel() {
         comp-*.c) continue;;
         das-*.c) continue;;
         gpu.c|crypt.c) continue;;
+        i420.c) continue;;			# $I420: registered by the emulators only
         esac
         o="$BUILD/libinterp-$(basename "$f").o"
         "$CC" "${IFLAGS[@]}" -I"$BUILD" -Wno-everything -c "$f" -o "$o" 2>>"$BUILD/cc.log" || return 1
