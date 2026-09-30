@@ -12,7 +12,6 @@ DIRS=\
 	w3c\
 
 TARG=\
-	aadraw.dis\
 	popup.dis\
 	scoretable.dis\
 	acmewin.dis\

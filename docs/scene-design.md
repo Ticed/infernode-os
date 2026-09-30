@@ -287,7 +287,8 @@ first (`cat changes | scenereplay -x 0 > other/log`), not a mode flag.
 grid/graticule), filled features, stroked features, trails, entity
 glyphs with heading leaders, labels (decluttered), selection, HUD (frame,
 scale bar, zoom and clock). Colours are allocated once per value
-and cached; glyphs are anti-aliased through `lib/aadraw`.
+and cached; shapes are anti-aliased paths, filled and stroked by the
+draw device (`docs/draw-geometry.md`).
 
 - **`wm/scene`** (a window, 100 ms ticker). It polls `status` when the
   directory is a `scenefs` (reload only on a new `gen`), else falls back
@@ -313,18 +314,13 @@ and cached; glyphs are anti-aliased through `lib/aadraw`.
 
 ---
 
-## 5. Anti-aliasing and cost
+## 5. Anti-aliasing and labels
 
-Everything the renderer draws is anti-aliased by default, through
-`lib/aadraw`: coverage is the analytic distance from each pixel centre to
-the ideal edge.  `aadraw` was rewritten for this work to cost the edge,
-not the area — only pixels within 1.5 px of an edge get the distance
-arithmetic, each row's band found analytically, and a filled shape's
-interior is Draw's own C fill.  The output is pixel-identical to the old
-bounding-box version; the demo scene (1000×720, a 1 km translucent disc,
-polygons, dashed rings, trails, labels) went from 55 ms to 11 ms a frame
-under the JIT.  Every `aadraw` user (line-plot, sparkline, video-overlay)
-gets the same.
+Everything the renderer draws is anti-aliased by default.  The shapes
+are Draw paths (`Image.fillpath`, `Image.strokepath`), rasterised in C
+by the draw device with the exact area of each pixel they cover; see
+`docs/draw-geometry.md`.  An earlier Limbo module, `aadraw`, did this
+arithmetic in Dis and has been removed.
 
 Labels are placed after the geometry, most important first (selection,
 entities, features, grid), each at the first of several candidate
@@ -346,24 +342,8 @@ unchanged.
 
 ## 7. The GPU
 
-The GPU belongs under `/dev/draw`, not in applications. Every program
-here draws through the draw device's small set of operations; that is
-the seam where acceleration goes, and it is why a Limbo program (or a
-remote one over 9P) never needs to know which hardware drew its pixels.
-Today the SDL3 backend only uploads a software framebuffer as a texture.
-In order of return:
-
-1. **Anti-aliasing in `libmemdraw`** (C), exposed as draw-device
-   operations — `aadraw`'s three primitives are a natural first set. This
-   takes the remaining coverage arithmetic out of Dis for every platform,
-   headless ones included, and fixes the protocol a GPU would implement.
-2. **Compositing on the GPU**: windows (memlayer) and large image draws
-   as textured quads in the SDL3 backend, keeping the software path as
-   the reference.
-3. **GPU rasterisation** of the operations from step 1, behind the same
-   protocol.
-
-Step 1 is a prerequisite for 2 and 3 and is worth doing on its own.
+The GPU belongs under the draw device, not in applications; the plan,
+and what is built, is in `docs/draw-geometry.md`.
 
 ---
 

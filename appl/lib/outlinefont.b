@@ -16,7 +16,7 @@ include "sys.m";
 
 include "draw.m";
 	drawm: Draw;
-	Display, Image, Rect, Point: import drawm;
+	Display, Image, Path, Rect, Point: import drawm;
 
 include "math.m";
 	math: Math;
@@ -910,245 +910,68 @@ fabs(x: real): real
 
 # ---- Rasterizer ----
 
-# Convert outline to image via fillpoly.
-# Uses a single fillpoly call with all contours — the non-zero winding
-# rule handles holes correctly (outer CW, inner CCW per CFF convention).
-SS: con 8;	# supersample factor for antialiasing
-
+# A glyph's outline as a GREY8 coverage mask, filled non-zero (the
+# convention both CFF and TrueType outlines follow) by the draw device
+# (Image.fillpath), and where the mask sits relative to the glyph's
+# origin, in pixels.
 rasterize(path: list of ref PathSeg, scale: real): (ref Image, int, int)
 {
-	sscale := scale * real SS;
+	rpath := revsegs(path);	# built in reverse by the charstring interpreter
 
-	# Reverse path (built in reverse order by charstring interpreter)
-	rpath := revsegs(path);
-
-	# Flatten to subpaths (each Move starts a new subpath)
-	subpaths: list of array of Point;
-	curpts: list of Point;
-	curlen := 0;
-	fcx := 0.0;
-	fcy := 0.0;
-	startx := 0.0;
-	starty := 0.0;
-
-	# Reset bounding box
-	gminx = 16r7FFFFFFF;
-	gminy = 16r7FFFFFFF;
-	gmaxx = -16r7FFFFFFF;
-	gmaxy = -16r7FFFFFFF;
-
+	# the bounds of every point, control points included: the curves
+	# lie inside them
+	minx := miny := 1.0e30;
+	maxx := maxy := -1.0e30;
+	n := 0;
 	for(p := rpath; p != nil; p = tl p){
-		seg := hd p;
-		pick s := seg {
-		Move =>
-			# Close previous subpath if any
-			if(curlen >= 3)
-				subpaths = listtoarray(curpts, curlen) :: subpaths;
-			curpts = nil;
-			curlen = 0;
-			fcx = s.x * sscale;
-			fcy = -s.y * sscale;
-			startx = fcx; starty = fcy;
-			pt := Point(int (fcx + 0.5), int (fcy + 0.5));
-			curpts = pt :: curpts;
-			curlen++;
-			updatebb(pt);
-		Line =>
-			fcx = s.x * sscale;
-			fcy = -s.y * sscale;
-			pt := Point(int (fcx + 0.5), int (fcy + 0.5));
-			curpts = pt :: curpts;
-			curlen++;
-			updatebb(pt);
+		pts: array of real;
+		pick s := hd p {
+		Move or Line =>
+			pts = array[] of {s.x, s.y};
 		Curve =>
-			tx1 := s.x1 * sscale;
-			ty1 := -s.y1 * sscale;
-			tx2 := s.x2 * sscale;
-			ty2 := -s.y2 * sscale;
-			tx3 := s.x3 * sscale;
-			ty3 := -s.y3 * sscale;
-			bpts := subdivbezier(fcx, fcy, tx1, ty1, tx2, ty2, tx3, ty3, 0);
-			for(; bpts != nil; bpts = tl bpts){
-				cpt := hd bpts;
-				curpts = cpt :: curpts;
-				curlen++;
-				updatebb(cpt);
-			}
-			fcx = tx3; fcy = ty3;
+			pts = array[] of {s.x1, s.y1, s.x2, s.y2, s.x3, s.y3};
+		}
+		for(i := 0; i < len pts; i += 2){
+			x := pts[i]*scale;
+			y := -pts[i+1]*scale;
+			if(x < minx) minx = x;
+			if(x > maxx) maxx = x;
+			if(y < miny) miny = y;
+			if(y > maxy) maxy = y;
+			n++;
+		}
+	}
+	if(n == 0)
+		return (nil, 0, 0);
+	ox := int math->floor(minx) - 1;
+	oy := int math->floor(miny) - 1;
+	w := int math->ceil(maxx) + 1 - ox;
+	h := int math->ceil(maxy) + 1 - oy;
+	if(w <= 0 || h <= 0 || w > 8192 || h > 8192)
+		return (nil, 0, 0);
+
+	fx := real ox;
+	fy := real oy;
+	outline := Path.new();
+	for(p = rpath; p != nil; p = tl p){
+		pick s := hd p {
+		Move =>
+			outline.moveto(s.x*scale - fx, -s.y*scale - fy);
+		Line =>
+			outline.lineto(s.x*scale - fx, -s.y*scale - fy);
+		Curve =>
+			outline.curveto(s.x1*scale - fx, -s.y1*scale - fy,
+				s.x2*scale - fx, -s.y2*scale - fy,
+				s.x3*scale - fx, -s.y3*scale - fy);
 		Close =>
-			pt := Point(int (startx + 0.5), int (starty + 0.5));
-			curpts = pt :: curpts;
-			curlen++;
-			if(curlen >= 3)
-				subpaths = listtoarray(curpts, curlen) :: subpaths;
-			curpts = nil;
-			curlen = 0;
+			outline.close();
 		}
 	}
-	# Close final subpath if not explicitly closed
-	if(curlen >= 3)
-		subpaths = listtoarray(curpts, curlen) :: subpaths;
-
-	if(subpaths == nil)
-		return (nil, 0, 0);
-
-	# Add padding at SS resolution
-	ix0 := gminx - SS;
-	iy0 := gminy - SS;
-	sw := gmaxx - ix0 + SS + 1;
-	sh := gmaxy - iy0 + SS + 1;
-	sw = ((sw + SS - 1) / SS) * SS;
-	sh = ((sh + SS - 1) / SS) * SS;
-	if(sw <= 0 || sh <= 0 || sw > 8192 || sh > 8192)
-		return (nil, 0, 0);
-
-	# Offset all subpath points to image coordinates
-	for(sp := subpaths; sp != nil; sp = tl sp){
-		pts := hd sp;
-		for(i := 0; i < len pts; i++){
-			pts[i].x -= ix0;
-			pts[i].y -= iy0;
-		}
-	}
-
-	# Scanline fill at SS resolution into byte array
-	buf := array[sw * sh] of { * => byte 0 };
-	scanlinefillbuf(buf, subpaths, sw, sh);
-
-	# Downsample SSxSS blocks → 1 pixel with 8-bit alpha
-	dw := sw / SS;
-	dh := sh / SS;
-	pixels := array[dw * dh] of byte;
-	for(dy := 0; dy < dh; dy++){
-		for(dx := 0; dx < dw; dx++){
-			sum := 0;
-			sy := dy * SS;
-			sx := dx * SS;
-			for(yy := 0; yy < SS; yy++)
-				for(xx := 0; xx < SS; xx++)
-					sum += int buf[(sy + yy) * sw + sx + xx];
-			pixels[dy * dw + dx] = byte ((sum + SS*SS/2) / (SS*SS));
-		}
-	}
-
-	mask := display.newimage(Rect((0, 0), (dw, dh)), Draw->GREY8, 0, Draw->Transparent);
+	mask := display.newimage(Rect((0, 0), (w, h)), Draw->GREY8, 0, Draw->Transparent);
 	if(mask == nil)
 		return (nil, 0, 0);
-	mask.writepixels(mask.r, pixels);
-
-	return (mask, ix0 / SS, iy0 / SS);
-}
-
-listtoarray(pts: list of Point, n: int): array of Point
-{
-	a := array[n] of Point;
-	i := n - 1;
-	for(; pts != nil; pts = tl pts)
-		a[i--] = hd pts;
-	return a;
-}
-
-# Bounding box globals (updated during rasterize)
-gminx, gminy, gmaxx, gmaxy: int;
-
-updatebb(p: Point)
-{
-	if(p.x < gminx) gminx = p.x;
-	if(p.x > gmaxx) gmaxx = p.x;
-	if(p.y < gminy) gminy = p.y;
-	if(p.y > gmaxy) gmaxy = p.y;
-}
-
-# Scanline fill into byte array using non-zero winding rule.
-# Handles multiple subpaths correctly — each subpath's edges wrap independently.
-scanlinefillbuf(buf: array of byte, subpaths: list of array of Point, w, h: int)
-{
-	for(y := 0; y < h; y++){
-		yf := real y + 0.5;
-		xlist: list of (real, int);
-
-		# Collect edge crossings from ALL subpaths
-		for(sp := subpaths; sp != nil; sp = tl sp){
-			pts := hd sp;
-			npts := len pts;
-			for(i := 0; i < npts; i++){
-				j := (i + 1) % npts;	# wraps within this subpath only
-				y0 := real pts[i].y;
-				y1 := real pts[j].y;
-				if(y0 == y1)
-					continue;
-				if((yf < y0 && yf < y1) || (yf >= y0 && yf >= y1))
-					continue;
-				t := (yf - y0) / (y1 - y0);
-				xc := real pts[i].x + t * real (pts[j].x - pts[i].x);
-				dir := 1;
-				if(y1 < y0)
-					dir = -1;
-				xlist = (xc, dir) :: xlist;
-			}
-		}
-
-		ncross := 0;
-		for(xl := xlist; xl != nil; xl = tl xl)
-			ncross++;
-		if(ncross < 2)
-			continue;
-		xarr := array[ncross] of (real, int);
-		k := 0;
-		for(xl = xlist; xl != nil; xl = tl xl)
-			xarr[k++] = hd xl;
-		for(a := 1; a < ncross; a++){
-			tmp := xarr[a];
-			b := a - 1;
-			while(b >= 0 && xarr[b].t0 > tmp.t0){
-				xarr[b+1] = xarr[b];
-				b--;
-			}
-			xarr[b+1] = tmp;
-		}
-
-		winding := 0;
-		row := y * w;
-		for(c := 0; c < ncross - 1; c++){
-			winding += xarr[c].t1;
-			if(winding != 0){
-				xleft := xarr[c].t0;
-				xright := xarr[c+1].t0;
-				if(xleft < 0.0) xleft = 0.0;
-				if(xright > real w) xright = real w;
-				ixl := int xleft;
-				ixr := int xright;
-				if(ixl < 0) ixl = 0;
-				if(ixr >= w) ixr = w;
-
-				if(ixl == ixr && ixl < w){
-					# Both edges in same pixel
-					cov := int((xright - xleft) * 255.0);
-					v := int buf[row + ixl] + cov;
-					if(v > 255) v = 255;
-					buf[row + ixl] = byte v;
-				} else {
-					# Left partial pixel
-					if(ixl < w){
-						cov := int((real(ixl + 1) - xleft) * 255.0);
-						v := int buf[row + ixl] + cov;
-						if(v > 255) v = 255;
-						buf[row + ixl] = byte v;
-					}
-					# Interior full pixels
-					for(x := ixl + 1; x < ixr && x < w; x++)
-						buf[row + x] = byte 255;
-					# Right partial pixel
-					if(ixr > ixl + 1 && ixr < w){
-						cov := int((xright - real ixr) * 255.0);
-						v := int buf[row + ixr] + cov;
-						if(v > 255) v = 255;
-						buf[row + ixr] = byte v;
-					}
-				}
-			}
-		}
-	}
+	mask.fillpath(outline, ~0, display.opaque, (0, 0));
+	return (mask, ox, oy);
 }
 
 revsegs(path: list of ref PathSeg): list of ref PathSeg
@@ -1156,52 +979,6 @@ revsegs(path: list of ref PathSeg): list of ref PathSeg
 	rev: list of ref PathSeg;
 	for(; path != nil; path = tl path)
 		rev = hd path :: rev;
-	return rev;
-}
-
-# Flatten cubic Bezier to polyline via de Casteljau subdivision
-FLAT_THRESH: con 0.5;
-
-subdivbezier(x0, y0, x1, y1, x2, y2, x3, y3: real, depth: int): list of Point
-{
-	# Check flatness
-	dx := x3 - x0;
-	dy := y3 - y0;
-	d1 := fabs((x1 - x3) * dy - (y1 - y3) * dx);
-	d2 := fabs((x2 - x3) * dy - (y2 - y3) * dx);
-
-	if((d1 + d2) * (d1 + d2) <= FLAT_THRESH * (dx*dx + dy*dy) || depth > 10)
-		return Point(int (x3 + 0.5), int (y3 + 0.5)) :: nil;
-
-	# Subdivide at t=0.5
-	mx01 := (x0 + x1) / 2.0;
-	my01 := (y0 + y1) / 2.0;
-	mx12 := (x1 + x2) / 2.0;
-	my12 := (y1 + y2) / 2.0;
-	mx23 := (x2 + x3) / 2.0;
-	my23 := (y2 + y3) / 2.0;
-	mx012 := (mx01 + mx12) / 2.0;
-	my012 := (my01 + my12) / 2.0;
-	mx123 := (mx12 + mx23) / 2.0;
-	my123 := (my12 + my23) / 2.0;
-	mx0123 := (mx012 + mx123) / 2.0;
-	my0123 := (my012 + my123) / 2.0;
-
-	left := subdivbezier(x0, y0, mx01, my01, mx012, my012, mx0123, my0123, depth+1);
-	right := subdivbezier(mx0123, my0123, mx123, my123, mx23, my23, x3, y3, depth+1);
-
-	# Concatenate: append right to left
-	result := right;
-	for(l := revpts(left); l != nil; l = tl l)
-		result = hd l :: result;
-	return result;
-}
-
-revpts(pts: list of Point): list of Point
-{
-	rev: list of Point;
-	for(; pts != nil; pts = tl pts)
-		rev = hd pts :: rev;
 	return rev;
 }
 
