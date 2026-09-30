@@ -199,6 +199,16 @@ jobs:
         chmod +x tests/host/llmsrv_session_capability_test.sh
         ROOT=. tests/host/llmsrv_session_capability_test.sh
 
+    - name: Run memdraw rasteriser and fast-path checks
+      run: |
+        # libmemdraw/aatest.c: exact coverage, fill rules, strokes, and the
+        # special cases (coverdraw, blenddraw) against the general alphadraw
+        # byte for byte.  Built with this runner's compiler: an unsequenced
+        # temporary in coverdraw passed under clang and drew every
+        # anti-aliased glyph black under gcc.  The libraries are built
+        # above, so a skip (77) here is a failure.
+        ROOT=. sh tests/host/aa_test.sh
+
     - name: Run dossrv badent alias check
       run: |
         # dossrv must decide "damaged entry" from the on-disk name, not
@@ -1328,6 +1338,16 @@ jobs:
           echo "ERROR: $COMPILE_FAILURES test file(s) failed to compile"
           exit 1
         fi
+
+    - name: Run memdraw rasteriser and fast-path checks
+      run: |
+        # libmemdraw/aatest.c: exact coverage, fill rules, strokes, and the
+        # special cases (coverdraw, blenddraw) against the general alphadraw
+        # byte for byte.  Built with this runner's compiler: an unsequenced
+        # temporary in coverdraw passed under clang and drew every
+        # anti-aliased glyph black under gcc.  The libraries are built
+        # above, so a skip (77) here is a failure.
+        ROOT=. sh tests/host/aa_test.sh
 
     - name: Run test suite
       run: |
