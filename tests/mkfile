@@ -110,6 +110,7 @@ TARG=\
 	tk_test.dis\
 	tkimgrender.dis\
 	tkrender.dis\
+	charonshot.dis\
 	tls_crypto_test.dis\
 	tls_live_test.dis\
 	tls_protocol_test.dis\

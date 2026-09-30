@@ -159,6 +159,8 @@ CharonUtils: module
 		docookies:	int;		# allow cookie storage/sending?
 		doacme:		int;
 		dorender:	int;		# render-to-file mode (no event loop)
+		renderout:	string;	# render mode: image path (text goes to renderout+".txt")
+		rendercrop:	int;		# render mode: crop image height to the page (else whole viewport)
 		headless:	int;		# headless mode: skip Img, Script, heavy rendering
 		doscripts:		int;		# allow scripts to execute?
 		httpminor:	int;		# use HTTP 1.httpminor

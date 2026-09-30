@@ -415,6 +415,16 @@ reloadcolors()
 
 makewins()
 {
+	if((CU->config).dorender){
+		# Render mode: the canvas is exactly the requested viewport,
+		# independent of whatever screen the emulator happens to have.
+		# defaultheight bounds how much of a long page is captured.
+		r := Rect((0, 0), ((CU->config).defaultwidth, (CU->config).defaultheight));
+		mainwin = display.newimage(r, display.image.chans, 0, D->White);
+		if(mainwin == nil)
+			CU->raisex(sys->sprint("EXFatal: can't allocate render canvas: %r"));
+		return;
+	}
 	if((CU->config).doacme){
 		# Use actual display width (lucifer zone) rather than defaultwidth
 		dw := display.image.r.dx();
