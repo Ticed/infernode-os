@@ -9,10 +9,9 @@
 # Per-pane transport: arrows-back = DVR replay of the retained buffer,
 # s = snap to live, space = pause.
 #
-# NB vid9p currently retains every decoded frame (random-access DVR), so
-# a live feed's memory grows without bound: at 480x270/10fps x 2 feeds
-# the 1 GB Dis heap lasts roughly 4 minutes.  Frame-window trimming is
-# the flagged follow-up for long-running feeds (INFR-267 territory).
+# NB vid9p keeps the last 60 s of each live feed as its DVR buffer (-w
+# sets it), sized in seconds, not bytes: 480x270 at 10 fps is about 117 MB
+# a feed, but 1280x720 at 25 fps would be 2 GB, more than the Dis heap.
 set -u
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 EMU="$ROOT/emu/MacOSX/o.emu"

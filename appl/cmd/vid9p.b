@@ -650,16 +650,23 @@ readline(fd: ref Sys->FD, buf: array of byte): (array of byte, array of byte)
 }
 
 # Ensure n bytes are available; return (n-byte array, leftover). (nil,...) if
-# the stream ends first.
+# the stream ends first.  The rest of the frame is read straight into its
+# own array: growing buf a pipe read at a time copied everything read so
+# far on every read, O(n^2) in the frame size (29 MB for a 720p frame).
 readn(fd: ref Sys->FD, buf: array of byte, n: int): (array of byte, array of byte)
 {
-	while(len buf < n){
-		more := readmore(fd);
-		if(more == nil)
+	if(len buf >= n)
+		return (buf[0:n], buf[n:]);
+	fr := array[n] of byte;
+	fr[0:] = buf;
+	got := len buf;
+	while(got < n){
+		m := sys->read(fd, fr[got:], n - got);
+		if(m <= 0)
 			return (nil, nil);
-		buf = cat(buf, more);
+		got += m;
 	}
-	return (buf[0:n], buf[n:]);
+	return (fr, array[0] of byte);
 }
 
 readmore(fd: ref Sys->FD): array of byte

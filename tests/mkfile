@@ -11,6 +11,7 @@ TARG=\
 	auditsign_test.dis\
 	auditverify_test.dis\
 	alpha_test.dis\
+	i420_test.dis\
 	agentlib_test.dis\
 	agentlib_mcp_test.dis\
 	agent_test.dis\
