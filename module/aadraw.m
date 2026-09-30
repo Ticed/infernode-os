@@ -1,12 +1,13 @@
 #
 # aadraw — anti-aliased geometry for Limbo Draw clients.
 #
-# Coverage masks blended exactly as glyphs are: GREY8 coverage is
-# computed by integer supersampling (the same algorithm as libtk's
-# tkaacov* C helpers) and drawn through as a matte.  The compositor
-# always could blend coverage; the primitives never generated any —
-# this module closes that gap for pixel modules (geo-map routes and
-# rings, gauges, any Draw client).
+# Coverage masks blended exactly as glyphs are: GREY8 coverage from the
+# analytic distance of each pixel centre to the ideal edge, drawn
+# through as a matte.  The compositor always could blend coverage; the
+# primitives never generated any — this module closes that gap for
+# pixel modules (scenes, plots, gauges, any Draw client).  Cost is
+# proportional to a shape's edge, not its area: interiors are Draw's
+# own fills.
 #
 AAdraw: module
 {

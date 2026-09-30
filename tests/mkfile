@@ -153,6 +153,7 @@ TARG=\
 	lucibridge_test.dis\
 	lucifer_helpers_test.dis\
 	geomap_test.dis\
+	scene_test.dis\
 	matrix_perfdashboard_test.dis\
 	matrix_sysmon_test.dis\
 	matrix_test.dis\
@@ -185,6 +186,7 @@ SYSMODULES=\
 	arg.m\
 	cowfs.m\
 	dial.m\
+	scene.m\
 	factotum.m\
 	html.m\
 	imap.m\

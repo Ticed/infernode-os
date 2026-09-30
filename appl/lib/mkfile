@@ -69,6 +69,7 @@ TARG=\
 	fslib.dis\
 	fsproto.dis\
 	geoproj.dis\
+	scene.dis\
 	hash.dis\
 	html.dis\
 	imap.dis\
@@ -228,6 +229,7 @@ SYSMODULES=\
 	filter.m\
 	format.m\
 	geoproj.m\
+	scene.m\
 	fslib.m\
 	fsproto.m\
 	hash.m\

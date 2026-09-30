@@ -303,6 +303,13 @@ neither change nor recompile. Each leaf accumulates elapsed time until
 its own interval is due: a 40 ms video pane does not make a 2 s gauge
 update any faster.
 
+Redraw is per region.  The runtime keeps each display region's last
+drawing in an off-screen image and calls a module's `draw()` only when
+that region went stale — its `update()` returned 1, it consumed a
+pointer or key event, or it was resized or rethemed; every other region
+is composited from its cached image.  A module draws only inside its own
+rectangle (the image it is handed covers exactly that).
+
 A display module need not be text or vector: **`video-pane`** treats its
 mount as a [vid9p](../appl/cmd/vid9p.b) stream directory
 (`/mnt/video/<id>`) and renders whatever frame the server's playhead
@@ -406,6 +413,10 @@ region pushes a name-`.` reshape so the app re-acquires a window at
 the new geometry (a pushed reshape under any other name is rejected
 client-side). Pointer and keyboard events route to the app whose
 region contains the pointer.
+
+An app draws into its own window and nothing tells the runtime when, so
+an app region is re-copied into the frame every 100 ms (a region tick,
+as for `MatrixTicker` modules).
 
 Lifecycle: apps are never transplanted across reloads — a reload (or
 unload) kills the app's process group and, if the region survives,

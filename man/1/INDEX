@@ -1,5 +1,8 @@
 intro 0intro
 acme acme
+scene scene
+scenedemo scene
+scenereplay scene
 win acme
 asm asm
 disdump asm

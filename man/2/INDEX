@@ -13,6 +13,7 @@ chanfill bufio-chanfill
 attr cfg
 cfg cfg
 record cfg
+scene scene
 tuple cfg
 command command
 btos convcs
