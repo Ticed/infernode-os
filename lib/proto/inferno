@@ -1326,6 +1326,10 @@ appl
 		rmtdir.b
 		rt.b
 		sam.b
+		samengine.b
+		samengine.m
+		samrx.b
+		samrx.m
 		samstub.b
 		samstub.m
 		samterm.m

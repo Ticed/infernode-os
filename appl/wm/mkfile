@@ -34,12 +34,14 @@ TARG=\
 	samtk.dis\
 	samstub.dis\
 	samengine.dis\
+	samrx.dis\
 
 MODULES=\
 	samterm.m\
 	samtk.m\
 	samstub.m\
 	samengine.m\
+	samrx.m\
 
 SYSMODULES=\
 	arg.m\

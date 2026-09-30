@@ -29,15 +29,20 @@ init(context: ref draw->Context, argv: list of string)
 	draw = load Draw Draw->PATH;
 	stderr = sys->fildes(2);
 
-	# drop the program name; the rest are files to open.
+	# drop the program name; the rest are files to open.  -d traces
+	# the protocol to samterm.log in the current directory.
 	if(argv != nil)
 		argv = tl argv;
-
-	logfd = sys->create("samterm.log", sys->OWRITE, 8r666);
-	if (logfd == nil) {
-		fprint(stderr, "Can't create samterm.log\n");
-		logfd = stderr;
+	if(argv != nil && hd argv == "-d") {
+		argv = tl argv;
+		logfd = sys->create("samterm.log", sys->OWRITE, 8r666);
+		if (logfd == nil)
+			fprint(stderr, "sam: can't create samterm.log: %r\n");
 	}
+	if (logfd == nil)
+		logfd = sys->open("/dev/null", sys->OWRITE);
+	if (logfd == nil)
+		logfd = stderr;
 
 	fprint(logfd, "Samterm started\n");
 	fprint(logfd, "ctxt: nonnil=%d display=%d wm=%d\n",
@@ -143,6 +148,8 @@ init(context: ref draw->Context, argv: list of string)
 		samtk->newcur(t, fl);
 		case m2 {
 		"cut" =>
+			# as in sam, cut saves the text in the snarf buffer
+			samstub->snarf(t, fl);
 			samstub->cut(t, fl);
 		"paste" =>
 			samstub->paste(t, fl);
@@ -181,15 +188,23 @@ init(context: ref draw->Context, argv: list of string)
 			samstub->setlock();
 		* =>
 			for (i = 0; i < len ctxt.menus; i++) {
-				if (ctxt.menus[i].name == m3) {
+				if (samtk->menulabel(ctxt.menus[i].name) == m3) {
 					break;
 				}
 			}
 			if (i == len ctxt.menus)
 				samtk->panic("init: can't find m3");
 			t = ctxt.menus[i].text;
-			t.flayers = samtk->append(tl t.flayers, hd t.flayers);
-			samtk->newcur(t, hd t.flayers);
+			if (t == nil) {
+				# in the menu but with no window: open one
+				n := samstub->startfile(ctxt.menus[i].tag);
+				t = ctxt.texts[n];
+				ctxt.menus[i].text = t;
+				samtk->settitle(t, ctxt.menus[i].name);
+			} else {
+				t.flayers = samtk->append(tl t.flayers, hd t.flayers);
+				samtk->newcur(t, hd t.flayers);
+			}
 			
 		}
 	(win, c) := <-ctxt.keysel =>

@@ -413,6 +413,7 @@ timeoutTask(ch: chan of int, ms: int)
 | `fdclose_test.b` | Dropping the last reference to an fd closes it |
 | `jit_fault_test.b` | JIT faults: zero divide, bounds, nil, unwinding to the right handler |
 | `jit_unload_test.b` | A compiled module returning after its caller dropped the last reference (its code must not be unmapped under the return) |
+| `sam_test.b` | Native sam engine over its pipe: addresses, commands, undo, the terminal protocol |
 
 Shell tests also exist in `tests/inferno/` (run inside Inferno) and `tests/host/` (run on the host OS).
 

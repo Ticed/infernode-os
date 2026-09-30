@@ -18,6 +18,8 @@ Samtk: module
 	Write,
 	NMENU3: con iota;
 
+	Unnamed: con "(unnamed)";	# menu label of a file with no name
+
 	None,
 	Some,
 	All: con iota;	# visibility in flayer (`some' may not be used)
@@ -40,6 +42,7 @@ Samtk: module
 	hsetpat:	fn(s: string);
 	menudel:	fn(pos: int);
 	menuins:	fn(pos: int, s: string);
+	menulabel:	fn(s: string): string;
 	newcur:		fn(t: ref Text, fl: ref Flayer);
 	newflayer:	fn(tag, tp: int): ref Flayer;
 	panic:		fn(s: string);
