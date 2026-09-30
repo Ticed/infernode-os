@@ -2,7 +2,7 @@ implement SceneTest;
 
 #
 # scene_test - lib/scene (model, record grammar, camera, trails, hit,
-# rendering) and lib/aadraw coverage.
+# rendering) and anti-aliased paths.
 #
 # The drawing tests need /dev/draw (any emu: the headless build has a
 # memory screen) and skip without it.
@@ -12,11 +12,10 @@ include "sys.m";
 	sys: Sys;
 include "draw.m";
 	draw: Draw;
-	Display, Font, Image, Point, Rect: import draw;
+	Display, Font, Image, Path, Point, Rect: import draw;
 include "bufio.m";
 	bufio: Bufio;
 	Iobuf: import bufio;
-include "aadraw.m";
 include "scene.m";
 	scene: Scene;
 	Model, Cam, Trails, Obj: import scene;
@@ -260,11 +259,8 @@ testRender(t: ref T)
 testAA(t: ref T)
 {
 	needdisplay(t);
-	aad := load AAdraw AAdraw->PATH;
-	t.assert(aad != nil, "load aadraw");
-	aad->init(display);
 	img := display.newimage(Rect((0, 0), (300, 300)), Draw->GREY8, 0, Draw->Black);
-	aad->disc(img, Point(150, 150), 100, 100, display.white);
+	img.fillpath(Path.new().ellipse(150.5, 150.5, 100.0, 100.0), ~0, display.white, (0, 0));
 	px := array[1] of byte;
 	img.readpixels(Rect((150, 150), (151, 151)), px);
 	t.asserteq(int px[0], 255, "disc centre is solid");
@@ -283,7 +279,8 @@ testAA(t: ref T)
 	t.assert(partial, "the rim is anti-aliased");
 
 	img.draw(img.r, display.black, nil, (0, 0));
-	aad->fillpoly(img, array[] of {Point(20, 20), Point(280, 20), Point(280, 280), Point(20, 280)}, display.white);
+	img.fillpath(Path.new().moveto(20.0, 20.0).lineto(280.0, 20.0).lineto(280.0, 280.0).lineto(20.0, 280.0).close(),
+		1, display.white, (0, 0));
 	img.readpixels(Rect((150, 150), (151, 151)), px);
 	t.asserteq(int px[0], 255, "polygon interior is solid");
 	img.readpixels(Rect((10, 150), (11, 151)), px);

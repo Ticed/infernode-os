@@ -66,6 +66,7 @@ TARG=\
 	disdep.dis\
 	disdump.dis\
 	dossrv.dis\
+	drawbench.dis\
 	du.dis\
 	echo.dis\
 	ed.dis\

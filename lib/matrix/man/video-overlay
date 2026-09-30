@@ -16,7 +16,7 @@ WRITES
 DESCRIPTION
 	video-pane plus an annotation layer: after each frame is
 	composited, every box in <vision>/boxes is stroked anti-aliased
-	(aadraw, theme accent) with its label above, transformed from
+	(strokepath, theme accent) with its label above, transformed from
 	frame to pane coordinates.  The vision tree is just another 9P
 	mount beside the stream (the INFR-277 convention), so anything —
 	an ML service, an agent, a host process, sh — can write
@@ -25,5 +25,5 @@ DESCRIPTION
 	a synthetic tracker.
 
 SEE ALSO
-	video-pane, video-ctl, aadraw (module/aadraw.m)
+	video-pane, video-ctl, draw-image(2) (strokepath)
 	docs/H264-9P-BRIDGE.md

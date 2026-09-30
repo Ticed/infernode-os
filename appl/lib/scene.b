@@ -14,7 +14,7 @@ include "sys.m";
 	sys: Sys;
 include "draw.m";
 	drawm: Draw;
-	Display, Font, Image, Point, Rect: import drawm;
+	Display, Font, Image, Path, Point, Rect: import drawm;
 include "math.m";
 	math: Math;
 include "string.m";
@@ -22,8 +22,6 @@ include "string.m";
 include "lucitheme.m";
 include "geoproj.m";
 	geoproj: Geoproj;
-include "aadraw.m";
-	aad: AAdraw;
 include "scene.m";
 
 Imgload: module {
@@ -78,9 +76,6 @@ init(d: ref Display, f: ref Font)
 	initbase();
 	display = d;
 	font = f;
-	aad = load AAdraw AAdraw->PATH;
-	if(aad != nil)
-		aad->init(d);
 	ccache = array[NBUCKET] of list of (int, ref Image);
 	imgcache = nil;
 	retheme();
@@ -1457,18 +1452,14 @@ circlepts(p: Point, r: int): array of Point
 	return pa;
 }
 
-# Stroke segment by segment: each aadraw call builds a coverage mask the
-# size of what it is given, so one long polyline would allocate (and
-# blend) the whole region; per-segment masks are small.  (A translucent
-# stroke is blended twice where segments meet.)
+# One stroke, so a translucent line is blended once where segments meet.
 stroke(dst: ref Image, pa: array of Point, w, dash: int, col: ref Image)
 {
 	if(dash) {
 		dashpoly(dst, pa, w, col);
 		return;
 	}
-	for(i := 1; i < len pa; i++)
-		aaline(dst, pa[i-1], pa[i], w, col);
+	aapolyline(dst, pa, w, col);
 }
 
 DASHON: con 8.0;
@@ -1782,38 +1773,55 @@ hit(m: ref Model, c: ref Cam, p: Point, radius: int): string
 	return id;
 }
 
-# ── aadraw with a plain-Draw fallback ───────────────────────
+# ── anti-aliased shapes: Draw's paths, on pixel centres ──────
+
+pc(v: int): real
+{
+	return real v + 0.5;
+}
 
 aaline(dst: ref Image, p, q: Point, w: int, col: ref Image)
 {
-	if(aad != nil)
-		aad->line(dst, p, q, w, col);
-	else
-		dst.line(p, q, Draw->Enddisc, Draw->Enddisc, (w - 1) / 2, col, (0, 0));
+	aapolyline(dst, array[] of {p, q}, w, col);
+}
+
+aapolyline(dst: ref Image, pa: array of Point, w: int, col: ref Image)
+{
+	if(len pa < 2)
+		return;
+	if(w < 1)
+		w = 1;
+	path := Path.new().moveto(pc(pa[0].x), pc(pa[0].y));
+	for(i := 1; i < len pa; i++)
+		path.lineto(pc(pa[i].x), pc(pa[i].y));
+	dst.strokepath(path, real w, Draw->Capround, Draw->Joinround, col, pa[0]);
 }
 
 aaring(dst: ref Image, p: Point, a, b, w: int, col: ref Image)
 {
-	if(aad != nil)
-		aad->ring(dst, p, a, b, w, col);
-	else
-		dst.ellipse(p, a, b, w - 1, col, (0, 0));
+	if(a < 1 || b < 1)
+		return;
+	if(w < 1)
+		w = 1;
+	dst.strokepath(Path.new().ellipse(pc(p.x), pc(p.y), real a, real b), real w,
+		Draw->Capbutt, Draw->Joinround, col, p);
 }
 
 aadisc(dst: ref Image, p: Point, a, b: int, col: ref Image)
 {
-	if(aad != nil)
-		aad->disc(dst, p, a, b, col);
-	else
-		dst.fillellipse(p, a, b, col, (0, 0));
+	if(a < 1 || b < 1)
+		return;
+	dst.fillpath(Path.new().ellipse(pc(p.x), pc(p.y), real a, real b), ~0, col, p);
 }
 
 aafill(dst: ref Image, pa: array of Point, col: ref Image)
 {
-	if(aad != nil)
-		aad->fillpoly(dst, pa, col);
-	else
-		dst.fillpoly(pa, 0, col, (0, 0));
+	if(len pa < 3)
+		return;
+	path := Path.new().moveto(pc(pa[0].x), pc(pa[0].y));
+	for(i := 1; i < len pa; i++)
+		path.lineto(pc(pa[i].x), pc(pa[i].y));
+	dst.fillpath(path.close(), 1, col, pa[0]);
 }
 
 # ── small helpers ────────────────────────────────────────────
