@@ -15,7 +15,7 @@ Wmlib: module
 	# and inside it a Hotzone-wide band of the window's own content.
 	# A press in either is the frame's, rio's way: button 1 or 2
 	# reshapes from the nearest edge or corner, button 3 moves.
-	Border:	con 3;
+	Border:	con 2;
 	Hotzone:	con 3;
 	inframe:	fn(r: Draw->Rect, p: Draw->Point): int;
 	# Does the window manager frame and place this client's window
