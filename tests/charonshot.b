@@ -3,10 +3,10 @@ implement Charonshot;
 #
 # charonshot - render one URL with Charon, headlessly, to an image file.
 #
-#	charonshot width[xheight] outimg url
+#	charonshot [-o] width[xheight] outimg url
 #
-# Drives Charon's -render mode: fetch, lay out once, draw the frame to an
-# off-screen canvas, write it with Display.writeimage, exit.  With just a
+# Renders with the new engine (page(2): parse, style, lay out, paint)
+# or, with -o, drives the old Charon's -render mode.  With just a
 # width the canvas is up to Maxheight tall and the image is cropped to the
 # page, so long pages are captured whole; with widthxheight the viewport is
 # exactly that and the whole of it is written, as for conformance
@@ -22,7 +22,16 @@ include "sys.m";
 
 include "draw.m";
 	draw: Draw;
-	Display: import draw;
+	Display, Image, Rect, Point: import draw;
+include "web/dom.m";
+include "web/css.m";
+include "web/style.m";
+include "outlinefont.m";
+include "web/fonts.m";
+include "web/layout.m";
+include "web/page.m";
+	page: Page;
+	Pg: import page;
 
 Charonshot: module
 {
@@ -42,12 +51,17 @@ init(nil: ref Draw->Context, argv: list of string)
 	draw = load Draw Draw->PATH;
 	stderr := sys->fildes(2);
 
-	if(len argv != 4) {
-		sys->fprint(stderr, "usage: charonshot width outimg url\n");
+	argv = tl argv;
+	old := 0;
+	if(argv != nil && hd argv == "-o") {
+		old = 1;
+		argv = tl argv;
+	}
+	if(len argv != 3) {
+		sys->fprint(stderr, "usage: charonshot [-o] width[xheight] outimg url\n");
 		halt();
 		raise "fail:usage";
 	}
-	argv = tl argv;
 	width := hd argv;
 	height := string Maxheight;
 	crop := "1";
@@ -66,6 +80,13 @@ init(nil: ref Draw->Context, argv: list of string)
 		sys->fprint(stderr, "charonshot: no display: %r\n");
 		halt();
 		raise "fail:display";
+	}
+	if(!old) {
+		err := newengine(disp, int width, int height, crop == "1", outimg, url);
+		if(err != nil)
+			sys->fprint(stderr, "charonshot: %s\n", err);
+		halt();
+		return;
 	}
 	ch := load CharonMod "/dis/charon.dis";
 	if(ch == nil) {
@@ -101,6 +122,45 @@ run(ch: CharonMod, ctxt: ref Draw->Context, args: list of string)
 {
 	sys->pctl(Sys->NEWPGRP, nil);
 	ch->init(ctxt, args);
+}
+
+newengine(disp: ref Display, w, h, crop: int, outimg, url: string): string
+{
+	page = load Page Page->PATH;
+	if(page == nil)
+		return sys->sprint("cannot load %s: %r", Page->PATH);
+	if((ierr := page->init(disp)) != nil)
+		return ierr;
+	vh := h;
+	if(crop)
+		vh = 768;	# a viewport for vh units; the image is the page
+	t0 := sys->millisec();
+	(p, err) := page->open(url, w, vh);
+	if(p == nil)
+		return err;
+	t1 := sys->millisec();
+	if(crop) {
+		h = p.pageheight();
+		if(h < 1)
+			h = 1;
+		if(h > Maxheight)
+			h = Maxheight;
+	}
+	img := disp.newimage(Rect((0, 0), (w, h)), Draw->XRGB32, 0, Draw->White);
+	if(img == nil)
+		return sys->sprint("cannot allocate %dx%d image: %r", w, h);
+	p.paint(img, Point(0, 0));
+	t2 := sys->millisec();
+	fd := sys->create(outimg, Sys->OWRITE, 8r644);
+	if(fd == nil)
+		return sys->sprint("cannot create %s: %r", outimg);
+	if(disp.writeimage(fd, img) < 0)
+		return sys->sprint("writeimage: %r");
+	for(l := p.errors; l != nil; l = tl l)
+		sys->fprint(sys->fildes(2), "charonshot: %s\n", hd l);
+	if(sys->open("/env/charonshot-timing", Sys->OREAD) != nil)
+		sys->fprint(sys->fildes(2), "load+layout %d ms, paint %d ms\n", t1-t0, t2-t1);
+	return nil;
 }
 
 halt()

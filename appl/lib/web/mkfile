@@ -5,6 +5,9 @@ TARG=\
 	html.dis\
 	css.dis\
 	style.dis\
+	fonts.dis\
+	layout.dis\
+	page.dis\
 
 MODULES=
 
@@ -14,6 +17,11 @@ SYSMODULES=\
 	web/html.m\
 	web/css.m\
 	web/style.m\
+	web/fonts.m\
+	web/layout.m\
+	web/page.m\
+	outlinefont.m\
+	draw.m\
 	math.m\
 	bufio.m\
 	convcs.m\

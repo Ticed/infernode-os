@@ -1018,3 +1018,6 @@ dis/lib/web/css.dis
 dis/tests/web_css_test.dis
 dis/lib/web/style.dis
 dis/tests/web_style_test.dis
+dis/lib/web/fonts.dis
+dis/lib/web/layout.dis
+dis/lib/web/page.dis

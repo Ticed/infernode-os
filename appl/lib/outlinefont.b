@@ -118,8 +118,9 @@ FaceData: adt {
 display: ref Display;
 facetab: array of ref FaceData;
 nfaces: int;
-cachetab: list of ref CacheEntry;
-MAXCACHE: con 512;
+cachetab: array of list of ref CacheEntry;	# hashed on (face, gid, size)
+NCACHEHASH: con 1024;
+MAXCACHE: con 8192;
 ncached: int;
 
 init(d: ref Display)
@@ -130,7 +131,7 @@ init(d: ref Display)
 	display = d;
 	facetab = array[8] of ref FaceData;
 	nfaces = 0;
-	cachetab = nil;
+	cachetab = array[NCACHEHASH] of list of ref CacheEntry;
 	ncached = 0;
 }
 
@@ -208,6 +209,18 @@ Face.cidtogid(f: self ref Face, cid: int): int
 	if(cid < 0 || cid >= len fd.cidmap)
 		return -1;
 	return fd.cidmap[cid];
+}
+
+# The glyph for a character, or -1 if the font has none (no fallbacks).
+Face.lookup(f: self ref Face, charcode: int): int
+{
+	fd := getfacedata(f);
+	if(fd == nil || fd.ttfcmap == nil || charcode < 0 || charcode >= len fd.ttfcmap)
+		return -1;
+	gid := fd.ttfcmap[charcode];
+	if(gid <= 0)
+		return -1;
+	return gid;
 }
 
 Face.chartogid(f: self ref Face, charcode: int): int
@@ -307,6 +320,21 @@ Face.glyphwidth(f: self ref Face, gid: int, size: real): int
 	return int (real outline.width * scale + 0.5);
 }
 
+# Advance width in pixels, unrounded, for laying out text.  TrueType
+# widths come straight from hmtx; CFF ones from the glyph's charstring.
+Face.advance(f: self ref Face, gid: int, size: real): real
+{
+	fd := getfacedata(f);
+	if(fd == nil || gid < 0 || gid >= fd.nglyphs)
+		return 0.0;
+	if(fd.isttf && fd.ttfwidths != nil)
+		return real fd.ttfwidths[gid] * size / real fd.upem;
+	outline := getoutline(fd, gid);
+	if(outline == nil)
+		return 0.0;
+	return real outline.width * size / real fd.upem;
+}
+
 Face.metrics(f: self ref Face, size: real): (int, int, int)
 {
 	fd := getfacedata(f);
@@ -323,9 +351,16 @@ Face.metrics(f: self ref Face, size: real): (int, int, int)
 
 # ---- Glyph cache ----
 
+cachehash(faceidx, gid, qsize: int): int
+{
+	return ((faceidx * 7919 + gid) * 31 + qsize) & (NCACHEHASH - 1);
+}
+
 cachelookup(faceidx, gid, qsize: int): ref CacheEntry
 {
-	for(cl := cachetab; cl != nil; cl = tl cl){
+	if(cachetab == nil)
+		return nil;
+	for(cl := cachetab[cachehash(faceidx, gid, qsize)]; cl != nil; cl = tl cl){
 		ce := hd cl;
 		if(ce.faceidx == faceidx && ce.gid == gid && ce.qsize == qsize)
 			return ce;
@@ -335,20 +370,16 @@ cachelookup(faceidx, gid, qsize: int): ref CacheEntry
 
 cachestore(faceidx, gid, qsize: int, img: ref Image, width, ox, oy: int)
 {
-	# Evict oldest if full
+	if(cachetab == nil)
+		cachetab = array[NCACHEHASH] of list of ref CacheEntry;
+	# When full, start again: rendering a page touches a working set
+	# far smaller than the cache, so this is rare.
 	if(ncached >= MAXCACHE){
-		# Remove last quarter
-		keep: list of ref CacheEntry;
-		n := 0;
-		for(cl := cachetab; cl != nil; cl = tl cl){
-			if(n < MAXCACHE * 3 / 4)
-				keep = hd cl :: keep;
-			n++;
-		}
-		cachetab = keep;
-		ncached = MAXCACHE * 3 / 4;
+		cachetab = array[NCACHEHASH] of list of ref CacheEntry;
+		ncached = 0;
 	}
-	cachetab = ref CacheEntry(faceidx, gid, qsize, img, width, ox, oy) :: cachetab;
+	h := cachehash(faceidx, gid, qsize);
+	cachetab[h] = ref CacheEntry(faceidx, gid, qsize, img, width, ox, oy) :: cachetab[h];
 	ncached++;
 }
 
@@ -2192,44 +2223,51 @@ parsecompositeglyph(fd: ref FaceData, data: array of byte,
 			pos += 2;
 		}
 
-		# Read optional transform
-		scalex := 1.0;
-		scaley := 1.0;
+		# Read optional transform: x' = a*x + c*y + dx, y' = b*x + d*y + dy
+		a := 1.0;
+		b := 0.0;
+		c := 0.0;
+		d := 1.0;
 		if(cflags & 16r08){	# WE_HAVE_A_SCALE
-			scalex = getf2dot14(data, pos);
-			scaley = scalex;
+			a = getf2dot14(data, pos);
+			d = a;
 			pos += 2;
 		} else if(cflags & 16r40){	# WE_HAVE_AN_X_AND_Y_SCALE
-			scalex = getf2dot14(data, pos);
-			scaley = getf2dot14(data, pos + 2);
+			a = getf2dot14(data, pos);
+			d = getf2dot14(data, pos + 2);
 			pos += 4;
 		} else if(cflags & 16r80){	# WE_HAVE_A_TWO_BY_TWO
-			pos += 8;	# skip (simplified)
+			a = getf2dot14(data, pos);
+			b = getf2dot14(data, pos + 2);
+			c = getf2dot14(data, pos + 4);
+			d = getf2dot14(data, pos + 6);
+			pos += 8;
 		}
 
 		# Get component glyph outline recursively
 		comp := getttfglyphrecur(fd, glyphidx, depth + 1);
 		if(comp != nil && comp.path != nil){
-			# Apply transform and merge into path
+			# Paths are kept in reverse order (see rasterize), so the
+			# component's segments go on the front in the order they
+			# are: transform into a reversed copy, then reverse that on.
+			r: list of ref PathSeg;
 			for(seg := comp.path; seg != nil; seg = tl seg){
 				pick ps := hd seg {
 				Move =>
-					path = ref PathSeg.Move(
-						ps.x * scalex + dx,
-						ps.y * scaley + dy) :: path;
+					r = ref PathSeg.Move(a*ps.x + c*ps.y + dx, b*ps.x + d*ps.y + dy) :: r;
 				Line =>
-					path = ref PathSeg.Line(
-						ps.x * scalex + dx,
-						ps.y * scaley + dy) :: path;
+					r = ref PathSeg.Line(a*ps.x + c*ps.y + dx, b*ps.x + d*ps.y + dy) :: r;
 				Curve =>
-					path = ref PathSeg.Curve(
-						ps.x1 * scalex + dx, ps.y1 * scaley + dy,
-						ps.x2 * scalex + dx, ps.y2 * scaley + dy,
-						ps.x3 * scalex + dx, ps.y3 * scaley + dy) :: path;
+					r = ref PathSeg.Curve(
+						a*ps.x1 + c*ps.y1 + dx, b*ps.x1 + d*ps.y1 + dy,
+						a*ps.x2 + c*ps.y2 + dx, b*ps.x2 + d*ps.y2 + dy,
+						a*ps.x3 + c*ps.y3 + dx, b*ps.x3 + d*ps.y3 + dy) :: r;
 				Close =>
-					path = ref PathSeg.Close :: path;
+					r = ref PathSeg.Close :: r;
 				}
 			}
+			for(; r != nil; r = tl r)
+				path = hd r :: path;
 		}
 
 		if(!(cflags & 16r20))	# MORE_COMPONENTS

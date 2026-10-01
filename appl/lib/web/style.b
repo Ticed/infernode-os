@@ -1744,6 +1744,14 @@ inherit(p: ref St): ref St
 	return s;
 }
 
+# The style of an anonymous box: inherited values, initial otherwise.
+anon(parent: ref St, display: int): ref St
+{
+	s := inherit(parent);
+	s.display = display;
+	return s;
+}
+
 isinherited(nm: string): int
 {
 	case nm {

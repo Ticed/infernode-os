@@ -257,5 +257,6 @@ Style: module
 	color:	fn(v: array of ref Css->Tok): (int, int);	# (ok, RGBA)
 	dump:	fn(st: ref St): string;	# "property value" lines
 	resolveurl:	fn(base, rel: string): string;	# RFC 3986 reference resolution
+	anon:	fn(parent: ref St, display: int): ref St;	# an anonymous box's style
 	addimport:	fn(url: string, sh: ref Css->Sheet);	# the sheet fetched for an @import
 };
