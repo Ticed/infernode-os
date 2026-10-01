@@ -69,7 +69,7 @@ Dom: module
 		setattr:	fn(d: self ref Doc, n: int, name, val: string);
 		settext:	fn(d: self ref Doc, n: int, s: string);
 
-		attr:	fn(d: self ref Doc, n: int, name: string): string;	# nil if absent
+		attr:	fn(d: self ref Doc, n: int, name: string): string;	# "" if absent or empty: see hasattr
 		hasattr:	fn(d: self ref Doc, n: int, name: string): int;
 		root:	fn(d: self ref Doc): int;	# the html element
 		find:	fn(d: self ref Doc, from, tag: int): int;	# first descendant with tag

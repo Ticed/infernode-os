@@ -40,6 +40,8 @@ Layout: module
 		iw, ih:	int;		# replaced: intrinsic size (0 if unknown)
 		img:	ref Draw->Image;	# replaced: content, set by whoever loads url
 		url:	string;		# replaced: what to load (absolute)
+		parent:	cyclic ref Box;
+		pos:	cyclic list of ref Box;	# absolutely positioned boxes this one contains
 	};
 
 	Line: adt {

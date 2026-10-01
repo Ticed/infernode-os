@@ -3,10 +3,11 @@ implement Charonshot;
 #
 # charonshot - render one URL with Charon, headlessly, to an image file.
 #
-#	charonshot [-o] width[xheight] outimg url
+#	charonshot [-o] [-d] width[xheight] outimg url
 #
 # Renders with the new engine (page(2): parse, style, lay out, paint)
-# or, with -o, drives the old Charon's -render mode.  With just a
+# or, with -o, drives the old Charon's -render mode.  -d prints the box
+# tree (kind node x y w h) on standard error.  With just a
 # width the canvas is up to Maxheight tall and the image is cropped to the
 # page, so long pages are captured whole; with widthxheight the viewport is
 # exactly that and the whole of it is written, as for conformance
@@ -30,6 +31,7 @@ include "outlinefont.m";
 include "web/fonts.m";
 include "web/layout.m";
 include "web/page.m";
+	layout: Layout;
 	page: Page;
 	Pg: import page;
 
@@ -44,6 +46,7 @@ CharonMod: module
 };
 
 Maxheight: con 12000;
+dumpboxes := 0;
 
 init(nil: ref Draw->Context, argv: list of string)
 {
@@ -53,8 +56,11 @@ init(nil: ref Draw->Context, argv: list of string)
 
 	argv = tl argv;
 	old := 0;
-	if(argv != nil && hd argv == "-o") {
-		old = 1;
+	while(argv != nil && len hd argv == 2 && (hd argv)[0] == '-') {
+		case hd argv {
+		"-o" => old = 1;
+		"-d" => dumpboxes = 1;
+		}
 		argv = tl argv;
 	}
 	if(len argv != 3) {
@@ -131,6 +137,8 @@ newengine(disp: ref Display, w, h, crop: int, outimg, url: string): string
 		return sys->sprint("cannot load %s: %r", Page->PATH);
 	if((ierr := page->init(disp)) != nil)
 		return ierr;
+	layout = load Layout Layout->PATH;
+	layout->init(disp);
 	vh := h;
 	if(crop)
 		vh = 768;	# a viewport for vh units; the image is the page
@@ -150,6 +158,8 @@ newengine(disp: ref Display, w, h, crop: int, outimg, url: string): string
 	if(img == nil)
 		return sys->sprint("cannot allocate %dx%d image: %r", w, h);
 	p.paint(img, Point(0, 0));
+	if(dumpboxes)
+		sys->fprint(sys->fildes(2), "%s", layout->dump(p.root));
 	t2 := sys->millisec();
 	fd := sys->create(outimg, Sys->OWRITE, 8r644);
 	if(fd == nil)

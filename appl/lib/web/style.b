@@ -710,7 +710,8 @@ compound(m: ref M, c: array of ref Simple, n: int): int
 			if(!hasclass(m, n, x.name))
 				return 0;
 		Css->Sattr =>
-			if(!matchattr(d.attr(n, x.name), x))
+			# not d.attr() != nil: an empty value is nil in Limbo
+			if(!d.hasattr(n, x.name) || !matchattr(d.attr(n, x.name), x))
 				return 0;
 		Css->Spseudo =>
 			if(!pseudo(m, x, n))
@@ -722,8 +723,6 @@ compound(m: ref M, c: array of ref Simple, n: int): int
 
 matchattr(v: string, x: ref Simple): int
 {
-	if(v == nil)
-		return 0;
 	want := x.val;
 	if(x.icase) {
 		v = lower(v);
@@ -4890,7 +4889,8 @@ hints(d: ref Doc, n: int): list of ref Decl
 	Dom->Ttable =>
 		s += dimhint(d, n, "width", "width") + dimhint(d, n, "height", "height");
 		s += colorhint(d, n, "bgcolor", "background-color");
-		if((b := d.attr(n, "border")) != nil) {
+		if(d.hasattr(n, "border")) {
+			b := d.attr(n, "border");
 			w := atoi(b);
 			if(b == "")
 				w = 1;
@@ -4914,8 +4914,6 @@ hints(d: ref Doc, n: int): list of ref Decl
 			if(d.nodes[t].tag == Dom->Ttable) {
 				if((cp := d.attr(t, "cellpadding")) != nil)
 					s += sys->sprint("padding:%dpx;", atoi(cp));
-				if((b := d.attr(t, "border")) != nil && atoi(b) > 0 || b == "")
-					;
 				break;
 			}
 	Dom->Ttr or Dom->Tthead or Dom->Ttbody or Dom->Ttfoot =>

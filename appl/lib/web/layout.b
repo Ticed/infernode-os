@@ -64,7 +64,7 @@ B: adt {
 newbox(kind, inl, node: int, st: ref St): ref Box
 {
 	return ref Box(kind, inl, node, st, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-		0, nil, nil, nil, 0, 0, nil, nil);
+		0, nil, nil, nil, 0, 0, nil, nil, nil, nil);
 }
 
 build(d: ref Doc, c: ref Computed): ref Box
@@ -76,12 +76,38 @@ build(d: ref Doc, c: ref Computed): ref Box
 	l := element(b, root);
 	if(l == nil)
 		return newbox(Kblock, 0, 0, style->anon(nil, Style->Dblock));
+	setparents(hd l);
 	return hd l;
 }
 
+setparents(b: ref Box)
+{
+	for(i := 0; i < len b.kids; i++) {
+		b.kids[i].parent = b;
+		setparents(b.kids[i]);
+	}
+}
+
+# Out of flow: floats and absolutely positioned boxes.
+isfloat(x: ref Box): int
+{
+	return x.st.float != Style->Fnone && x.kind != Ktext && x.kind != Kinline;
+}
+
+isabs(x: ref Box): int
+{
+	return x.st.position == Style->Pabsolute || x.st.position == Style->Pfixed;
+}
+
+isoof(x: ref Box): int
+{
+	return x.kind != Ktext && x.kind != Kmarker && (isabs(x) || isfloat(x));
+}
+
+# an in-flow block-level box
 isblocklevel(x: ref Box): int
 {
-	return !x.inl;
+	return !x.inl && !isoof(x);
 }
 
 # The boxes an element generates (usually one; none for display:none,
@@ -216,28 +242,41 @@ fixkids(box: ref Box, kids: list of ref Box): array of ref Box
 	for(l := kids; l != nil; l = tl l)
 		if(isblocklevel(hd l))
 			nblock++;
-		else
+		else if(!isoof(hd l))
 			ninline++;
 	# flex and grid items are blockified already; their text is wrapped
 	if(nblock == 0 && box.kind != Kflex && box.kind != Kgrid)
 		return toarray(kids);
 	if(ninline == 0)
 		return toarray(kids);
+	# out-of-flow boxes go with an inline run they sit in, else stand alone
 	r: list of ref Box;
 	run: list of ref Box;
 	for(l = kids; l != nil; l = tl l) {
 		k := hd l;
-		if(isblocklevel(k)) {
-			if(run != nil && !blankrun(run))
-				r = anonblock(box, rev(run)) :: r;
+		if(isblocklevel(k) || isoof(k) && run == nil) {
+			r = flushrun(box, run, r);
 			run = nil;
 			r = k :: r;
 		} else
 			run = k :: run;
 	}
-	if(run != nil && !blankrun(run))
-		r = anonblock(box, rev(run)) :: r;
+	r = flushrun(box, run, r);
 	return toarray(rev(r));
+}
+
+# end an inline run: wrapped in an anonymous block, unless it is only
+# collapsible white space (and out-of-flow boxes, which stand alone)
+flushrun(box: ref Box, run, r: list of ref Box): list of ref Box
+{
+	if(run == nil)
+		return r;
+	if(!blankrun(run))
+		return anonblock(box, rev(run)) :: r;
+	for(l := rev(run); l != nil; l = tl l)
+		if(isoof(hd l))
+			r = hd l :: r;
+	return r;
 }
 
 anonblock(parent: ref Box, kids: list of ref Box): ref Box
@@ -251,6 +290,8 @@ blankrun(l: list of ref Box): int
 {
 	for(; l != nil; l = tl l) {
 		k := hd l;
+		if(isoof(k))
+			continue;
 		if(k.kind != Ktext)
 			return 0;
 		case k.st.whitespace {
@@ -591,8 +632,24 @@ lower(s: string): string
 # ---- geometry ----
 
 L: adt {
-	vw, vh:	int;		# viewport, for fixed boxes (and the root)
+	vw, vh:	int;		# viewport: the initial containing block
 	root:	ref Box;
+	pending:	list of ref Abs;	# absolutely positioned boxes awaiting their containing block
+};
+
+# an absolutely positioned box, its containing block (nil: the initial
+# one) and its static position, relative to the border box of sparent
+Abs: adt {
+	box:	ref Box;
+	cb:	ref Box;
+	sparent:	ref Box;
+	sx, sy:	int;
+};
+
+# Floats placed in a block formatting context, as margin-box rectangles
+# in the coordinates of the context's root border box.
+Fctx: adt {
+	left, right:	list of Rect;
 };
 
 Margin: adt {
@@ -622,12 +679,21 @@ msum(m: Margin): int
 
 lay(root: ref Box, width, height: int)
 {
-	l := ref L(width, height, root);
+	l := ref L(width, height, root, nil);
 	edges(root, width);
 	sizew(root, width);
-	layblock(l, root, width, height);
+	layblock(l, root, width, height, ref Fctx(nil, nil), root.ml, root.mt);
 	root.x = root.ml;
 	root.y = root.mt;
+	# boxes whose containing block is the viewport, in document order
+	# (pending is newest first; pos lists are kept newest first too)
+	vp: list of ref Abs;
+	for(p := l.pending; p != nil; p = tl p)
+		if((hd p).cb == nil)
+			vp = hd p :: vp;
+	for(; vp != nil; vp = tl vp)
+		layabs(l, hd vp, root, Rect((-root.x, -root.y), (width - root.x, height - root.y)));
+	l.pending = nil;
 }
 
 ir(x: real): int
@@ -808,10 +874,12 @@ sizew(b: ref Box, cbw: int)
 }
 
 # Lay out a block-level box whose width is settled; set its height and
-# its children's geometry.  Returns its top and bottom margins, collapsed
-# with any of its children's that adjoin them, and whether its own
-# margins collapse through it.
-layblock(l: ref L, b: ref Box, cbw, cbh: int): (Margin, Margin, int)
+# its children's geometry.  fc is the block formatting context its
+# content takes part in and (ox, oy) where its border box sits in it.
+# Returns its top and bottom margins, collapsed with any of its
+# children's that adjoin them, and whether its own margins collapse
+# through it.
+layblock(l: ref L, b: ref Box, cbw, cbh: int, fc: ref Fctx, ox, oy: int): (Margin, Margin, int)
 {
 	case b.kind {
 	Kreplaced =>
@@ -821,6 +889,18 @@ layblock(l: ref L, b: ref Box, cbw, cbh: int): (Margin, Margin, int)
 			h = ih + vextra(b);
 		b.h = clamph(b, h, cbh);
 		return (mval(b.mt), mval(b.mb), 0);
+	Kflex =>
+		layflex(l, b, cbw, cbh);
+		positioned(l, b);
+		return (mval(b.mt), mval(b.mb), 0);
+	Kgrid =>
+		laygrid(l, b, cbw, cbh);
+		positioned(l, b);
+		return (mval(b.mt), mval(b.mb), 0);
+	Ktable =>
+		laytable(l, b, cbw, cbh);
+		positioned(l, b);
+		return (mval(b.mt), mval(b.mb), 0);
 	}
 	cw := b.w - hextra(b);
 	if(cw < 0)
@@ -829,7 +909,13 @@ layblock(l: ref L, b: ref Box, cbw, cbh: int): (Margin, Margin, int)
 	ch := -1;		# content height for percentages inside
 	if(sh >= 0)
 		ch = sh - vextra(b);
-	bfc := isbfc(b) || b == l.root;	# the root holds the initial formatting context
+	bfc := isbfc(b) || b == l.root || fc == nil;	# the root holds the initial formatting context
+	if(bfc) {
+		fc = ref Fctx(nil, nil);
+		ox = oy = 0;
+	}
+	cx := ox + b.bl + b.pl;	# content box, in fc
+	cy := oy + b.bt + b.pt;
 	passtop := !bfc && b.bt == 0 && b.pt == 0;
 	passbot := !bfc && b.bb == 0 && b.pb == 0 && sh < 0;
 	top := mval(b.mt);
@@ -837,7 +923,7 @@ layblock(l: ref L, b: ref Box, cbw, cbh: int): (Margin, Margin, int)
 	contenth := 0;
 	empty := 0;
 	if(haslines(b)) {
-		contenth = layinline(l, b, cw);
+		contenth = layinline(l, b, cw, fc, ox, oy);
 		passtop = passbot = 0;
 	} else {
 		pending := Margin(0, 0);
@@ -845,10 +931,42 @@ layblock(l: ref L, b: ref Box, cbw, cbh: int): (Margin, Margin, int)
 		adjoining := passtop;	# still at the top, margins adjoin ours
 		for(i := 0; i < len b.kids; i++) {
 			k := b.kids[i];
+			if(isabs(k)) {
+				l.pending = ref Abs(k, cbof(l, k), b, b.bl + b.pl, b.bt + b.pt + cury + msum(pending)) :: l.pending;
+				continue;
+			}
+			if(isfloat(k)) {
+				placefloat(l, k, fc, cx, cy + cury + msum(pending), cw, ox, oy);
+				continue;
+			}
 			edges(k, cw);
 			sizew(k, cw);
-			(kt, kb, kempty) := layblock(l, k, cw, ch);
+			# where it will go, before its own margins collapse
+			ky := cury;
+			if(!adjoining)
+				ky += msum(collapse(pending, mval(k.mt)));
+			if(k.st.clear != Style->Cnone) {
+				cl := clearance(fc, k.st.clear) - cy - k.mt;
+				if(cl > ky) {
+					# clearance: the margins above no longer collapse with it
+					if(adjoining)
+						adjoining = 0;
+					cury = cl - msum(collapse(pending, mval(k.mt)));
+					ky = cl;
+				}
+			}
 			k.x = b.bl + b.pl + k.ml;
+			if(isbfc(k) && fc.left != nil || isbfc(k) && fc.right != nil) {
+				# a new formatting context does not overlap floats
+				(lx, rx) := band(fc, cy + ky, cy + ky + 1, cx, cx + cw);
+				if(lx > cx || rx < cx + cw) {
+					avail := rx - lx - k.ml - k.mr;
+					if(k.w > avail && k.st.width.kind == Style->Lauto)
+						k.w = clampw(k, avail, cw);
+					k.x = lx - ox + k.ml;
+				}
+			}
+			(kt, kb, kempty) := layblock(l, k, cw, ch, fc, ox + k.x, oy + b.bt + b.pt + ky);
 			if(kempty) {
 				# margins collapse through an empty box
 				m := collapse(kt, kb);
@@ -857,6 +975,7 @@ layblock(l: ref L, b: ref Box, cbw, cbh: int): (Margin, Margin, int)
 				else
 					pending = collapse(pending, m);
 				k.y = b.bt + b.pt + cury;
+				relative(k, cw, ch);
 				continue;
 			}
 			if(adjoining) {
@@ -869,6 +988,7 @@ layblock(l: ref L, b: ref Box, cbw, cbh: int): (Margin, Margin, int)
 			}
 			cury = k.y - b.bt - b.pt + k.h;
 			pending = kb;
+			relative(k, cw, ch);
 		}
 		if(adjoining) {
 			# no in-flow content at all
@@ -883,13 +1003,308 @@ layblock(l: ref L, b: ref Box, cbw, cbh: int): (Margin, Margin, int)
 			cury += msum(pending);
 		contenth = cury;
 	}
+	if(bfc) {
+		# a formatting context's height takes in its floats
+		fb := floatbottom(fc) - b.bt - b.pt;
+		if(fb > contenth)
+			contenth = fb;
+		if(contenth > 0)
+			empty = 0;
+	}
 	h := sh;
 	if(h < 0)
 		h = contenth + vextra(b);
 	b.h = clamph(b, h, cbh);
 	if(empty && b.h != 0)
 		empty = 0;
+	positioned(l, b);
 	return (top, bot, empty);
+}
+
+# ---- positioning (CSS 2.2 §9.3, §10.3.7, §10.6.4) ----
+
+ispositioned(b: ref Box): int
+{
+	return b.st.position != Style->Pstatic;
+}
+
+# the containing block of an absolutely positioned box: its nearest
+# positioned ancestor, or nil for the initial containing block
+cbof(l: ref L, k: ref Box): ref Box
+{
+	if(k.st.position == Style->Pfixed)
+		return nil;
+	for(p := k.parent; p != nil; p = p.parent)
+		if(ispositioned(p))
+			return p;
+	return nil;
+}
+
+# relative and sticky positioning: shift the box after it is placed
+relative(k: ref Box, cbw, cbh: int)
+{
+	st := k.st;
+	if(st.position != Style->Prelative && st.position != Style->Psticky)
+		return;
+	if(st.left.kind != Style->Lauto)
+		k.x += res(st.left, cbw);
+	else if(st.right.kind != Style->Lauto)
+		k.x -= res(st.right, cbw);
+	if(st.top.kind != Style->Lauto && (cbh >= 0 || st.top.pct == 0.0))
+		k.y += res(st.top, cbh);
+	else if(st.bottom.kind != Style->Lauto && (cbh >= 0 || st.bottom.pct == 0.0))
+		k.y -= res(st.bottom, cbh);
+}
+
+# b is laid out: lay out the absolutely positioned boxes it contains
+positioned(l: ref L, b: ref Box)
+{
+	if(!ispositioned(b) || l.pending == nil)
+		return;
+	mine, rest: list of ref Abs;
+	for(p := l.pending; p != nil; p = tl p)
+		if((hd p).cb == b)
+			mine = hd p :: mine;
+		else
+			rest = hd p :: rest;
+	if(mine == nil)
+		return;
+	l.pending = nil;
+	for(; rest != nil; rest = tl rest)
+		l.pending = hd rest :: l.pending;
+	# the padding box, in b's border-box coordinates
+	pr := Rect((b.bl, b.bt), (b.w - b.br, b.h - b.bb));
+	for(; mine != nil; mine = tl mine)
+		layabs(l, hd mine, b, pr);
+}
+
+layabs(l: ref L, a: ref Abs, cb: ref Box, pr: Rect)
+{
+	k := a.box;
+	st := k.st;
+	cbw := pr.dx();
+	cbh := pr.dy();
+	# static position, in cb coordinates
+	sx := a.sx;
+	sy := a.sy;
+	for(p := a.sparent; p != nil && p != cb; p = p.parent) {
+		sx += p.x;
+		sy += p.y;
+	}
+	if(cb == l.root && a.cb == nil) {
+		# the viewport: undo the root's own offset
+		sx += cb.x;
+		sy += cb.y;
+	}
+	edges(k, cbw);
+	lauto := st.left.kind == Style->Lauto;
+	rauto := st.right.kind == Style->Lauto;
+	tauto := st.top.kind == Style->Lauto;
+	bauto := st.bottom.kind == Style->Lauto;
+	left := res(st.left, cbw);
+	right := res(st.right, cbw);
+	top := res(st.top, cbh);
+	bottom := res(st.bottom, cbh);
+	mlauto := st.ml.kind == Style->Lauto;
+	mrauto := st.mr.kind == Style->Lauto;
+	if(mlauto)
+		k.ml = 0;
+	if(mrauto)
+		k.mr = 0;
+	w := specw(k, st.width, cbw);
+	if(w < 0) {
+		if(!lauto && !rauto)
+			w = cbw - left - right - k.ml - k.mr;
+		else if(k.kind == Kreplaced) {
+			(rw, nil) := replacedsize(k, cbw, cbh);
+			w = rw + hextra(k);
+		} else {
+			(mn, mx) := intrinsic(k);
+			avail := cbw - k.ml - k.mr;
+			if(!lauto)
+				avail -= left;
+			if(!rauto)
+				avail -= right;
+			w = fit(mn, mx, avail + nz(k.ml) + nz(k.mr)) - nz(k.ml) - nz(k.mr);
+		}
+	}
+	k.w = clampw(k, w, cbw);
+	x: int;
+	if(!lauto && !rauto && (mlauto || mrauto)) {
+		free := cbw - left - right - k.w;
+		if(mlauto && mrauto) {
+			k.ml = free/2;
+			k.mr = free - k.ml;
+		} else if(mlauto)
+			k.ml = free - k.mr;
+		else
+			k.mr = free - k.ml;
+	}
+	if(!lauto)
+		x = pr.min.x + left + k.ml;
+	else if(!rauto)
+		x = pr.max.x - right - k.mr - k.w;
+	else
+		x = sx + k.ml;
+	layblock(l, k, cbw, cbh, nil, 0, 0);
+	h := k.h;
+	if(spech(k, st.height, cbh) < 0 && !tauto && !bauto) {
+		h = clamph(k, cbh - top - bottom - k.mt - k.mb, cbh);
+		k.h = h;
+	}
+	y: int;
+	if(!tauto)
+		y = pr.min.y + top + k.mt;
+	else if(!bauto)
+		y = pr.max.y - bottom - k.mb - h;
+	else
+		y = sy + k.mt;
+	k.x = x;
+	k.y = y;
+	cb.pos = k :: cb.pos;
+	k.parent = cb;
+}
+
+# ---- floats (CSS 2.2 §9.5) ----
+
+# the band [left, right) free of floats between y0 and y1, within [x0, x1)
+band(fc: ref Fctx, y0, y1, x0, x1: int): (int, int)
+{
+	if(fc == nil)
+		return (x0, x1);
+	for(l := fc.left; l != nil; l = tl l) {
+		r := hd l;
+		if(r.min.y < y1 && r.max.y > y0 && r.max.x > x0)
+			x0 = r.max.x;
+	}
+	for(l = fc.right; l != nil; l = tl l) {
+		r := hd l;
+		if(r.min.y < y1 && r.max.y > y0 && r.min.x < x1)
+			x1 = r.min.x;
+	}
+	return (x0, x1);
+}
+
+# the lowest float bottom at or below y, above which a band is blocked
+nextfloat(fc: ref Fctx, y: int): int
+{
+	n := -1;
+	for(l := fc.left; l != nil; l = tl l)
+		if((hd l).max.y > y && (n < 0 || (hd l).max.y < n))
+			n = (hd l).max.y;
+	for(l = fc.right; l != nil; l = tl l)
+		if((hd l).max.y > y && (n < 0 || (hd l).max.y < n))
+			n = (hd l).max.y;
+	return n;
+}
+
+clearance(fc: ref Fctx, side: int): int
+{
+	y := -1000000;
+	if(fc == nil)
+		return y;
+	if(side == Style->Cleft || side == Style->Cboth)
+		for(l := fc.left; l != nil; l = tl l)
+			if((hd l).max.y > y)
+				y = (hd l).max.y;
+	if(side == Style->Cright || side == Style->Cboth)
+		for(m := fc.right; m != nil; m = tl m)
+			if((hd m).max.y > y)
+				y = (hd m).max.y;
+	return y;
+}
+
+floatbottom(fc: ref Fctx): int
+{
+	y := 0;
+	for(l := fc.left; l != nil; l = tl l)
+		if((hd l).max.y > y)
+			y = (hd l).max.y;
+	for(l = fc.right; l != nil; l = tl l)
+		if((hd l).max.y > y)
+			y = (hd l).max.y;
+	return y;
+}
+
+# Lay out float k and place it at or below y in the content box
+# [cx, cx+cw) of the block whose border box is at (ox, oy) in fc.
+placefloat(l: ref L, k: ref Box, fc: ref Fctx, cx, y, cw, ox, oy: int)
+{
+	edges(k, cw);
+	w := specw(k, k.st.width, cw);
+	if(w < 0) {
+		if(k.kind == Kreplaced) {
+			(rw, nil) := replacedsize(k, cw, -1);
+			w = rw + hextra(k);
+		} else {
+			(mn, mx) := intrinsic(k);
+			w = fit(mn, mx, cw) - nz(k.ml) - nz(k.mr);
+		}
+	}
+	if(k.st.ml.kind == Style->Lauto)
+		k.ml = 0;
+	if(k.st.mr.kind == Style->Lauto)
+		k.mr = 0;
+	k.w = clampw(k, w, cw);
+	layblock(l, k, cw, -1, nil, 0, 0);
+	mw := k.ml + k.w + k.mr;
+	mh := k.mt + k.h + k.mb;
+	if(k.st.clear != Style->Cnone) {
+		c := clearance(fc, k.st.clear);
+		if(c > y)
+			y = c;
+	}
+	# not above an earlier float
+	for(fl := fc.left; fl != nil; fl = tl fl)
+		if((hd fl).min.y > y)
+			y = (hd fl).min.y;
+	for(fl = fc.right; fl != nil; fl = tl fl)
+		if((hd fl).min.y > y)
+			y = (hd fl).min.y;
+	for(tries := 0; tries < 1000; tries++) {
+		(lx, rx) := band(fc, y, y + nz1(mh), cx, cx + cw);
+		if(rx - lx >= mw || (lx == cx && rx == cx + cw))
+			break;
+		n := nextfloat(fc, y);
+		if(n < 0)
+			break;
+		y = n;
+	}
+	(lx, rx) := band(fc, y, y + nz1(mh), cx, cx + cw);
+	r: Rect;
+	if(k.st.float == Style->Fleft) {
+		r = Rect((lx, y), (lx + mw, y + mh));
+		fc.left = r :: fc.left;
+	} else {
+		r = Rect((rx - mw, y), (rx, y + mh));
+		fc.right = r :: fc.right;
+	}
+	k.x = r.min.x - ox + k.ml;
+	k.y = r.min.y - oy + k.mt;
+	relative(k, cw, -1);
+}
+
+layflex(l: ref L, b: ref Box, cbw, cbh: int)
+{
+	asblock(l, b, cbw, cbh);
+}
+
+laygrid(l: ref L, b: ref Box, cbw, cbh: int)
+{
+	asblock(l, b, cbw, cbh);
+}
+
+laytable(l: ref L, b: ref Box, cbw, cbh: int)
+{
+	asblock(l, b, cbw, cbh);
+}
+
+asblock(l: ref L, b: ref Box, cbw, cbh: int)
+{
+	k := b.kind;
+	b.kind = Kblock;
+	layblock(l, b, cbw, cbh, nil, 0, 0);
+	b.kind = k;
 }
 
 haslines(b: ref Box): int
@@ -1048,6 +1463,11 @@ inlineintrinsic(b: ref Box): (int, int)
 				mx = line;
 			line = 0.0;
 			word = 0.0;
+		Ifloat =>
+			(kmn, kmx) := intrinsic(it.box);
+			if(real kmn > mn)
+				mn = real kmn;
+			line += real kmx;
 		}
 	}
 	if(line > mx)
@@ -1057,7 +1477,7 @@ inlineintrinsic(b: ref Box): (int, int)
 
 # ---- inline formatting (CSS 2.2 §9.4.2, §10.8; CSS Text 3) ----
 
-Iword, Ispace, Iopen, Iclose, Iatomic, Ibreak: con iota;
+Iword, Ispace, Iopen, Iclose, Iatomic, Ibreak, Ifloat, Iabs: con iota;
 
 Item: adt {
 	kind:	int;
@@ -1119,8 +1539,14 @@ flat(f: ref Fl, b: ref Box)
 		f.deco = odeco;
 		f.decocolor = ocol;
 	* =>
-		emit(f, ref Item(Iatomic, nil, 0.0, b, nil, 0, 0, 0));
-		f.space = 0;
+		if(isabs(b))
+			emit(f, ref Item(Iabs, nil, 0.0, b, nil, 0, 0, 0));
+		else if(isfloat(b))
+			emit(f, ref Item(Ifloat, nil, 0.0, b, nil, 0, 0, 0));
+		else {
+			emit(f, ref Item(Iatomic, nil, 0.0, b, nil, 0, 0, 0));
+			f.space = 0;
+		}
 	}
 }
 
@@ -1242,22 +1668,69 @@ text(f: ref Fl, b: ref Box)
 Ln: adt {
 	frags:	list of ref Frag;	# reversed
 	x:	real;			# where the next thing goes
-	avail:	int;
+	avail:	int;			# right edge, in content coordinates
+	left:	int;			# left edge (past left floats)
 	content:	int;		# something has been placed
 	open:	list of (ref Box, real, int);	# inline boxes open on this line: (box, start x, first?)
 	spaces:	int;		# expansion opportunities, for justify
+	floats:	list of ref Box;	# floats met mid-line, placed when the line ends
 };
 
-layinline(l: ref L, b: ref Box, cw: int): int
+# the inline formatting state of one block container
+Ifc: adt {
+	l:	ref L;
+	b:	ref Box;
+	cw:	int;
+	fc:	ref Fctx;
+	ox, oy:	int;		# b's border box in fc
+	y:	int;		# top of the next line, in b's border box
+	strut:	int;		# the block's own line height, for float bands
+};
+
+# Set ln's edges from the floats beside the line at f.y.
+edgesat(f: ref Ifc, ln: ref Ln)
+{
+	cx := f.ox + f.b.bl + f.b.pl;
+	ly := f.oy + f.y;
+	(lx, rx) := band(f.fc, ly, ly + nz1(f.strut), cx, cx + f.cw);
+	ln.left = lx - cx;
+	ln.avail = rx - cx;
+	if(ln.x < real ln.left)
+		ln.x = real ln.left;
+}
+
+# Nothing fits beside the floats here: move the (empty) line down past one.
+movedown(f: ref Ifc, ln: ref Ln): int
+{
+	if(f.fc == nil || ln.left == 0 && ln.avail == f.cw)
+		return 0;
+	n := nextfloat(f.fc, f.oy + f.y);
+	if(n < 0)
+		return 0;
+	f.y = n - f.oy;
+	ln.x = 0.0;
+	edgesat(f, ln);
+	return 1;
+}
+
+placepending(f: ref Ifc, ln: ref Ln)
+{
+	for(fl := rev(ln.floats); fl != nil; fl = tl fl)
+		placefloat(f.l, hd fl, f.fc, f.ox + f.b.bl + f.b.pl, f.oy + f.y, f.cw, f.ox, f.oy);
+	ln.floats = nil;
+}
+
+layinline(l: ref L, b: ref Box, cw: int, fc: ref Fctx, ox, oy: int): int
 {
 	items := flatten(b);
 	st := b.st;
 	lines: list of ref Line;
-	y := b.bt + b.pt;
+	f := ref Ifc(l, b, cw, fc, ox, oy, b.bt + b.pt, ir(lineheight(st, face(st))));
 	x0 := b.bl + b.pl;
-	ln := ref Ln(nil, 0.0, cw, 0, nil, 0);
+	ln := ref Ln(nil, 0.0, cw, 0, 0, nil, 0, nil);
+	edgesat(f, ln);
 	indent := res(st.indent, cw);
-	ln.x = real indent;
+	ln.x += real indent;
 	first := 1;
 	opened: list of ref Box;	# inline boxes open, outermost last
 	for(il := items; il != nil; il = tl il) {
@@ -1286,11 +1759,12 @@ layinline(l: ref L, b: ref Box, cw: int): int
 				continue;
 			}
 			if(ln.content && ln.x + it.w > real ln.avail + 0.01 && !it.nowrap && !prevnowrap(ln)) {
-				lines = finish(l, b, ln, y, x0, first, 0) :: lines;
-				y += (hd lines).h;
+				lines = endline(f, ln, x0, first, 0) :: lines;
 				first = 0;
-				ln = newline(ln, cw, opened);
+				ln = newline(f, ln, opened);
 			}
+			while(!ln.content && ln.x + it.w > real ln.avail + 0.01 && movedown(f, ln))
+				;
 			if(!ln.content && ln.x + it.w > real ln.avail && it.box.st.anywhere && len it.text > 1) {
 				# overflow-wrap: break the word where it must
 				(head, tail) := splitword(it, real ln.avail - ln.x);
@@ -1298,10 +1772,9 @@ layinline(l: ref L, b: ref Box, cw: int): int
 					ln.frags = textfrag(ln, head) :: ln.frags;
 					ln.x += head.w;
 					ln.content = 1;
-					lines = finish(l, b, ln, y, x0, first, 0) :: lines;
-					y += (hd lines).h;
+					lines = endline(f, ln, x0, first, 0) :: lines;
 					first = 0;
-					ln = newline(ln, cw, opened);
+					ln = newline(f, ln, opened);
 					il = it :: tail :: tl il;	# the loop steps on to the rest
 					continue;
 				}
@@ -1314,35 +1787,52 @@ layinline(l: ref L, b: ref Box, cw: int): int
 			layatomic(l, k, cw);
 			w := k.ml + k.w + k.mr;
 			if(ln.content && ln.x + real w > real ln.avail + 0.01)  {
-				lines = finish(l, b, ln, y, x0, first, 0) :: lines;
-				y += (hd lines).h;
+				lines = endline(f, ln, x0, first, 0) :: lines;
 				first = 0;
-				ln = newline(ln, cw, opened);
+				ln = newline(f, ln, opened);
 			}
+			while(!ln.content && ln.x + real w > real ln.avail + 0.01 && movedown(f, ln))
+				;
 			fr := ref Frag(Fatomic, ir(ln.x) + k.ml, 0, k.w, k.h, 0, k, nil, nil, 0, 0, 0, 0);
 			ln.frags = fr :: ln.frags;
 			ln.x += real w;
 			ln.content = 1;
+		Ifloat =>
+			if(ln.content)
+				ln.floats = it.box :: ln.floats;	# after this line
+			else {
+				placefloat(l, it.box, fc, ox + x0, oy + f.y, cw, ox, oy);
+				edgesat(f, ln);
+			}
+		Iabs =>
+			l.pending = ref Abs(it.box, cbof(l, it.box), b, x0 + ir(ln.x), f.y) :: l.pending;
 		Ibreak =>
 			ln.content = 1;
-			lines = finish(l, b, ln, y, x0, first, 1) :: lines;
-			y += (hd lines).h;
+			lines = endline(f, ln, x0, first, 1) :: lines;
 			first = 0;
-			ln = newline(ln, cw, opened);
+			ln = newline(f, ln, opened);
 			ln.content = 0;
 		}
 	}
-	if(ln.content || ln.frags != nil && hascontent(ln)) {
-		lines = finish(l, b, ln, y, x0, first, 1) :: lines;
-		y += (hd lines).h;
-	}
+	if(ln.content || ln.frags != nil && hascontent(ln))
+		lines = endline(f, ln, x0, first, 1) :: lines;
+	else
+		placepending(f, ln);
 	a := array[len lines] of ref Line;
 	for(i := len a - 1; i >= 0; i--) {
 		a[i] = hd lines;
 		lines = tl lines;
 	}
 	b.lines = a;
-	return y - b.bt - b.pt;
+	return f.y - b.bt - b.pt;
+}
+
+endline(f: ref Ifc, ln: ref Ln, x0, first, forced: int): ref Line
+{
+	line := finish(f.l, f.b, ln, f.y, x0, first, forced);
+	f.y += line.h;
+	placepending(f, ln);
+	return line;
 }
 
 hascontent(ln: ref Ln): int
@@ -1381,15 +1871,16 @@ removebox(l: list of ref Box, b: ref Box): list of ref Box
 	return o;
 }
 
-newline(old: ref Ln, cw: int, opened: list of ref Box): ref Ln
+newline(f: ref Ifc, old: ref Ln, opened: list of ref Box): ref Ln
 {
-	ln := ref Ln(nil, 0.0, cw, 0, nil, 0);
+	ln := ref Ln(nil, 0.0, f.cw, 0, 0, nil, 0, nil);
+	edgesat(f, ln);
 	# inline boxes still open continue on the new line
 	r: list of ref Box;
 	for(l := opened; l != nil; l = tl l)
 		r = hd l :: r;
 	for(; r != nil; r = tl r)
-		ln.open = (hd r, 0.0, 0) :: ln.open;
+		ln.open = (hd r, ln.x, 0) :: ln.open;
 	return ln;
 }
 
@@ -1575,8 +2066,10 @@ finish(l: ref L, b: ref Box, ln: ref Ln, y, x0, first, forced: int): ref Line
 	for(i = 0; i < len frags; i++) {
 		f := frags[i];
 		f.x += x0 + ir(off);
-		if(f.kind == Fatomic)
+		if(f.kind == Fatomic) {
 			f.box.x = f.x;
+			relative(f.box, ln.avail, -1);
+		}
 	}
 	return line;
 }
@@ -1642,7 +2135,7 @@ layatomic(l: ref L, k: ref Box, cbw: int)
 		k.ml = 0;
 	if(k.st.mr.kind == Style->Lauto)
 		k.mr = 0;
-	layblock(l, k, cbw, -1);
+	layblock(l, k, cbw, -1, nil, 0, 0);
 	# baseline: the last line box's, else the bottom margin edge
 	k.base = k.mt + k.h;
 	if(k.kind != Kreplaced && k.st.overflowy == Style->Ovisible) {
@@ -1741,54 +2234,201 @@ paint(root: ref Box, dst: ref Image, origin: Point, clip: Rect)
 	dst.draw(clip, display.white, nil, (0, 0));
 	if(visible(bg))
 		dst.draw(clip, colorimg(bg), nil, (0, 0));
-	paintbox(dst, root, origin, clip, bgbox);
+	paintctx(dst, root, origin, clip, bgbox);
 	dst.clipr = oclip;
 }
 
-# canvasbg: the box whose background went to the canvas
-paintbox(dst: ref Image, b: ref Box, o: Point, clip: Rect, canvasbg: ref Box)
+# A layer of a stacking context: a positioned box to paint after (or,
+# with a negative z-index, before) the context's flow content.
+Lyr: adt {
+	box:	ref Box;
+	o:	Point;		# its parent's border-box origin
+	z:	int;
+};
+
+# Paint b as a stacking context (CSS 2.2 Appendix E, simplified): its
+# background and borders, layers with negative z-index, its in-flow
+# content, then layers with z-index auto or 0 in tree order, then the
+# positive ones.  o is the origin of b's parent's border box.
+paintctx(dst: ref Image, b: ref Box, o: Point, clip: Rect, canvasbg: ref Box)
 {
-	r := Rect((o.x + b.x, o.y + b.y), (o.x + b.x + b.w, o.y + b.y + b.h));
 	st := b.st;
-	if(st.opacity < 1.0 && st.opacity > 0.0 && b.kind != Ktext) {
+	if(st.opacity == 0.0)
+		return;
+	if(st.opacity < 1.0 && b.kind != Ktext) {
 		layer(dst, b, o, clip, canvasbg);
 		return;
 	}
-	if(st.opacity == 0.0)
-		return;
-	vis := st.visibility == Style->Vvisible;
-	if(vis) {
-		if(b != canvasbg)
-			paintbackground(dst, b, r);
-		paintborders(dst, b, r);
+	r := Rect((o.x + b.x, o.y + b.y), (o.x + b.x + b.w, o.y + b.y + b.h));
+	layers := sortlayers(collectlayers(b, r.min, nil));
+	if(st.visibility == Style->Vvisible)
+		paintself(dst, b, r, canvasbg);
+	inner := innerclip(b, r, clip);
+	for(l := layers; l != nil; l = tl l)
+		if((hd l).z < 0)
+			paintctx(dst, (hd l).box, (hd l).o, inner, canvasbg);
+	if(rectok(inner)) {
+		oclip := dst.clipr;
+		dst.clipr = inner;
+		paintcontent(dst, b, r, inner, canvasbg);
+		dst.clipr = oclip;
 	}
-	inner := clip;
-	if(st.overflowx != Style->Ovisible || st.overflowy != Style->Ovisible) {
-		pr := Rect((r.min.x + b.bl, r.min.y + b.bt), (r.max.x - b.br, r.max.y - b.bb));
-		(inner, nil) = clip.clip(pr);
-		if(!rectok(inner))
-			return;
-	}
-	oclip := dst.clipr;
-	dst.clipr = inner;
-	if(b.kind == Kreplaced) {
-		if(vis)
-			paintreplaced(dst, b, r);
-	} else if(b.lines != nil)
-		paintlines(dst, b, Point(r.min.x, r.min.y), inner, canvasbg);
-	else
-		for(i := 0; i < len b.kids; i++) {
-			k := b.kids[i];
-			if(!k.inl)
-				paintbox(dst, k, r.min, inner, canvasbg);
+	for(l = layers; l != nil; l = tl l)
+		if((hd l).z >= 0)
+			paintctx(dst, (hd l).box, (hd l).o, inner, canvasbg);
+	paintoutline(dst, b, r, clip);
+}
+
+innerclip(b: ref Box, r, clip: Rect): Rect
+{
+	st := b.st;
+	if(st.overflowx == Style->Ovisible && st.overflowy == Style->Ovisible)
+		return clip;
+	pr := Rect((r.min.x + b.bl, r.min.y + b.bt), (r.max.x - b.br, r.max.y - b.bb));
+	(c, nil) := clip.clip(pr);
+	return c;
+}
+
+# a box that is a layer of its stacking context rather than flow content
+islayer(k: ref Box): int
+{
+	return ispositioned(k) && k.kind != Ktext && k.kind != Kinline;
+}
+
+# the layers of b's stacking context: positioned descendants, found
+# without descending into layers or nested stacking contexts
+collectlayers(b: ref Box, o: Point, acc: list of ref Lyr): list of ref Lyr
+{
+	for(pl := revboxes(b.pos); pl != nil; pl = tl pl)
+		acc = addlayer(hd pl, o, acc);
+	if(b.lines != nil) {
+		for(i := 0; i < len b.lines; i++) {
+			ln := b.lines[i];
+			for(k := 0; k < len ln.frags; k++) {
+				f := ln.frags[k];
+				if(f.kind != Fatomic)
+					continue;
+				if(islayer(f.box))
+					acc = addlayer(f.box, o, acc);
+				else if(f.box.st.opacity >= 1.0)
+					acc = collectlayers(f.box, o.add(Point(f.box.x, f.box.y)), acc);
+			}
 		}
-	if(vis && st.outlinew > 0 && st.outlines != Style->Bnone) {
-		dst.clipr = clip;
-		w := st.outlinew;
-		off := st.outlineoff;
-		orect := r.inset(-(off + w));
-		edge(dst, orect, w, st.outlinec, st.outlines);
+		return acc;
 	}
+	for(i := 0; i < len b.kids; i++) {
+		k := b.kids[i];
+		if(isabs(k) || k.inl)
+			continue;	# painted from its containing block's pos list
+		if(islayer(k))
+			acc = addlayer(k, o, acc);
+		else if(k.st.opacity >= 1.0)
+			acc = collectlayers(k, o.add(Point(k.x, k.y)), acc);
+	}
+	return acc;
+}
+
+addlayer(k: ref Box, o: Point, acc: list of ref Lyr): list of ref Lyr
+{
+	z := 0;
+	if(!k.st.zauto)
+		z = k.st.z;
+	return ref Lyr(k, o, z) :: acc;
+}
+
+revboxes(l: list of ref Box): list of ref Box
+{
+	r: list of ref Box;
+	for(; l != nil; l = tl l)
+		r = hd l :: r;
+	return r;
+}
+
+# in z order, tree order among equals (acc arrives reversed)
+sortlayers(l: list of ref Lyr): list of ref Lyr
+{
+	n := len l;
+	if(n == 0)
+		return nil;
+	a := array[n] of ref Lyr;
+	for(i := n-1; i >= 0; i--) {
+		a[i] = hd l;
+		l = tl l;
+	}
+	for(i = 1; i < n; i++)
+		for(j := i; j > 0 && a[j].z < a[j-1].z; j--)
+			(a[j], a[j-1]) = (a[j-1], a[j]);
+	r: list of ref Lyr;
+	for(i = n-1; i >= 0; i--)
+		r = a[i] :: r;
+	return r;
+}
+
+paintself(dst: ref Image, b: ref Box, r: Rect, canvasbg: ref Box)
+{
+	if(b != canvasbg)
+		paintbackground(dst, b, r);
+	paintborders(dst, b, r);
+}
+
+paintcontent(dst: ref Image, b: ref Box, r, clip: Rect, canvasbg: ref Box)
+{
+	if(b.kind == Kreplaced) {
+		if(b.st.visibility == Style->Vvisible)
+			paintreplaced(dst, b, r);
+		return;
+	}
+	if(b.lines != nil) {
+		paintlines(dst, b, r.min, clip, canvasbg);
+		return;
+	}
+	for(i := 0; i < len b.kids; i++) {
+		k := b.kids[i];
+		if(k.inl || isabs(k) || islayer(k))
+			continue;
+		paintflow(dst, k, r.min, clip, canvasbg);
+	}
+}
+
+# a box in normal flow (not a layer): itself and its content
+paintflow(dst: ref Image, b: ref Box, o: Point, clip: Rect, canvasbg: ref Box)
+{
+	st := b.st;
+	if(st.opacity < 1.0) {
+		paintctx(dst, b, o, clip, canvasbg);	# a stacking context of its own
+		return;
+	}
+	r := Rect((o.x + b.x, o.y + b.y), (o.x + b.x + b.w, o.y + b.y + b.h));
+	if(r.min.y > clip.max.y || r.max.y < clip.min.y && b.kind != Kinline && !overflows(b))
+		return;
+	if(st.visibility == Style->Vvisible)
+		paintself(dst, b, r, canvasbg);
+	inner := innerclip(b, r, clip);
+	if(rectok(inner)) {
+		oclip := dst.clipr;
+		dst.clipr = inner;
+		paintcontent(dst, b, r, inner, canvasbg);
+		dst.clipr = oclip;
+	}
+	paintoutline(dst, b, r, clip);
+}
+
+# could b's content paint outside its box?
+overflows(b: ref Box): int
+{
+	return b.st.overflowy == Style->Ovisible;
+}
+
+paintoutline(dst: ref Image, b: ref Box, r, clip: Rect)
+{
+	st := b.st;
+	if(st.visibility != Style->Vvisible || st.outlinew <= 0 || st.outlines == Style->Bnone)
+		return;
+	oclip := dst.clipr;
+	dst.clipr = clip;
+	w := st.outlinew;
+	orect := r.inset(-(st.outlineoff + w));
+	edge(dst, orect, w, st.outlinec, st.outlines);
 	dst.clipr = oclip;
 }
 
@@ -1810,7 +2450,7 @@ layer(dst: ref Image, b: ref Box, o: Point, clip: Rect, canvasbg: ref Box)
 	op := b.st.opacity;
 	b.st.opacity = 1.0;	# shared styles: restore below
 	{
-		paintbox(img, b, o, lr, canvasbg);
+		paintctx(img, b, o, lr, canvasbg);
 	} exception {
 	* =>
 		;
@@ -2300,7 +2940,8 @@ paintlines(dst: ref Image, b: ref Box, o: Point, clip: Rect, canvasbg: ref Box)
 				if(f.box.st.visibility == Style->Vvisible)
 					painttext(dst, f, o);
 			Fatomic =>
-				paintbox(dst, f.box, o, clip, canvasbg);
+				if(!islayer(f.box))
+					paintflow(dst, f.box, o, clip, canvasbg);
 			}
 		}
 	}
@@ -2409,6 +3050,11 @@ findin(b: ref Box, p, o: Point): (int, ref Box)
 {
 	r := Rect((o.x + b.x, o.y + b.y), (o.x + b.x + b.w, o.y + b.y + b.h));
 	org := r.min;
+	for(pl := b.pos; pl != nil; pl = tl pl) {
+		(n, x) := findin(hd pl, p, org);
+		if(x != nil)
+			return (n, x);
+	}
 	if(b.lines != nil) {
 		for(i := 0; i < len b.lines; i++) {
 			ln := b.lines[i];
@@ -2427,6 +3073,8 @@ findin(b: ref Box, p, o: Point): (int, ref Box)
 		}
 	} else
 		for(i := len b.kids - 1; i >= 0; i--) {
+			if(isabs(b.kids[i]))
+				continue;
 			(n, x) := findin(b.kids[i], p, org);
 			if(x != nil)
 				return (n, x);
@@ -2481,6 +3129,9 @@ dumpbox(b: ref Box, ind: string, o: Point): string
 		}
 	} else
 		for(i := 0; i < len b.kids; i++)
-			s += dumpbox(b.kids[i], ind + "  ", Point(x, y));
+			if(!isabs(b.kids[i]))
+				s += dumpbox(b.kids[i], ind + "  ", Point(x, y));
+	for(pl := revboxes(b.pos); pl != nil; pl = tl pl)
+		s += dumpbox(hd pl, ind + "  ", Point(x, y));
 	return s;
 }

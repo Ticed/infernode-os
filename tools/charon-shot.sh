@@ -2,7 +2,9 @@
 #
 # charon-shot.sh — render a page with Charon headlessly and write a PNG.
 #
-#   usage: tools/charon-shot.sh <url-or-file> <out.png> [width[xheight]]
+#   usage: tools/charon-shot.sh [-o] [-d] <url-or-file> <out.png> [width[xheight]]
+#
+# -o renders with the old engine; -d prints the box tree.
 #
 # With just a width, the image is cropped to the page length; with
 # widthxheight it is exactly that viewport.
@@ -14,6 +16,8 @@
 #
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+FLAGS=""
+while [ "${1#-}" != "$1" ]; do FLAGS="$FLAGS $1"; shift; done
 SRC="$1"; OUT="$2"; W="${3:-1024}"
 [ -n "$SRC" ] && [ -n "$OUT" ] || { echo "usage: $0 <url-or-file> <out.png> [width[xheight]]" >&2; exit 2; }
 case "$(uname -s)" in
@@ -38,7 +42,7 @@ rm -f "$ROOT/$IMG"
 # The timeout is the backstop for a render that never finishes.
 LOG="$ROOT/.charonshot.$$.log"
 ( setsid -w timeout "${CHARONSHOT_TIMEOUT:-60}" "$EMU" -c1 -r"$ROOT" \
-	/dis/tests/charonshot.dis "$W" "/$IMG" "$URL" </dev/null >"$LOG" 2>&1 ) 2>/dev/null || true
+	/dis/tests/charonshot.dis $FLAGS "$W" "/$IMG" "$URL" </dev/null >"$LOG" 2>&1 ) 2>/dev/null || true
 grep -vE '^fs: fsqid|^PERF:|^Killed$' "$LOG" >&2 || true
 rm -f "$LOG" "$ROOT/$IMG.txt"
 [ -s "$ROOT/$IMG" ] || { echo "no image produced" >&2; exit 1; }
