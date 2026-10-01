@@ -1,0 +1,31 @@
+#
+# charonfs.m - a browsing session as files, at /mnt/charon.
+#
+#	ctl	write: open <url> | back | forward | reload | stop |
+#		  follow <n> | click <node> | set <node> <value> |
+#		  submit <form> [<node>] | size <w>x<h> | width <w> | scroll <y>
+#	url	the current URL
+#	title	the document's title
+#	status	loading <url> | done | error <msg>
+#	text	the rendered text, in reading order, one block per line
+#	links	<n> <url> <text>, one per line
+#	forms	<form> <node> <kind> <name> <value> [checked], one field per line;
+#		  a select's options follow it, as "\toption <value> <label> [selected]"
+#	find	write: text to look for; read: the lines of text containing it
+#	image	the viewport, rendered, as an image(6)
+#	event	one line per event, "loading <url>", "done <url>",
+#		  "error <msg>" or "stopped", from when it was opened; reads block
+#	dom/<n>/	tag attrs text style box children
+#
+# A file's contents are taken when it is opened, so a reader sees one
+# page even if another loads while it reads.
+#
+Charonfs: module
+{
+	PATH:	con "/dis/lib/web/charonfs.dis";
+
+	init:	fn(): string;
+	# serve s, mounted at mountpt; returns once it is mounted.
+	# b is the (initialised) Browser instance s came from.
+	serve:	fn(b: Browser, s: ref Browser->Session, d: ref Draw->Display, mountpt: string): string;
+};

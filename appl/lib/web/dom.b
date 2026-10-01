@@ -285,6 +285,18 @@ Doc.setattr(d: self ref Doc, n: int, name, val: string)
 	d.gen++;
 }
 
+Doc.delattr(d: self ref Doc, n: int, name: string)
+{
+	nd := d.nodes[n];
+	r: list of (string, string);
+	for(l := nd.attrs; l != nil; l = tl l)
+		if((hd l).t0 != name)
+			r = hd l :: r;
+	for(nd.attrs = nil; r != nil; r = tl r)
+		nd.attrs = hd r :: nd.attrs;
+	d.gen++;
+}
+
 Doc.settext(d: self ref Doc, n: int, s: string)
 {
 	d.nodes[n].text = s;

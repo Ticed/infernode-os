@@ -63,7 +63,17 @@ init(d: ref Display): string
 
 open(url: string, width, height: int): (ref Pg, string)
 {
-	(data, ctype, err, final) := fetchfinal(url);
+	return request(url, "GET", nil, nil, width, height);
+}
+
+request(url, method, reqctype: string, body: array of byte, width, height: int): (ref Pg, string)
+{
+	data: array of byte;
+	ctype, err, final: string;
+	if(method == "POST")
+		(data, ctype, err, final) = webfs(url, method, reqctype, body);
+	else
+		(data, ctype, err, final) = fetchfinal(url);
 	if(err != nil && data == nil)
 		return (nil, err);
 	url = final;	# a redirected page's links are relative to where it is
@@ -101,11 +111,16 @@ Pg.relayout(p: self ref Pg, width, height: int)
 	p.height = height;
 	p.env.width = width;
 	p.env.height = height;
+	p.update();
+}
+
+Pg.update(p: self ref Pg)
+{
 	p.computed = style->compute(p.doc, p.styles, p.env);
 	old := p.root;
 	p.root = layout->build(p.doc, p.computed);
 	carryimages(old, p.root);
-	layout->lay(p.root, width, height);
+	layout->lay(p.root, p.width, p.height);
 	inlinesvg(p, p.root);
 }
 
@@ -468,14 +483,14 @@ fetchfinal(url: string): (array of byte, string, string, string)
 				i++;
 			path = path[i:];	# file://host/path: the host is ignored
 		}
-		path = pctdecode(cutfrag(path));
+		path = pctdecode(cutquery(cutfrag(path)));
 		(d, c, e) := readfile(path);
 		return (d, c, e, url);
 	"data" =>
 		(d, c, e) := dataurl(rest);
 		return (d, c, e, url);
 	"http" or "https" =>
-		return webfs(url);
+		return webfs(url, "GET", nil, nil);
 	"" =>
 		(d, c, e) := readfile(url);
 		return (d, c, e, url);
@@ -493,6 +508,14 @@ splitscheme(u: string): (string, string)
 			break;
 	}
 	return ("", u);
+}
+
+cutquery(s: string): string
+{
+	for(i := 0; i < len s; i++)
+		if(s[i] == '?')
+			return s[0:i];
+	return s;
 }
 
 cutfrag(s: string): string
@@ -612,7 +635,7 @@ hexv(c: int): int
 
 # http and https through webfs (see webfs(4)): clone a connection,
 # write its URL, read its body.
-webfs(url: string): (array of byte, string, string, string)
+webfs(url, method, reqctype: string, body: array of byte): (array of byte, string, string, string)
 {
 	cfd := sys->open(WEBFS + "/clone", Sys->OREAD);
 	if(cfd == nil)
@@ -626,6 +649,14 @@ webfs(url: string): (array of byte, string, string, string)
 	ctl := sys->open(dir + "/ctl", Sys->OWRITE);
 	if(ctl == nil || sys->fprint(ctl, "url %s", url) < 0)
 		return (nil, nil, sys->sprint("webfs: %r"), url);
+	if(method != "GET") {
+		if(sys->fprint(ctl, "method %s", method) < 0 ||
+		   reqctype != nil && sys->fprint(ctl, "header Content-Type: %s", reqctype) < 0)
+			return (nil, nil, sys->sprint("webfs: %r"), url);
+		pfd := sys->open(dir + "/postbody", Sys->OWRITE);
+		if(pfd == nil || sys->write(pfd, body, len body) != len body)
+			return (nil, nil, sys->sprint("webfs postbody: %r"), url);
+	}
 	bfd := sys->open(dir + "/body", Sys->OREAD);
 	if(bfd == nil)
 		return (nil, nil, sys->sprint("%s: %r", url), url);

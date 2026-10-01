@@ -27,11 +27,14 @@ Page: module
 		errors:	list of string;	# what could not be fetched, most recent first
 
 		relayout:	fn(p: self ref Pg, width, height: int);
+		update:	fn(p: self ref Pg);	# restyle and relayout after the document changed
 		paint:	fn(p: self ref Pg, dst: ref Draw->Image, scroll: Draw->Point);
 		pageheight:	fn(p: self ref Pg): int;
 	};
 
 	open:	fn(url: string, width, height: int): (ref Pg, string);
+	# a form submission: method "GET" or "POST", body sent with ctype
+	request:	fn(url, method, ctype: string, body: array of byte, width, height: int): (ref Pg, string);
 	fetch:	fn(url: string): (array of byte, string, string);	# (data, content type, error)
 	decodeimage:	fn(data: array of byte, ctype, url: string): ref Draw->Image;
 };

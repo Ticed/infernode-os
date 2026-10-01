@@ -67,6 +67,7 @@ Dom: module
 		insert:	fn(d: self ref Doc, parent, child, before: int);	# before 0 = append
 		remove:	fn(d: self ref Doc, child: int);		# detach from parent
 		setattr:	fn(d: self ref Doc, n: int, name, val: string);
+		delattr:	fn(d: self ref Doc, n: int, name: string);
 		settext:	fn(d: self ref Doc, n: int, s: string);
 
 		attr:	fn(d: self ref Doc, n: int, name: string): string;	# "" if absent or empty: see hasattr

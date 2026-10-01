@@ -1021,3 +1021,6 @@ dis/tests/web_style_test.dis
 dis/lib/web/fonts.dis
 dis/lib/web/layout.dis
 dis/lib/web/page.dis
+dis/lib/web/browser.dis
+dis/lib/web/charonfs.dis
+dis/tests/web_browser_test.dis
