@@ -22,10 +22,25 @@ Fonts: module
 		normal:	real;		# line-height: normal, px
 		space:	real;		# width of U+0020
 		fallback:	ref Draw->Font;
+		parts:	array of ref Part;	# a web family: its faces, by unicode-range
+		next:	cyclic ref Typeface;	# the next family, for what this one lacks
 
 		width:	fn(f: self ref Typeface, s: string): real;
+		xheight:	fn(f: self ref Typeface): real;	# px: the top of "x" (the ex unit)
 		draw:	fn(f: self ref Typeface, dst: ref Draw->Image, p: Draw->Point, s: string, src: ref Draw->Image): real;	# p is on the baseline
 	};
 
+	# one face of a web font family, for the code points in ranges
+	# (pairs, inclusive; nil for all)
+	Part: adt {
+		outline:	ref OutlineFont->Face;
+		ranges:	array of int;
+	};
+
 	face:	fn(family: list of string, weight, italic: int, size: real): ref Typeface;
+
+	# @font-face: register a downloaded face (TrueType, OpenType or WOFF;
+	# family lower case) for this module instance's documents.
+	addface:	fn(family: string, weight, italic: int, ranges: array of int, data: array of byte): string;
+	clearfaces:	fn();
 };

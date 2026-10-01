@@ -45,6 +45,9 @@ OutlineFont: module {
 		# Unrounded advance width in pixels (for text layout)
 		advance:	fn(f: self ref Face, gid: int, size: real): real;
 
+		# The glyph's top (yMax), in font units; 0 if unknown (CFF)
+		ymax:	fn(f: self ref Face, gid: int): int;
+
 		# Get scaled metrics: (height, ascent, descent) in pixels
 		metrics:	fn(f: self ref Face, size: real): (int, int, int);
 	};

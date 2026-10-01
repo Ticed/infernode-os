@@ -54,6 +54,7 @@ init(d: ref Display): string
 	css->init();
 	if((err := style->init()) != nil)
 		return err;
+	style->setmetrics(fontmetrics);
 	if((err = layout->init(d)) != nil)
 		return err;
 	if(imageremap != nil)
@@ -97,9 +98,11 @@ request(url, method, reqctype: string, body: array of byte, width, height: int):
 	if((t := d.find(1, Dom->Ttitle)) != 0)
 		p.title = squash(d.textof(t));
 	loadsheets(p);
+	loadfonts(p);
 	p.computed = style->compute(d, p.styles, p.env);
 	p.root = layout->build(d, p.computed);
 	loadimages(p, p.root);
+	loadbgimages(p);
 	layout->lay(p.root, width, height);
 	inlinesvg(p, p.root);
 	return (p, nil);
@@ -114,6 +117,33 @@ Pg.relayout(p: self ref Pg, width, height: int)
 	p.env.width = width;
 	p.env.height = height;
 	p.update();
+}
+
+Pg.target(p: self ref Pg, frag: string): int
+{
+	frag = pctdecode(frag);
+	d := p.doc;
+	n := 0;
+	for(i := 1; i < d.n && n == 0; i++) {
+		nd := d.nodes[i];
+		if(nd.kind != Dom->Element)
+			continue;
+		if(d.attr(i, "id") == frag || nd.tag == Dom->Ta && d.attr(i, "name") == frag)
+			n = i;
+	}
+	if(n == 0)
+		return 0;
+	if(p.env.target != n) {
+		p.env.target = n;
+		p.update();
+	}
+	for(l := layout->boxes(p.root, n); l != nil; l = tl l) {
+		y := 0;
+		for(b := hd l; b != nil; b = b.parent)
+			y += b.y;
+		return y;
+	}
+	return 0;
 }
 
 Pg.update(p: self ref Pg)
@@ -203,6 +233,277 @@ loadsheets(p: ref Pg)
 			style->addimport(hd urls, css->parse(string data));
 		}
 		p.styles.idx = nil;
+	}
+}
+
+# ex and ch, measured in the fonts layout sets text in
+fontsm: Fonts;
+Typeface: import fontsm;
+
+fontmetrics(family: list of string, weight, italic: int, size: real): (real, real)
+{
+	if(fontsm == nil)
+		fontsm = layout->fontmod();
+	f := fontsm->face(family, weight, italic, size);
+	if(f == nil)
+		return (size/2.0, size/2.0);
+	return (f.xheight(), f.width("0"));
+}
+
+# ---- @font-face ----
+
+Fontsrc: adt {
+	family:	string;
+	weight, italic:	int;
+	ranges:	array of int;
+	url:	string;
+};
+
+# Download the faces @font-face rules describe that this document's
+# text needs (by unicode-range), in formats we read, and register them
+# with the fonts layout uses.
+loadfonts(p: ref Pg)
+{
+	fm := layout->fontmod();
+	fm->clearfaces();
+	srcs: list of ref Fontsrc;
+	for(l := p.styles.sheets; l != nil; l = tl l) {
+		(sh, nil, base) := hd l;
+		srcs = fontrules(p, sh.rules, base, srcs);
+	}
+	if(srcs == nil)
+		return;
+	used := doctext(p.doc);
+	urls: list of string;
+	keep: list of ref Fontsrc;
+	for(s := srcs; s != nil; s = tl s)
+		if(needed((hd s).ranges, used)) {
+			urls = (hd s).url :: urls;
+			keep = hd s :: keep;
+		}
+	got := fetchall(urls);
+	for(; keep != nil; keep = tl keep) {
+		f := hd keep;
+		(data, nil, err) := fetched(got, f.url);
+		if(err == nil)
+			err = fm->addface(f.family, f.weight, f.italic, f.ranges, data);
+		if(err != nil)
+			p.errors = f.url + ": " + err :: p.errors;
+	}
+}
+
+fontrules(p: ref Pg, rs: array of ref Css->Rule, base: string, acc: list of ref Fontsrc): list of ref Fontsrc
+{
+	for(i := 0; i < len rs; i++)
+		pick r := rs[i] {
+		Fontface =>
+			if((f := fontface(r.decls, base)) != nil)
+				acc = f :: acc;
+		Media =>
+			if(style->mediamatch(r.cond, p.env))
+				acc = fontrules(p, r.rules, base, acc);
+		Supports =>
+			if(style->supports(r.cond))
+				acc = fontrules(p, r.rules, base, acc);
+		Layer =>
+			acc = fontrules(p, r.rules, base, acc);
+		}
+	return acc;
+}
+
+fontface(decls: array of ref Css->Decl, base: string): ref Fontsrc
+{
+	f := ref Fontsrc(nil, 400, 0, nil, nil);
+	for(i := 0; i < len decls; i++) {
+		d := decls[i];
+		v := d.val;
+		case d.name {
+		"font-family" =>
+			f.family = "";
+			for(j := 0; j < len v; j++)
+				case v[j].kind {
+				Css->Kstring =>
+					f.family = v[j].s;
+				Css->Kident =>
+					if(f.family != "")
+						f.family += " ";
+					f.family += v[j].s;
+				}
+			f.family = lower(f.family);
+		"font-weight" =>
+			for(j := 0; j < len v; j++)
+				if(v[j].kind == Css->Knumber) {
+					f.weight = int v[j].n;
+					break;
+				} else if(v[j].kind == Css->Kident) {
+					if(v[j].s == "bold")
+						f.weight = 700;
+					break;
+				}
+		"font-style" =>
+			if(len v > 0 && v[0].kind == Css->Kident && (v[0].s == "italic" || v[0].s == "oblique"))
+				f.italic = 1;
+		"unicode-range" =>
+			f.ranges = uranges(css->tostring(v));
+		"src" =>
+			f.url = fontsrc(v, base);
+		}
+	}
+	if(f.family == nil || f.family == "" || f.url == nil)
+		return nil;
+	return f;
+}
+
+# The first url() in src whose format we read; local() faces are not
+# looked for.
+fontsrc(v: array of ref Css->Tok, base: string): string
+{
+	u: string;
+	ok := 1;
+	for(j := 0; j <= len v; j++) {
+		if(j == len v || v[j].kind == Css->Kcomma) {
+			if(u != nil && ok)
+				return style->resolveurl(base, u);
+			u = nil;
+			ok = 1;
+			continue;
+		}
+		t := v[j];
+		case t.kind {
+		Css->Kurl =>
+			u = t.s;
+		Css->Kfunction =>
+			case t.s {
+			"url" =>
+				for(k := 0; k < len t.kids; k++)
+					if(t.kids[k].kind == Css->Kstring)
+						u = t.kids[k].s;
+			"format" =>
+				fmt := "";
+				for(k := 0; k < len t.kids; k++)
+					if(t.kids[k].kind == Css->Kstring || t.kids[k].kind == Css->Kident)
+						fmt = lower(t.kids[k].s);
+				case fmt {
+				"truetype" or "opentype" or "woff" or "truetype-variations" or "opentype-variations" or "woff-variations" =>
+					;
+				* =>
+					ok = 0;	# woff2, embedded-opentype, svg, collection
+				}
+			"tech" =>
+				ok = 0;
+			}
+		}
+	}
+	return nil;
+}
+
+# "u+0460-052f, u+20b4, u+4??" as pairs; nil (everything) if unreadable
+uranges(s: string): array of int
+{
+	(nil, l) := sys->tokenize(lower(s), ", \t\n");
+	r: list of int;
+	for(; l != nil; l = tl l) {
+		t := hd l;
+		if(len t < 3 || t[0:2] != "u+")
+			return nil;
+		t = t[2:];
+		lo := 0;
+		hi := 0;
+		dash := 0;
+		for(i := 0; i < len t; i++) {
+			c := t[i];
+			d := -1;
+			if(c >= '0' && c <= '9')
+				d = c - '0';
+			else if(c >= 'a' && c <= 'f')
+				d = c - 'a' + 10;
+			if(c == '-' && !dash) {
+				dash = 1;
+				hi = 0;
+				continue;
+			}
+			if(c == '?') {
+				lo = lo*16;
+				hi = hi*16 + 15;
+				continue;
+			}
+			if(d < 0)
+				return nil;
+			if(dash)
+				hi = hi*16 + d;
+			else {
+				lo = lo*16 + d;
+				hi = hi*16 + d;
+			}
+		}
+		r = hi :: lo :: r;
+	}
+	a := array[len r] of int;
+	for(i := len a - 1; i >= 0; i--) {
+		a[i] = hd r;
+		r = tl r;
+	}
+	return a;
+}
+
+# the code points the document's text uses, as a bitmap of the BMP
+doctext(d: ref Dom->Doc): array of byte
+{
+	b := array[65536/8] of {* => byte 0};
+	for(n := 1; n < d.n; n++) {
+		nd := d.nodes[n];
+		if(nd.kind != Dom->Text)
+			continue;
+		s := nd.text;
+		for(i := 0; i < len s; i++)
+			if(s[i] < 65536)
+				b[s[i]>>3] |= byte (1 << (s[i]&7));
+	}
+	# what generated content and form controls may show
+	for(c := 16r20; c < 16r7F; c++)
+		b[c>>3] |= byte (1 << (c&7));
+	return b;
+}
+
+needed(ranges: array of int, used: array of byte): int
+{
+	if(ranges == nil)
+		return 1;
+	for(i := 0; i + 1 < len ranges; i += 2)
+		for(c := ranges[i]; c <= ranges[i+1] && c < 65536; c++)
+			if(int used[c>>3] & (1 << (c&7)))
+				return 1;
+	return 0;
+}
+
+# Background and list-style images the computed styles ask for.
+loadbgimages(p: ref Pg)
+{
+	layout->clearbgimages();
+	urls: list of string;
+	c := p.computed;
+	for(i := 0; i < len c.st; i++) {
+		if(c.st[i] != nil && c.st[i].display != Style->Dnone)
+			for(l := layout->bgurls(c.st[i]); l != nil; l = tl l)
+				urls = hd l :: urls;
+		if(c.before != nil && c.before[i] != nil)
+			for(lb := layout->bgurls(c.before[i]); lb != nil; lb = tl lb)
+				urls = hd lb :: urls;
+		if(c.after != nil && c.after[i] != nil)
+			for(la := layout->bgurls(c.after[i]); la != nil; la = tl la)
+				urls = hd la :: urls;
+	}
+	if(urls == nil)
+		return;
+	got := fetchall(urls);
+	for(; got != nil; got = tl got) {
+		g := hd got;
+		if(g.err != nil) {
+			p.errors = g.url + ": " + g.err :: p.errors;
+			continue;
+		}
+		if((img := decodeimage(g.data, g.ctype, g.url)) != nil)
+			layout->setbgimage(g.url, img);
 	}
 }
 

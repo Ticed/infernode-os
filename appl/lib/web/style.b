@@ -1168,7 +1168,7 @@ cmpfeature(nm, op: string, val: array of ref Tok, env: ref Env): int
 		have := real env.width;
 		if(nm == "height" || nm == "device-height")
 			have = real env.height;
-		(ok, l) := length(val, ref Ctx(16.0, 16.0, env, 0));
+		(ok, l) := length(val, ref Ctx(16.0, 16.0, env, 0, nil, 400, 0));
 		if(!ok || l.kind != Lpx)
 			return 0;
 		return cmp(have, op, l.px);
@@ -1259,7 +1259,7 @@ supportsdecl(v: array of ref Tok): int
 	if(prefix(nm, "--"))
 		return 1;
 	s := St.new();
-	ctx := ref Ctx(16.0, 16.0, ref Env(1024, 768, 1.0, 0, 0, 0, 0, 0, 0), 0);
+	ctx := ref Ctx(16.0, 16.0, ref Env(1024, 768, 1.0, 0, 0, 0, 0, 0, 0), 0, nil, 400, 0);
 	lh := longhands(nm, trim(v[2:]));
 	if(lh == nil)
 		return 0;
@@ -1690,7 +1690,7 @@ St.new(): ref St
 		kw(Lnormal), kw(Lnormal),
 		nil, nil, nil, nil, nil, 0,
 		nogrid, nogrid, nogrid, nogrid, nil,
-		0, 0, 2.0, 2.0, 0, 0,
+		0, 0, 0.0, 0.0, 0, 0,	# border-spacing: 0 (the UA sheet gives <table> 2px)
 		0, a, 3, Bnone, Ccurrent,
 		0, nil, "auto", 1, 1, 0, Ccurrent,
 		nil, 0);
@@ -1748,6 +1748,11 @@ anon(parent: ref St, display: int): ref St
 {
 	s := inherit(parent);
 	s.display = display;
+	# initial border and outline widths are medium, but their styles are
+	# none: used widths 0, as fixup makes them for an element
+	s.bt = s.br = s.bb = s.bl = 0;
+	s.outlinew = 0;
+	s.colrulew = 0;
 	return s;
 }
 
@@ -1775,7 +1780,18 @@ Ctx: adt {
 	rootfs:	real;	# for rem units
 	env:	ref Env;
 	pct:	int;		# percentages allowed (unused)
+	fam:	list of string;	# the font, for ex and ch units
+	weight, italic:	int;
 };
+
+# (x-height, width of "0") in px for a font, from whoever lays the text
+# out; without it, CSS's fallbacks of 0.5em
+fontmetrics: ref fn(family: list of string, weight, italic: int, size: real): (real, real);
+
+setmetrics(f: ref fn(family: list of string, weight, italic: int, size: real): (real, real))
+{
+	fontmetrics = f;
+}
 
 # a matched declaration with its cascade key
 Md: adt {
@@ -1803,7 +1819,7 @@ compute(d: ref Doc, s: ref Styles, env: ref Env): ref Computed
 	root := d.root();
 	if(root == 0)
 		return c;
-	ctx := ref Ctx(16.0, 16.0, env, 0);
+	ctx := ref Ctx(16.0, 16.0, env, 0, nil, 400, 0);
 	share := array[Nshare] of list of (string, ref Shared);
 	filters := array[d.n] of array of int;	# filter for each element's children
 	n := root;
@@ -1905,7 +1921,7 @@ styleof(m: ref M, idx: ref Index, n: int, parent: ref St, ctx: ref Ctx, c: ref C
 		nmd++;
 	}
 	if((sa := d.attr(n, "style")) != nil) {
-		decls := css->parsedecls(sa);
+		decls := absurls(css->parsedecls(sa), d.url);	# relative to the document
 		for(k := 0; k < len decls; k++) {
 			mds = ref Md(tierof(unlayered, decls[k].important, unlayered), Tstyleattr, k, decls[k]) :: mds;
 			nmd++;
@@ -2078,17 +2094,31 @@ cascade(mds: array of ref Md, parent: ref St, ctx: ref Ctx): ref St
 	}
 	if(custom != nil)
 		st.vars = setvars(st.vars, custom);
-	# font size first, for em units
+	# the font first, for em, ex and ch units; a font-size in those
+	# units is the parent's
 	ctx.fs = pfs;
+	pst := parent;
+	if(pst == nil)
+		pst = initial;
+	ctx.fam = pst.family;
+	ctx.weight = pst.weight;
+	ctx.italic = pst.fontstyle != FSnormal;
 	for(i = 0; i < len mds; i++) {
 		nm := mds[i].decl.name;
-		if(nm == "font-size" || nm == "font" || nm == "all")
+		if(nm == "font-size" || nm == "font" || nm == "all" ||
+		   nm == "font-family" || nm == "font-weight" || nm == "font-style")
 			applydecl(st, mds[i].decl, parent, ctx);
 	}
 	ctx.fs = st.fontsize;
+	ctx.fam = st.family;
+	ctx.weight = st.weight;
+	ctx.italic = st.fontstyle != FSnormal;
 	for(i = 0; i < len mds; i++) {
 		nm := mds[i].decl.name;
-		if(nm != "font-size" && !prefix(nm, "--"))
+		if(nm == "font")	# its line-height's em is this element's font size
+			applyonly(st, mds[i].decl, parent, ctx, "line-height");
+		else if(nm != "font-size" && nm != "font-family" && nm != "font-weight" &&
+		   nm != "font-style" && !prefix(nm, "--"))
 			applydecl(st, mds[i].decl, parent, ctx);
 	}
 	return st;
@@ -2217,6 +2247,22 @@ applydecl(st: ref St, d: ref Decl, parent: ref St, ctx: ref Ctx)
 	}
 }
 
+# One longhand of a shorthand declaration.
+applyonly(st: ref St, d: ref Decl, parent: ref St, ctx: ref Ctx, only: string)
+{
+	val := d.val;
+	if(hasvar(val)) {
+		ok: int;
+		(ok, val) = subvars(val, nil, st.vars, nil);
+		if(!ok)
+			return;	# applydecl has made it unset already
+		val = trim(val);
+	}
+	for(l := longhands(d.name, val); l != nil; l = tl l)
+		if((hd l).t0 == only)
+			apply(st, only, (hd l).t1, parent, ctx);
+}
+
 # CSS-wide keywords.
 wide(st: ref St, nm, k: string, parent: ref St)
 {
@@ -2340,7 +2386,14 @@ unit(n: real, u: string, ctx: ref Ctx): (int, real)
 	"px" => return (1, n);
 	"em" => return (1, n*ctx.fs);
 	"rem" => return (1, n*ctx.rootfs);
-	"ex" or "ch" or "cap" => return (1, n*ctx.fs*0.5);
+	"ex" or "cap" or "ch" =>
+		if(fontmetrics != nil) {
+			(xh, zw) := fontmetrics(ctx.fam, ctx.weight, ctx.italic, ctx.fs);
+			if(u == "ch")
+				return (1, n*zw);
+			return (1, n*xh);
+		}
+		return (1, n*ctx.fs*0.5);
 	"ic" => return (1, n*ctx.fs);
 	"lh" => return (1, n*ctx.fs*1.2);
 	"rlh" => return (1, n*ctx.rootfs*1.2);
@@ -2713,7 +2766,7 @@ channels(t: ref Tok): (int, array of (int, real), (int, real))
 				return (0, nil, alpha);
 			c = (Knumber, 0.0);
 		Kfunction =>
-			e := calcexpr(x, ref Ctx(16.0, 16.0, ref Env(1024, 768, 1.0, 0, 0, 0, 0, 0, 0), 0));
+			e := calcexpr(x, ref Ctx(16.0, 16.0, ref Env(1024, 768, 1.0, 0, 0, 0, 0, 0, 0), 0, nil, 400, 0));
 			if(e == nil)
 				return (0, nil, alpha);
 			(nil, p, pc) := fold(e);
@@ -3514,8 +3567,9 @@ rev(l: list of ref Tok): list of ref Tok
 joinl(l: list of ref Tok, dflt: string, acc: list of ref Tok): list of ref Tok
 {
 	if(l == nil) {
-		if(dflt == "0%")
-			return ref Tok(Kpercent, nil, 0.0, 0, nil) :: acc;
+		if(dflt == "0%")	# a position: both axes, as one value would centre the other
+			return ref Tok(Kpercent, nil, 0.0, 0, nil) :: ref Tok(Kws, " ", 0.0, 0, nil) ::
+				ref Tok(Kpercent, nil, 0.0, 0, nil) :: acc;
 		return ref Tok(Kident, dflt, 0.0, 0, nil) :: acc;
 	}
 	ws := ref Tok(Kws, " ", 0.0, 0, nil);

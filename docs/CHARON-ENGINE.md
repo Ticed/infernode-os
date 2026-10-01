@@ -236,6 +236,28 @@ which the engine uses as the document's base) and the response header
 `webfs`: neither touches the network. Still to come: the HTTP cache. See
 webfs(4).
 
+## Conformance, measured
+
+Charon is judged by how pages look against references, with the tools
+in `tools/ref` (see its README):
+
+- **web-platform-tests reftests**, test and reference both rendered by
+  Charon and compared pixel for pixel. Over the CSS directories
+  (CSS2, flexbox, grid, selectors, cascade, values, color, backgrounds,
+  text, display, position, sizing, box, tables, lists, variables,
+  nesting, fonts; 12,911 judged, 982 more need script): 37.8% at the
+  first run, **46.4%** now. `tools/ref/wptcmp.py` compares two runs;
+  every regression is looked at before a change goes in.
+- **Live sites against Chromium** (scripts off), through a caching
+  mirror so both render the same bytes: pypi.org's home page went from
+  47.8% of pixels differing to 6.6%. `tools/ref/boxdiff.py` lists the
+  elements whose boxes differ from Chromium's, in document order, which
+  is how most of these were found: the first wrong height explains the
+  rest.
+
+The live sites reachable from the development sandbox are few (its
+egress policy); the mirror replays whatever has been fetched.
+
 ## The JavaScript seam
 
 There is no JS engine in this plan. The design leaves exactly one place

@@ -95,7 +95,7 @@ render(disp: ref Display, img: ref Draw->Image, url, out: string, w, h: int): st
 		if(p == nil)
 			return err;
 		img.draw(img.r, disp.white, nil, (0, 0));
-		p.paint(img, Point(0, 0));
+		p.paint(img, Point(0, fragscroll(p, url)));
 		fd := sys->create(out, Sys->OWRITE, 8r644);
 		if(fd == nil)
 			return sys->sprint("create: %r");
@@ -140,4 +140,13 @@ webfsup(): int
 {
 	(ok, d) := sys->stat("/mnt/web/clone");
 	return ok >= 0 && d.dtype == 'M';
+}
+
+# a URL's #fragment scrolls to its target, as in the window
+fragscroll(p: ref Pg, url: string): int
+{
+	for(i := 0; i < len url; i++)
+		if(url[i] == '#')
+			return p.target(url[i+1:]);
+	return 0;
 }

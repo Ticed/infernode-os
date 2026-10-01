@@ -335,6 +335,18 @@ Face.advance(f: self ref Face, gid: int, size: real): real
 	return real outline.width * size / real fd.upem;
 }
 
+Face.ymax(f: self ref Face, gid: int): int
+{
+	fd := getfacedata(f);
+	if(fd == nil || !fd.isttf || gid < 0 || gid >= fd.nglyphs ||
+	   fd.locaoffs == nil || gid + 1 >= len fd.locaoffs)
+		return 0;
+	off := fd.glyfoff + fd.locaoffs[gid];
+	if(off >= fd.glyfoff + fd.locaoffs[gid+1] || off + 10 > len fd.ttfdata)
+		return 0;
+	return geti16be(fd.ttfdata, off + 8);
+}
+
 Face.metrics(f: self ref Face, size: real): (int, int, int)
 {
 	fd := getfacedata(f);

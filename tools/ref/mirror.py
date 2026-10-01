@@ -88,7 +88,8 @@ class Mirror(http.server.BaseHTTPRequestHandler):
         s = re.sub(r'((?:href|src|action|poster|data)\s*=\s*["\']?)/(?!/)', lambda m: m.group(1) + '/' + host + '/', s, flags=re.I)
         s = re.sub(r'(url\(\s*["\']?)/(?!/)', lambda m: m.group(1) + '/' + host + '/', s, flags=re.I)
         s = re.sub(r'(srcset\s*=\s*["\'])([^"\']*)', lambda m: m.group(1) + re.sub(r'(^|,\s*)/(?!/)', lambda n: n.group(1) + '/' + host + '/', m.group(2)), s, flags=re.I)
-        s = re.sub(r'https?://([A-Za-z0-9.-]+\.[A-Za-z]{2,})(?=[/"\'\s)?#]|$)', lambda m: here + m.group(1), s)
+        # not www.w3.org: those are namespace names and DTDs, not fetches
+        s = re.sub(r'https?://(?!www\.w3\.org)([A-Za-z0-9.-]+\.[A-Za-z]{2,})(?=[/"\'\s)?#]|$)', lambda m: here + m.group(1), s)
         s = re.sub(r'(["\'(=\s])//([A-Za-z0-9.-]+\.[A-Za-z]{2,})/', lambda m: m.group(1) + here + m.group(2) + '/', s)
         return s.encode('utf-8', errors='surrogateescape')
 

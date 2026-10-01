@@ -60,6 +60,7 @@ init(nil: ref Draw->Context, argv: list of string)
 		case hd argv {
 		"-o" => old = 1;
 		"-d" => dumpboxes = 1;
+		"-b" => dumpboxes = 2;
 		}
 		argv = tl argv;
 	}
@@ -181,9 +182,14 @@ newengine(disp: ref Display, w, h, crop: int, outimg, url: string): string
 	img := disp.newimage(Rect((0, 0), (w, h)), Draw->XRGB32, 0, Draw->White);
 	if(img == nil)
 		return sys->sprint("cannot allocate %dx%d image: %r", w, h);
-	p.paint(img, Point(0, 0));
-	if(dumpboxes)
+	scroll := 0;
+	if(!crop)
+		scroll = fragscroll(p, url);
+	p.paint(img, Point(0, scroll));
+	if(dumpboxes == 1)
 		sys->fprint(sys->fildes(2), "%s", layout->dump(p.root));
+	else if(dumpboxes == 2)
+		elementboxes(p);
 	t2 := sys->millisec();
 	fd := sys->create(outimg, Sys->OWRITE, 8r644);
 	if(fd == nil)
@@ -209,4 +215,100 @@ webfsup(): int
 {
 	(ok, d) := sys->stat("/mnt/web/clone");
 	return ok >= 0 && d.dtype == 'M';
+}
+
+# Each element's border box (the union of its boxes), by its path,
+# as tools/ref/boxdiff.py compares with Chromium's:
+#	B /html[1]/body[1]/div[2] x y w h
+elementboxes(p: ref Pg)
+{
+	d := p.doc;
+	out := sys->fildes(1);
+	paths := array[d.n] of string;
+	for(n := 1; n < d.n; n++) {
+		nd := d.nodes[n];
+		if(nd.kind != Dom->Element)
+			continue;
+		k := 1;
+		for(s := nd.prev; s != 0; s = d.nodes[s].prev)
+			if(d.nodes[s].kind == Dom->Element && d.nodes[s].name == nd.name)
+				k++;
+		pp := "";
+		if(nd.parent > 1)
+			pp = paths[nd.parent];
+		paths[n] = pp + "/" + nd.name + "[" + string k + "]";
+		r: Rect;
+		got := 0;
+		for(l := layout->boxes(p.root, n); l != nil; l = tl l) {
+			b := hd l;
+			x := 0;
+			y := 0;
+			for(a := b; a != nil; a = a.parent) {
+				x += a.x;
+				y += a.y;
+			}
+			br := Rect((x, y), (x + b.w, y + b.h));
+			if(b.kind == Layout->Kinline && b.w == 0 && b.h == 0) {
+				(ok, ir) := inlinerect(b);
+				if(!ok)
+					continue;
+				br = ir;
+			}
+			if(!got)
+				r = br;
+			else
+				r = r.combine(br);
+			got = 1;
+		}
+		if(got)
+			sys->fprint(out, "B %s %d %d %d %d\n", paths[n], r.min.x, r.min.y, r.dx(), r.dy());
+		else
+			sys->fprint(out, "B %s none\n", paths[n]);
+	}
+}
+
+# An inline box's extent: its fragments in the lines of the block
+# that holds them.
+inlinerect(b: ref Layout->Box): (int, Rect)
+{
+	r: Rect;
+	got := 0;
+	for(a := b.parent; a != nil; a = a.parent) {
+		if(a.lines == nil)
+			continue;
+		ax := 0;
+		ay := 0;
+		for(c := a; c != nil; c = c.parent) {
+			ax += c.x;
+			ay += c.y;
+		}
+		for(i := 0; i < len a.lines; i++) {
+			ln := a.lines[i];
+			for(j := 0; j < len ln.frags; j++) {
+				f := ln.frags[j];
+				if(f.box != b)
+					continue;
+				fr := Rect((ax + f.x, ay + ln.y + f.y), (ax + f.x + f.w, ay + ln.y + f.y + f.h));
+				if(f.h == 0)
+					fr.max.y = ay + ln.y + ln.h;
+				if(!got)
+					r = fr;
+				else
+					r = r.combine(fr);
+				got = 1;
+			}
+		}
+		if(got)
+			break;
+	}
+	return (got, r);
+}
+
+# a URL's #fragment scrolls to its target, as in the window
+fragscroll(p: ref Pg, url: string): int
+{
+	for(i := 0; i < len url; i++)
+		if(url[i] == '#')
+			return p.target(url[i+1:]);
+	return 0;
 }

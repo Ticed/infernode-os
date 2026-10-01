@@ -12,6 +12,8 @@ include "draw.m";
 include "outlinefont.m";
 	ofont: OutlineFont;
 	Face: import ofont;
+include "filter.m";
+	inflate: Filter;
 include "web/fonts.m";
 
 # bitmap fallbacks for what the outlines lack (CJK, symbols), by size
@@ -111,7 +113,48 @@ family(nm: string): int
 	return -1;
 }
 
+# Ahem, the test suites' font, as if installed
+AHEM: con "/fonts/ttf/ahem/Ahem.ttf";
+ahemloaded := 0;
+
 face(families: list of string, weight, italic: int, size: real): ref Typeface
+{
+	if(size < 1.0)
+		size = 1.0;
+	if(!ahemloaded) {
+		for(l := families; l != nil; l = tl l)
+			if(hd l == "ahem") {
+				ahemloaded = 1;
+				if((d := readall(AHEM)) != nil)
+					addface("ahem", 400, 0, nil, d);
+				break;
+			}
+	}
+	# the first family this document has downloaded, then what stands
+	# in for the rest
+	for(l := families; l != nil; l = tl l) {
+		parts := webparts(hd l, weight, italic);
+		if(parts == nil)
+			continue;
+		h := ((hashstr(hd l) + weight + italic*7 + int (size*4.0)) & 16r7FFFFFFF) % Nfaces;
+		for(cl := cache[h]; cl != nil; cl = tl cl) {
+			c := hd cl;
+			if(c.size == size && c.parts == parts)
+				return c;
+		}
+		o := parts[0].outline;
+		asc := real o.ascent * size / real o.upem;
+		desc := real -o.descent * size / real o.upem;
+		f := ref Typeface(o, size, asc, desc, asc + desc, 0.0, fallback(size), parts, nil);
+		f.next = shipped(tl l, weight, italic, size);
+		f.space = advance(f, ' ');
+		cache[h] = f :: cache[h];
+		return f;
+	}
+	return shipped(families, weight, italic, size);
+}
+
+shipped(families: list of string, weight, italic: int, size: real): ref Typeface
 {
 	fam := Serif;
 	for(l := families; l != nil; l = tl l)
@@ -124,12 +167,10 @@ face(families: list of string, weight, italic: int, size: real): ref Typeface
 		i += 1;
 	if(italic)
 		i += 2;
-	if(size < 1.0)
-		size = 1.0;
 	h := (i*131 + int (size*4.0)) % Nfaces;
 	for(cl := cache[h]; cl != nil; cl = tl cl) {
 		c := hd cl;
-		if(c.size == size && c.outline == loaded[i])
+		if(c.size == size && c.parts == nil && c.outline == loaded[i])
 			return c;
 	}
 	o := loadface(i);
@@ -139,24 +180,61 @@ face(families: list of string, weight, italic: int, size: real): ref Typeface
 		return nil;
 	asc := real o.ascent * size / real o.upem;
 	desc := real -o.descent * size / real o.upem;
-	f := ref Typeface(o, size, asc, desc, asc + desc, 0.0, fallback(size));
+	f := ref Typeface(o, size, asc, desc, asc + desc, 0.0, fallback(size), nil, nil);
 	f.space = advance(f, ' ');
 	cache[h] = f :: cache[h];
 	return f;
 }
 
+# The face and glyph that draw c: this family's faces whose range
+# covers it, the next family's, else (nil, -1) for the bitmap fallback.
+glyph(f: ref Typeface, c: int): (ref OutlineFont->Face, int)
+{
+	for(; f != nil; f = f.next) {
+		if(f.parts != nil) {
+			for(i := 0; i < len f.parts; i++) {
+				p := f.parts[i];
+				if(!inranges(p.ranges, c))
+					continue;
+				if((g := p.outline.lookup(c)) >= 0)
+					return (p.outline, g);
+			}
+		} else if((g := f.outline.lookup(c)) >= 0)
+			return (f.outline, g);
+	}
+	return (nil, -1);
+}
+
+inranges(r: array of int, c: int): int
+{
+	if(r == nil)
+		return 1;
+	for(i := 0; i + 1 < len r; i += 2)
+		if(c >= r[i] && c <= r[i+1])
+			return 1;
+	return 0;
+}
+
 advance(f: ref Typeface, c: int): real
 {
-	g := f.outline.lookup(c);
-	if(g < 0) {
+	(o, g) := glyph(f, c);
+	if(o == nil) {
 		if(f.fallback != nil) {
 			s := "";
 			s[0] = c;
 			return real f.fallback.width(s);
 		}
-		g = 0;
+		return f.outline.advance(0, f.size);
 	}
-	return f.outline.advance(g, f.size);
+	return o.advance(g, f.size);
+}
+
+Typeface.xheight(f: self ref Typeface): real
+{
+	(o, g) := glyph(f, 'x');
+	if(o != nil && (y := o.ymax(g)) > 0)
+		return real y * f.size / real o.upem;
+	return f.size / 2.0;	# CSS's fallback: 0.5em
 }
 
 Typeface.width(f: self ref Typeface, s: string): real
@@ -172,8 +250,8 @@ Typeface.draw(f: self ref Typeface, dst: ref Image, p: Point, s: string, src: re
 	x := real p.x;
 	for(i := 0; i < len s; i++) {
 		c := s[i];
-		g := f.outline.lookup(c);
-		if(g < 0 && f.fallback != nil) {
+		(o, g) := glyph(f, c);
+		if(o == nil && f.fallback != nil) {
 			t := "";
 			t[0] = c;
 			# bitmap fallback: align its baseline with ours
@@ -181,9 +259,253 @@ Typeface.draw(f: self ref Typeface, dst: ref Image, p: Point, s: string, src: re
 			x += real f.fallback.width(t);
 			continue;
 		}
-		if(c != ' ' && c != ' ')
-			f.outline.drawglyph(g, f.size, dst, Point(int x, p.y), src);
-		x += f.outline.advance(g, f.size);
+		if(o == nil) {
+			o = f.outline;
+			g = 0;
+		}
+		if(c != ' ' && c != ' ')
+			o.drawglyph(g, f.size, dst, Point(int x, p.y), src);
+		x += o.advance(g, f.size);
 	}
 	return x - real p.x;
+}
+
+# ---- web fonts ----
+
+Web: adt {
+	family:	string;
+	weight:	int;
+	italic:	int;
+	part:	ref Part;
+};
+
+webfaces: list of ref Web;
+
+clearfaces()
+{
+	webfaces = nil;
+	ahemloaded = 0;
+}
+
+readall(f: string): array of byte
+{
+	fd := sys->open(f, Sys->OREAD);
+	if(fd == nil)
+		return nil;
+	(ok, d) := sys->fstat(fd);
+	if(ok < 0)
+		return nil;
+	b := array[int d.length] of byte;
+	n := 0;
+	while(n < len b && (k := sys->read(fd, b[n:], len b - n)) > 0)
+		n += k;
+	return b[0:n];
+}
+
+addface(family: string, weight, italic: int, ranges: array of int, data: array of byte): string
+{
+	if(len data >= 4 && string data[0:4] == "wOFF") {
+		err: string;
+		(data, err) = woff(data);
+		if(err != nil)
+			return err;
+	} else if(len data >= 4 && string data[0:4] == "wOF2")
+		return "WOFF2 is not supported";
+	(o, err) := ofont->open(data, "ttf");
+	if(o == nil)
+		return "cannot read the font: " + err;
+	webfaces = ref Web(family, weight, italic, ref Part(o, ranges)) :: webfaces;
+	return nil;
+}
+
+# The faces of a downloaded family for a weight and slant, by the CSS
+# font matching rules, simplified: the right slant if there is one,
+# then the nearest weight (heavier first for bold, lighter for light).
+# Every face of that weight and slant comes, one per unicode-range.
+webparts(family: string, weight, italic: int): array of ref Part
+{
+	best := -1;
+	bestit := -1;
+	for(l := webfaces; l != nil; l = tl l) {
+		w := hd l;
+		if(w.family != family)
+			continue;
+		it := w.italic == italic;
+		if(bestit < 0 || it && !bestit || it == bestit && closer(weight, w.weight, best)) {
+			best = w.weight;
+			bestit = it;
+		}
+	}
+	if(best < 0)
+		return nil;
+	r: list of ref Part;
+	for(l = webfaces; l != nil; l = tl l) {
+		w := hd l;
+		if(w.family == family && w.weight == best && (w.italic == italic) == bestit)
+			r = w.part :: r;
+	}
+	a := array[len r] of ref Part;
+	for(i := 0; r != nil; r = tl r)
+		a[i++] = hd r;
+	return a;
+}
+
+# is weight w a better match for want than the best so far?
+closer(want, w, best: int): int
+{
+	if(best < 0)
+		return 1;
+	dw := w - want;
+	db := best - want;
+	if(dw == db)
+		return 0;
+	if(dw == 0)
+		return 1;
+	if(db == 0)
+		return 0;
+	# CSS: above 500 look heavier first, below 400 lighter first
+	if(want > 500) {
+		if((dw > 0) != (db > 0))
+			return dw > 0;
+	} else if(want < 400) {
+		if((dw < 0) != (db < 0))
+			return dw < 0;
+	}
+	if(dw < 0)
+		dw = -dw;
+	if(db < 0)
+		db = -db;
+	return dw < db;
+}
+
+hashstr(s: string): int
+{
+	h := 0;
+	for(i := 0; i < len s; i++)
+		h = (h*31 + s[i]) & 16r7FFFFFF;
+	return h;
+}
+
+# WOFF 1.0: the sfnt's tables, each zlib-compressed if that made it
+# smaller; put them back into an sfnt.
+woff(d: array of byte): (array of byte, string)
+{
+	if(len d < 44)
+		return (nil, "short WOFF");
+	flavor := be32(d, 4);
+	ntab := be16(d, 12);
+	if(44 + ntab*20 > len d)
+		return (nil, "bad WOFF directory");
+	tabs := array[ntab] of array of byte;
+	tags := array[ntab] of int;
+	sums := array[ntab] of int;
+	size := 12 + 16*ntab;
+	for(i := 0; i < ntab; i++) {
+		e := 44 + i*20;
+		tags[i] = be32(d, e);
+		off := be32(d, e+4);
+		clen := be32(d, e+8);
+		olen := be32(d, e+12);
+		sums[i] = be32(d, e+16);
+		if(off < 0 || clen < 0 || off + clen > len d)
+			return (nil, "bad WOFF table");
+		t := d[off:off+clen];
+		if(clen < olen) {
+			t = unzlib(t, olen);
+			if(t == nil)
+				return (nil, "bad WOFF compression");
+		}
+		tabs[i] = t;
+		size += (len t + 3) & ~3;
+	}
+	o := array[size] of {* => byte 0};
+	put32(o, 0, flavor);
+	put16(o, 4, ntab);
+	es := 1;
+	lg := 0;
+	while(es*2 <= ntab) {
+		es *= 2;
+		lg++;
+	}
+	put16(o, 6, es*16);
+	put16(o, 8, lg);
+	put16(o, 10, ntab*16 - es*16);
+	off := 12 + 16*ntab;
+	for(i = 0; i < ntab; i++) {
+		e := 12 + i*16;
+		put32(o, e, tags[i]);
+		put32(o, e+4, sums[i]);
+		put32(o, e+8, off);
+		put32(o, e+12, len tabs[i]);
+		o[off:] = tabs[i];
+		off += (len tabs[i] + 3) & ~3;
+	}
+	return (o, nil);
+}
+
+unzlib(data: array of byte, size: int): array of byte
+{
+	if(inflate == nil) {
+		inflate = load Filter Filter->INFLATEPATH;
+		if(inflate == nil)
+			return nil;
+		inflate->init();
+	}
+	out := array[size] of byte;
+	n := 0;
+	in := 0;
+	rq := inflate->start("z");
+	for(;;) {
+		pick m := <-rq {
+		Start =>
+			;
+		Fill =>
+			k := len data - in;
+			if(k > len m.buf)
+				k = len m.buf;
+			m.buf[0:] = data[in:in+k];
+			in += k;
+			m.reply <-= k;
+		Result =>
+			if(n + len m.buf > len out) {
+				m.reply <-= -1;
+				return nil;
+			}
+			out[n:] = m.buf;
+			n += len m.buf;
+			m.reply <-= 0;
+		Info =>
+			;
+		Finished =>
+			if(n != size)
+				return nil;
+			return out;
+		Error =>
+			return nil;
+		}
+	}
+}
+
+be16(d: array of byte, i: int): int
+{
+	return int d[i]<<8 | int d[i+1];
+}
+
+be32(d: array of byte, i: int): int
+{
+	return int d[i]<<24 | int d[i+1]<<16 | int d[i+2]<<8 | int d[i+3];
+}
+
+put16(d: array of byte, i, v: int)
+{
+	d[i] = byte (v>>8);
+	d[i+1] = byte v;
+}
+
+put32(d: array of byte, i, v: int)
+{
+	d[i] = byte (v>>24);
+	d[i+1] = byte (v>>16);
+	d[i+2] = byte (v>>8);
+	d[i+3] = byte v;
 }

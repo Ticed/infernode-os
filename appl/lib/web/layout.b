@@ -32,6 +32,11 @@ include "web/layout.m";
 
 display: ref Display;
 
+fontmod(): Fonts
+{
+	return fonts;
+}
+
 init(d: ref Display): string
 {
 	sys = load Sys Sys->PATH;
@@ -238,6 +243,14 @@ fixkids(box: ref Box, kids: list of ref Box): array of ref Box
 {
 	if(box.kind == Kinline)
 		return toarray(kids);
+	# anonymous table objects (CSS 2.2 §17.2.1)
+	if(box.kind == Ktable)
+		return toarray(tablekids(box, kids));
+	if(isrowgroup(box))
+		return toarray(wrapruns(box, kids, isrow, Krow, Style->Dtablerow));
+	if(box.kind == Krow)
+		return toarray(wrapruns(box, kids, iscell, Kcell, Style->Dtablecell));
+	kids = orphans(box, kids);
 	nblock := 0;
 	ninline := 0;
 	for(l := kids; l != nil; l = tl l)
@@ -264,6 +277,116 @@ fixkids(box: ref Box, kids: list of ref Box): array of ref Box
 	}
 	r = flushrun(box, run, r);
 	return toarray(rev(r));
+}
+
+isrow(k: ref Box): int
+{
+	return k.kind == Krow;
+}
+
+iscell(k: ref Box): int
+{
+	return k.kind == Kcell;
+}
+
+# a table's own children: row groups, rows, captions, columns
+istablepart(k: ref Box): int
+{
+	return k.kind == Krow || isrowgroup(k) || iscolumn(k) || k.st.display == Style->Dtablecaption;
+}
+
+# Runs of children that are not what the parent holds (rows in a row
+# group, cells in a row) go in an anonymous box that is; runs of
+# nothing but white space go.
+wrapruns(parent: ref Box, kids: list of ref Box, ok: ref fn(k: ref Box): int, kind, display: int): list of ref Box
+{
+	r: list of ref Box;
+	run: list of ref Box;
+	for(l := kids; l != nil; l = tl l) {
+		k := hd l;
+		if(ok(k)) {
+			r = flushwrap(parent, run, r, kind, display);
+			run = nil;
+			r = k :: r;
+		} else
+			run = k :: run;
+	}
+	r = flushwrap(parent, run, r, kind, display);
+	return rev(r);
+}
+
+flushwrap(parent: ref Box, run, r: list of ref Box, kind, display: int): list of ref Box
+{
+	if(run == nil || blankrun(run))
+		return r;
+	a := newbox(kind, 0, 0, style->anon(parent.st, display));
+	kids := rev(run);
+	case kind {
+	Krow =>
+		kids = wrapruns(a, kids, iscell, Kcell, Style->Dtablecell);
+	Kcell =>
+		a.kids = fixkids(a, kids);
+		return a :: r;
+	}
+	a.kids = toarray(kids);
+	return a :: r;
+}
+
+tablekids(t: ref Box, kids: list of ref Box): list of ref Box
+{
+	r: list of ref Box;
+	run: list of ref Box;
+	for(l := kids; l != nil; l = tl l) {
+		k := hd l;
+		if(istablepart(k)) {
+			r = flushwrap(t, run, r, Krow, Style->Dtablerow);
+			run = nil;
+			r = k :: r;
+		} else
+			run = k :: run;
+	}
+	r = flushwrap(t, run, r, Krow, Style->Dtablerow);
+	return rev(r);
+}
+
+# Rows, cells and row groups outside a table get an anonymous one.
+orphans(parent: ref Box, kids: list of ref Box): list of ref Box
+{
+	any := 0;
+	for(l := kids; l != nil; l = tl l)
+		if(isinternal(hd l))
+			any = 1;
+	if(!any)
+		return kids;
+	r: list of ref Box;
+	run: list of ref Box;
+	for(l = kids; l != nil; l = tl l) {
+		k := hd l;
+		if(isinternal(k) || run != nil && k.kind == Ktext && blankrun(k :: nil))
+			run = k :: run;
+		else {
+			r = flushtable(parent, run, r);
+			run = nil;
+			r = k :: r;
+		}
+	}
+	r = flushtable(parent, run, r);
+	return rev(r);
+}
+
+isinternal(k: ref Box): int
+{
+	return k.kind == Krow || k.kind == Kcell || isrowgroup(k);
+}
+
+flushtable(parent: ref Box, run, r: list of ref Box): list of ref Box
+{
+	if(run == nil)
+		return r;
+	t := newbox(Ktable, 0, 0, style->anon(parent.st, Style->Dtable));
+	# cells straight in the table: tablekids wraps them in a row
+	t.kids = toarray(tablekids(t, rev(run)));
+	return t :: r;
 }
 
 # end an inline run: wrapped in an anonymous block, unless it is only
@@ -2561,15 +2684,18 @@ spanattr(s: string, max: int): int
 }
 
 # column (min, max) widths, and percentages (-1 if none)
-tcolumns(t: ref Tgrid, tw: int): (array of int, array of int, array of real)
+tcolumns(t: ref Tgrid, tw: int): (array of int, array of int, array of real, array of int)
 {
 	n := t.ncols;
 	mn := array[n] of {* => 0};
 	mx := array[n] of {* => 0};
 	pct := array[n] of {* => -1.0};
+	fixw := array[n] of {* => 0};	# has a specified width
 	for(i := 0; i < n; i++)
-		if(t.colw[i] > 0)
+		if(t.colw[i] > 0) {
 			mn[i] = mx[i] = t.colw[i];
+			fixw[i] = 1;
+		}
 	# single-column cells first, then spanning ones spread their excess
 	for(pass := 1; pass <= 2; pass++)
 		for(cl := t.cells; cl != nil; cl = tl cl) {
@@ -2591,6 +2717,8 @@ tcolumns(t: ref Tgrid, tw: int): (array of int, array of int, array of real)
 					cmx = cmn = w;
 				else
 					cmx = cmn;
+				if(c.cs == 1)
+					fixw[c.c] = 1;
 			}
 			if(c.cs == 1) {
 				if(cmn > mn[c.c])
@@ -2614,7 +2742,7 @@ tcolumns(t: ref Tgrid, tw: int): (array of int, array of int, array of real)
 	for(i = 0; i < n; i++)
 		if(mx[i] < mn[i])
 			mx[i] = mn[i];
-	return (mn, mx, pct);
+	return (mn, mx, pct, fixw);
 }
 
 spread(a: array of int, c0, n, extra: int, weights: array of int)
@@ -2645,7 +2773,7 @@ tspacing(b: ref Box): (int, int)
 tableintrinsic(b: ref Box): (int, int)
 {
 	t := tgrid(curdoc, b);
-	(mn, mx, nil) := tcolumns(t, 0);
+	(mn, mx, nil, nil) := tcolumns(t, 0);
 	(sx, nil) := tspacing(b);
 	smn := sx * (t.ncols + 1);
 	smx := smn;
@@ -2668,7 +2796,7 @@ laytable(l: ref L, b: ref Box, cbw, cbh: int)
 	n := t.ncols;
 	(sx, sy) := tspacing(b);
 	cw := b.w - hextra(b);	# the width the table's grid gets
-	(mn, mx, pct) := tcolumns(t, cw);
+	(mn, mx, pct, fixw) := tcolumns(t, cw);
 	summn := sx * (n + 1);
 	summx := summn;
 	for(i := 0; i < n; i++) {
@@ -2691,7 +2819,7 @@ laytable(l: ref L, b: ref Box, cbw, cbh: int)
 	colw := array[n] of int;
 	avail := cw - sx * (n + 1);
 	if(st.tablefixed && !autow) {
-		# fixed layout: specified widths, the rest shared equally
+		# fixw layout: specified widths, the rest shared equally
 		fixedw := 0;
 		nfree := 0;
 		for(i = 0; i < n; i++) {
@@ -2723,21 +2851,39 @@ laytable(l: ref L, b: ref Box, cbw, cbh: int)
 			tmn += mn[i];
 			tmx += mx[i];
 		}
-		if(avail <= tmn || tmx == tmn) {
+		if(avail <= tmn) {
 			for(i = 0; i < n; i++)
 				colw[i] = mn[i];
-		} else if(avail <= tmx) {
+		} else if(avail <= tmx && tmx > tmn) {
 			f := real (avail - tmn) / real (tmx - tmn);
 			for(i = 0; i < n; i++)
 				colw[i] = mn[i] + ir(f * real (mx[i] - mn[i]));
 		} else {
-			# wider than the content wants: share the rest by max width
+			# wider than the content wants: the rest goes to the auto
+			# columns by their max width, and to the others only if there
+			# are none (CSS Tables 3 §3.9.3, simplified)
 			for(i = 0; i < n; i++)
 				colw[i] = mx[i];
-			if(tmx > 0)
-				spread(colw, 0, n, avail - tmx, mx);
-			else if(n > 0)
-				spread(colw, 0, n, avail - tmx, array[n] of {* => 1});
+			wt := array[n] of {* => 0};
+			nauto := 0;
+			for(i = 0; i < n; i++)
+				if(!fixw[i] && pct[i] < 0.0) {
+					wt[i] = mx[i];
+					nauto++;
+				}
+			if(nauto == 0)
+				wt = mx;
+			tw := 0;
+			for(i = 0; i < n; i++)
+				tw += wt[i];
+			if(tw == 0) {
+				# no widths to go by: equally, among the auto ones if any
+				for(i = 0; i < n; i++)
+					if(nauto == 0 || !fixw[i] && pct[i] < 0.0)
+						wt[i] = 1;
+			}
+			if(n > 0)
+				spread(colw, 0, n, avail - tmx, wt);
 		}
 	}
 	# fix rounding so the columns fill the table exactly
@@ -3366,6 +3512,7 @@ inlineintrinsic(b: ref Box): (int, int)
 			line += it.w;
 			word += it.w;
 		Iatomic =>
+			edges(it.box, 0);	# its padding and borders count; % ones are 0 here
 			(kmn, kmx) := intrinsic(it.box);
 			if(real kmn > mn)
 				mn = real kmn;
@@ -3377,6 +3524,7 @@ inlineintrinsic(b: ref Box): (int, int)
 			line = 0.0;
 			word = 0.0;
 		Ifloat =>
+			edges(it.box, 0);
 			(kmn, kmx) := intrinsic(it.box);
 			if(real kmn > mn)
 				mn = real kmn;
@@ -3653,8 +3801,12 @@ layinline(l: ref L, b: ref Box, cw: int, fc: ref Fctx, ox, oy: int): int
 			ln.open = (it.box, ln.x, 1) :: ln.open;
 			opened = it.box :: opened;
 			ln.x += it.w;
+			if(it.w > 0.0)
+				ln.content = 1;	# margin, border or padding: not a phantom line (CSS 2.2 §9.4.2)
 		Iclose =>
 			ln.x += it.w;
+			if(it.w > 0.0)
+				ln.content = 1;
 			ln.frags = span(ln, it.box, 1) :: ln.frags;
 			opened = removebox(opened, it.box);
 		Ispace =>
@@ -3663,6 +3815,8 @@ layinline(l: ref L, b: ref Box, cw: int, fc: ref Fctx, ox, oy: int): int
 			ln.frags = textfrag(ln, it) :: ln.frags;
 			ln.x += it.w;
 			ln.spaces++;
+			if(!collapsible(it.box.st))
+				ln.content = 1;	# preserved white space is content
 		Iword =>
 			if(it.box.kind == Kmarker && !it.box.st.listinside) {
 				fr := textfrag(ln, it);
@@ -3727,7 +3881,9 @@ layinline(l: ref L, b: ref Box, cw: int, fc: ref Fctx, ox, oy: int): int
 			ln.content = 0;
 		}
 	}
-	if(ln.content || ln.frags != nil && hascontent(ln))
+	# a last line of nothing but white space and empty inline boxes is
+	# a phantom: no height (the inline boxes' edges were content above)
+	if(ln.content)
 		lines = endline(f, ln, x0, first, 1) :: lines;
 	else
 		placepending(f, ln);
@@ -3746,14 +3902,6 @@ endline(f: ref Ifc, ln: ref Ln, x0, first, forced: int): ref Line
 	f.y += line.h;
 	placepending(f, ln);
 	return line;
-}
-
-hascontent(ln: ref Ln): int
-{
-	for(l := ln.frags; l != nil; l = tl l)
-		if((hd l).kind == Fspan)
-			return 1;
-	return 0;
 }
 
 collapsible(st: ref St): int
@@ -4051,11 +4199,31 @@ layatomic(l: ref L, k: ref Box, cbw: int)
 	layblock(l, k, cbw, -1, nil, 0, 0);
 	# baseline: the last line box's, else the bottom margin edge
 	k.base = k.mt + k.h;
-	if(k.kind != Kreplaced && k.st.overflowy == Style->Ovisible) {
+	if(k.kind == Ktable) {
+		# an inline table's is its first row's (CSS 2.2 §10.8.1)
+		(ok, by) := firstbaseline(k);
+		if(ok)
+			k.base = k.mt + by;
+	} else if(k.kind != Kreplaced && k.st.overflowy == Style->Ovisible) {
 		(ok, by) := lastbaseline(k);
 		if(ok)
 			k.base = k.mt + by;
 	}
+}
+
+firstbaseline(b: ref Box): (int, int)
+{
+	if(b.lines != nil && len b.lines > 0)
+		return (1, b.lines[0].base);
+	for(i := 0; i < len b.kids; i++) {
+		k := b.kids[i];
+		if(k.inl || k.st.display == Style->Dtablecaption)
+			continue;
+		(ok, by) := firstbaseline(k);
+		if(ok)
+			return (1, k.y + by);
+	}
+	return (0, 0);
 }
 
 lastbaseline(b: ref Box): (int, int)
@@ -4414,7 +4582,7 @@ paintbackground(dst: ref Image, b: ref Box, r: Rect)
 	}
 	for(i = len st.bg - 1; i >= 0; i--)
 		if(st.bg[i].img != nil)
-			paintgradient(dst, b, r, st.bg[i]);
+			paintbg(dst, b, r, st.bg[i]);
 }
 
 # an outer shadow shows only outside the border box (Backgrounds 3 §7.1)
@@ -4604,6 +4772,136 @@ edge(dst: ref Image, r: Rect, w, c, sty: int)
 	side(dst, Rect((r.min.x, r.max.y - w), r.max), w, c, sty, 0, 0);
 	side(dst, Rect((r.min.x, r.min.y + w), (r.min.x + w, r.max.y - w)), w, c, sty, 1, 1);
 	side(dst, Rect((r.max.x - w, r.min.y + w), (r.max.x, r.max.y - w)), w, c, sty, 1, 0);
+}
+
+# ---- background images ----
+
+bgimages: list of (string, ref Image);
+
+setbgimage(url: string, img: ref Image)
+{
+	for(l := bgimages; l != nil; l = tl l)
+		if((hd l).t0 == url)
+			return;
+	bgimages = (url, img) :: bgimages;
+}
+
+clearbgimages()
+{
+	bgimages = nil;
+}
+
+bgurl(t: ref Css->Tok): string
+{
+	if(t.kind == Css->Kurl)
+		return t.s;
+	if(t.kind == Css->Kfunction && t.s == "url")
+		for(k := 0; k < len t.kids; k++)
+			if(t.kids[k].kind == Css->Kstring)
+				return t.kids[k].s;
+	return nil;
+}
+
+bgurls(st: ref St): list of string
+{
+	r: list of string;
+	for(i := 0; i < len st.bg; i++)
+		if(st.bg[i].img != nil && (u := bgurl(st.bg[i].img)) != nil)
+			r = u :: r;
+	if(st.listimage != nil && (lu := bgurl(st.listimage)) != nil)
+		r = lu :: r;
+	return r;
+}
+
+paintbg(dst: ref Image, b: ref Box, r: Rect, bg: ref Style->Bg)
+{
+	if(bg.img.kind == Css->Kfunction && bg.img.s != "url") {
+		paintgradient(dst, b, r, bg);
+		return;
+	}
+	u := bgurl(bg.img);
+	if(u == nil)
+		return;
+	img: ref Image;
+	for(l := bgimages; l != nil; l = tl l)
+		if((hd l).t0 == u) {
+			img = (hd l).t1;
+			break;
+		}
+	if(img == nil)
+		return;
+	pad := Rect((r.min.x + b.bl, r.min.y + b.bt), (r.max.x - b.br, r.max.y - b.bb));
+	cbox := Rect((pad.min.x + b.pl, pad.min.y + b.pt), (pad.max.x - b.pr, pad.max.y - b.pb));
+	area := pad;	# background-origin
+	case bg.origin {
+	Style->BOXborder =>	area = r;
+	Style->BOXcontent =>	area = cbox;
+	}
+	clip := r;	# background-clip
+	case bg.clip {
+	Style->BOXpadding =>	clip = pad;
+	Style->BOXcontent =>	clip = cbox;
+	}
+	aw := area.dx();
+	ah := area.dy();
+	iw := img.r.dx();
+	ih := img.r.dy();
+	if(iw <= 0 || ih <= 0)
+		return;
+	# background-size
+	w := real iw;
+	h := real ih;
+	if(bg.sizex.kind == Style->Lcontent && (bg.sizex.px == -1.0 || bg.sizex.px == -2.0)) {
+		sx := real aw / real iw;
+		sy := real ah / real ih;
+		k := sx;
+		if(bg.sizex.px == -1.0 && sy > sx || bg.sizex.px == -2.0 && sy < sx)
+			k = sy;	# cover: the larger scale; contain: the smaller
+		w = real iw * k;
+		h = real ih * k;
+	} else {
+		xa := bg.sizex.isauto();
+		ya := bg.sizey.isauto();
+		if(!xa)
+			w = bg.sizex.resolve(real aw);
+		if(!ya)
+			h = bg.sizey.resolve(real ah);
+		if(!xa && ya)
+			h = w * real ih / real iw;
+		else if(xa && !ya)
+			w = h * real iw / real ih;
+	}
+	tw := int w;	# int rounds
+	th := int h;
+	if(tw <= 0 || th <= 0)
+		return;
+	if(tw != iw || th != ih)
+		img = scale(img, tw, th);
+	if(img == nil)
+		return;
+	# background-position: a percentage of the room left over
+	px := area.min.x + int (bg.posx.px + bg.posx.pct * real (aw - tw) / 100.0);
+	py := area.min.y + int (bg.posy.px + bg.posy.pct * real (ah - th) / 100.0);
+	x0 := px;
+	x1 := px + 1;
+	if(bg.rx != Style->Rnorepeat) {
+		while(x0 > clip.min.x)
+			x0 -= tw;
+		x1 = clip.max.x;
+	}
+	y0 := py;
+	y1 := py + 1;
+	if(bg.ry != Style->Rnorepeat) {
+		while(y0 > clip.min.y)
+			y0 -= th;
+		y1 = clip.max.y;
+	}
+	for(y := y0; y < y1; y += th)
+		for(x := x0; x < x1; x += tw) {
+			(t, ok) := Rect((x, y), (x + tw, y + th)).clip(clip);
+			if(ok)
+				dst.draw(t, img, nil, img.r.min.add(t.min.sub(Point(x, y))));
+		}
 }
 
 # linear-gradient() and radial-gradient() backgrounds, as bands of colour
@@ -4893,7 +5191,7 @@ paintspan(dst: ref Image, f: ref Frag, o: Point)
 		dst.draw(r, colorimg(st.bgcolor), nil, (0, 0));
 	for(i := len st.bg - 1; i >= 0; i--)
 		if(st.bg[i].img != nil)
-			paintgradient(dst, b, r, st.bg[i]);
+			paintbg(dst, b, r, st.bg[i]);
 	side(dst, Rect(r.min, (r.max.x, r.min.y + b.bt)), b.bt, st.bct, st.bst, 0, 1);
 	side(dst, Rect((r.min.x, r.max.y - b.bb), r.max), b.bb, st.bcb, st.bsb, 0, 0);
 	if(f.first)

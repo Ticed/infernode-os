@@ -116,6 +116,7 @@ TARG=\
 	web_css_test.dis\
 	web_style_test.dis\
 	web_browser_test.dis\
+	web_fonts_test.dis\
 	tls_crypto_test.dis\
 	tls_live_test.dis\
 	tls_protocol_test.dis\
@@ -191,6 +192,15 @@ TARG=\
 MODULES=
 
 SYSMODULES=\
+	web/dom.m\
+	web/html.m\
+	web/css.m\
+	web/style.m\
+	web/fonts.m\
+	web/layout.m\
+	web/page.m\
+	web/browser.m\
+	web/charonfs.m\
 	arg.m\
 	cowfs.m\
 	dial.m\

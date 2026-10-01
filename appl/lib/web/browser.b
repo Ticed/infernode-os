@@ -255,25 +255,7 @@ loader(s: ref Session, g: int, url, method, ctype: string, body: array of byte, 
 # Make the element the fragment names the :target, and return its y.
 target(pg: ref Pg, frag: string): int
 {
-	frag = pctdecode(frag);
-	d := pg.doc;
-	n := 0;
-	for(i := 1; i < d.n && n == 0; i++) {
-		nd := d.nodes[i];
-		if(nd.kind != Dom->Element)
-			continue;
-		if(d.attr(i, "id") == frag || nd.tag == Dom->Ta && d.attr(i, "name") == frag)
-			n = i;
-	}
-	if(n == 0)
-		return 0;
-	if(pg.env.target != n) {
-		pg.env.target = n;
-		pg.update();
-	}
-	for(l := layout->boxes(pg.root, n); l != nil; l = tl l)
-		return absy(hd l);
-	return 0;
+	return pg.target(frag);
 }
 
 absy(b: ref Box): int

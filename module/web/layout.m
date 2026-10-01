@@ -20,6 +20,12 @@ Layout: module
 	PATH:	con "/dis/lib/web/layout.dis";
 
 	init:	fn(d: ref Draw->Display): string;
+	fontmod:	fn(): Fonts;	# the Fonts instance layout measures with, for @font-face
+	# background and list-style images: what a style asks for, and the
+	# decoded images to paint, by absolute URL
+	bgurls:	fn(st: ref Style->St): list of string;
+	setbgimage:	fn(url: string, img: ref Draw->Image);
+	clearbgimages:	fn();
 
 	# box kinds (the formatting a box establishes or takes part in)
 	Kblock, Kinline, Ktext, Kbr, Kreplaced, Kflex, Kgrid, Ktable, Krow, Kcell, Kmarker: con iota;

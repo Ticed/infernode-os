@@ -20,6 +20,8 @@ Style: module
 	UACSS:	con "/lib/web/html.css";
 
 	init:	fn(): string;
+	# how ex and ch are measured: (x-height, width of "0") in px
+	setmetrics:	fn(f: ref fn(family: list of string, weight, italic: int, size: real): (real, real));
 
 	# the media and environment a document is styled for
 	Env: adt {

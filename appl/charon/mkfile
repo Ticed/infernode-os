@@ -95,6 +95,10 @@ $ROOT/dis/wm/charon.dis:	web.dis
 
 charon.dis:	$MODULES $SYS_MODULE
 
+# the new engine's browser: its interfaces are the web modules'
+WEBMODULES=dom.m html.m css.m style.m fonts.m layout.m page.m browser.m charonfs.m
+web.dis:	${WEBMODULES:%=$ROOT/module/web/%}
+
 img.dis:	img.b $MODULES $SYS_MODULE
 	limbo $LIMBOFLAGS -c -gw img.b
 
