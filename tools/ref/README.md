@@ -15,8 +15,18 @@ git clone --depth 1 --filter=blob:none --sparse https://github.com/web-platform-
 tools/ref/wptrun.py -j 3 wpt css/css-flexbox css/CSS2
 ```
 
-Tests that need script to reach their final state are counted as
-`needs-js`, apart from the pass rate: Charon has no script engine.
+Tests with any script are counted as `needs-js`, apart from the pass
+rate, even when their pixels happen to match: Charon has no script
+engine, and a pass without the script would be luck.  A pass whose
+rendering is one flat colour is marked `blank` in `results.txt`: test
+and reference showing nothing proves little, and when a fix makes such a
+page draw something, the "regression" is a false pass coming to light.
+
+`wptcmp.py before after` lists what changed between two runs, regressions
+first, noting those that were blank passes.  `wptdiff.py wptroot test`
+renders one test and its reference: test | reference | differences.
+`wptserve.py wptroot` serves the tree as wptrun does (XHTML as XHTML,
+`?pipe=status(N)`), for looking at tests by hand.
 
 **Real pages: Chromium.** `compare.py` renders a URL in headless Chromium
 (scripts off, which is the fair comparison) and in Charon, and writes
@@ -28,6 +38,14 @@ rasterisation but not misplaced boxes).
 tools/ref/mirror.py &          # https://<host>/<path> as http://127.0.0.1:8780/<host>/<path>
 tools/ref/compare.py -o /tmp/live http://127.0.0.1:8780/pypi.org/
 ```
+
+`boxdiff.py url` lists the elements whose border boxes differ from
+Chromium's, in document order: the first wrong one usually explains the
+rest.  `acid2.py wptroot` checks Acid2 against Chromium.
+
+The reference Chromium is given Charon's typefaces (`fonts.conf`: the
+generic families and Arial, Times and Courier as DejaVu), so text width
+measures layout, not the choice of font.
 
 `mirror.py` fetches live sites on the host and caches them, rewriting
 their URLs to point back at itself, so both browsers render the same

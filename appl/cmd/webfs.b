@@ -33,7 +33,7 @@ implement Webfs;
 # Fetches run concurrently: a request that needs a response waits for
 # its own connection's fetch, not for anyone else's.  All connections
 # share one cookie jar, so webfs is one browsing session.  Bodies sent
-# gzip or deflate encoded arrive decoded.
+# gzip, deflate or brotli encoded arrive decoded.
 #
 
 include "sys.m";
@@ -329,7 +329,7 @@ needfetch(c: ref ConnState, m: ref Tmsg): int
 	if(!has_ua)
 		hdrs = Header("User-Agent", useragent) :: hdrs;
 	if(!has_ae)
-		hdrs = Header("Accept-Encoding", "gzip, deflate") :: hdrs;
+		hdrs = Header("Accept-Encoding", "gzip, deflate, br") :: hdrs;
 	spawn fetcher(c, c.gen, c.method, c.url, hdrs, c.postdata);
 	return 1;
 }

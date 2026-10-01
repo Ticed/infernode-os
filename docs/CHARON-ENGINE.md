@@ -242,18 +242,29 @@ Charon is judged by how pages look against references, with the tools
 in `tools/ref` (see its README):
 
 - **web-platform-tests reftests**, test and reference both rendered by
-  Charon and compared pixel for pixel. Over the CSS directories
-  (CSS2, flexbox, grid, selectors, cascade, values, color, backgrounds,
-  text, display, position, sizing, box, tables, lists, variables,
-  nesting, fonts; 12,911 judged, 982 more need script): 37.8% at the
-  first run, **46.4%** now. `tools/ref/wptcmp.py` compares two runs;
-  every regression is looked at before a change goes in.
+  Charon and compared pixel for pixel, over the CSS directories (CSS2,
+  flexbox, grid, selectors, cascade, values, color, backgrounds, text,
+  display, position, sizing, box, tables, lists, variables, nesting,
+  fonts): 37.8% at the first run, **46.7%** of 12,626 now.  The count is
+  strict: the 1,267 tests with any script are left out even when their
+  pixels match, since a pass without the script would be luck, and a
+  pass where nothing renders is flagged as proving little.
+  `tools/ref/wptcmp.py` compares two runs; every regression is looked at
+  before a change goes in, and most so far turned out to be such false
+  passes coming to light once a fix made the page draw.
+- **Acid2** renders correctly: `tools/ref/acid2.py` finds only
+  anti-aliasing differences from Chromium.  (Its wptserve wrapper,
+  `reftest.html`, needs `<iframe>` and script.)
 - **Live sites against Chromium** (scripts off), through a caching
   mirror so both render the same bytes: pypi.org's home page went from
-  47.8% of pixels differing to 6.6%. `tools/ref/boxdiff.py` lists the
-  elements whose boxes differ from Chromium's, in document order, which
-  is how most of these were found: the first wrong height explains the
-  rest.
+  47.8% of pixels differing to about 7%, the rest mostly antialiasing.
+  `tools/ref/boxdiff.py` lists the elements whose boxes differ from
+  Chromium's, in document order, which is how most of these were found:
+  the first wrong height explains the rest.
+
+Not done yet, and visible in the failures: vertical writing modes, bidi
+reordering, complex-script shaping (Arabic joining, Indic), GPOS kerning
+(the legacy kern table is used), sub-pixel layout, iframes.
 
 The live sites reachable from the development sandbox are few (its
 egress policy); the mirror replays whatever has been fetched.

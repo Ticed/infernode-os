@@ -4,11 +4,12 @@
 const { chromium } = require('playwright');
 (async () => {
 	const [url, w, h] = process.argv.slice(2);
-	const b = await chromium.launch();
+	const b = await chromium.launch({ env: { ...process.env, FONTCONFIG_FILE: require('path').join(__dirname, 'fonts.conf') } });
 	const p = await (await b.newContext({ javaScriptEnabled: false, deviceScaleFactor: 1,
 		viewport: { width: +w, height: +h } })).newPage();
 	await p.goto(url, { waitUntil: 'load', timeout: 30000 }).catch(e => {});
-	const lines = await p.evaluate(() => {
+	// a page that navigates (meta refresh) destroys the context: settle, retry
+	const run = () => p.evaluate(() => {
 		const out = [];
 		const walk = (el, path) => {
 			for (const c of el.children) {
@@ -28,6 +29,11 @@ const { chromium } = require('playwright');
 		walk(document, '');
 		return out;
 	});
+	let lines;
+	for (let i = 0; ; i++) {
+		try { lines = await run(); break; }
+		catch (e) { if (i >= 3) throw e; await p.waitForLoadState('load').catch(() => {}); await p.waitForTimeout(300); }
+	}
 	console.log(lines.join('\n'));
 	await b.close();
 })();

@@ -25,6 +25,7 @@ Page: module
 		title:	string;
 		width, height:	int;	# viewport
 		errors:	list of string;	# what could not be fetched, most recent first
+		objects:	list of (int, int, string);	# <object>s that render (see Layout->setobjects)
 
 		relayout:	fn(p: self ref Pg, width, height: int);
 		update:	fn(p: self ref Pg);	# restyle and relayout after the document changed

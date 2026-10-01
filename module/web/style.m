@@ -210,6 +210,7 @@ Style: module
 		caret:	int;
 		vars:	ref Vars;	# custom properties
 		sid:	int;		# serial number, for style sharing
+		nokern:	int;		# font-kerning: none (or "kern" off)
 
 		new:	fn(): ref St;		# initial values
 	};

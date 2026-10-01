@@ -26,7 +26,8 @@ const { chromium } = require('playwright');
 		process.exit(2);
 	}
 	const [url, out, w, h] = args;
-	const opts = {};
+	// the faces Charon has (see fonts.conf)
+	const opts = { env: { ...process.env, FONTCONFIG_FILE: require('path').join(__dirname, 'fonts.conf') } };
 	if (process.env.CHROMIUM_PATH) opts.executablePath = process.env.CHROMIUM_PATH;
 	const browser = await chromium.launch(opts);
 	const ctx = await browser.newContext({

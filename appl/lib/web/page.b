@@ -80,7 +80,7 @@ request(url, method, reqctype: string, body: array of byte, width, height: int):
 	url = final;	# a redirected page's links are relative to where it is
 	charset := param(ctype, "charset");
 	p := ref Pg(url, nil, Styles.new(), nil, nil,
-		ref Env(width, height, 1.0, 0, 0, 0, 0, 0, 0), nil, width, height, nil);
+		ref Env(width, height, 1.0, 0, 0, 0, 0, 0, 0), nil, width, height, nil, nil);
 	if(prefix(lower(ctype), "text/plain")) {
 		p.doc = html->parsestring("<pre>" + escape(string data) + "</pre>", url);
 	} else if(prefix(lower(ctype), "image/")) {
@@ -100,6 +100,8 @@ request(url, method, reqctype: string, body: array of byte, width, height: int):
 	loadsheets(p);
 	loadfonts(p);
 	p.computed = style->compute(d, p.styles, p.env);
+	findobjects(p);
+	layout->setobjects(p.objects);
 	p.root = layout->build(d, p.computed);
 	loadimages(p, p.root);
 	loadbgimages(p);
@@ -150,6 +152,7 @@ Pg.update(p: self ref Pg)
 {
 	p.computed = style->compute(p.doc, p.styles, p.env);
 	old := p.root;
+	layout->setobjects(p.objects);
 	p.root = layout->build(p.doc, p.computed);
 	carryimages(old, p.root);
 	layout->lay(p.root, p.width, p.height);
@@ -384,10 +387,11 @@ fontsrc(v: array of ref Css->Tok, base: string): string
 					if(t.kids[k].kind == Css->Kstring || t.kids[k].kind == Css->Kident)
 						fmt = lower(t.kids[k].s);
 				case fmt {
-				"truetype" or "opentype" or "woff" or "truetype-variations" or "opentype-variations" or "woff-variations" =>
+				"truetype" or "opentype" or "woff" or "woff2" or
+				"truetype-variations" or "opentype-variations" or "woff-variations" or "woff2-variations" =>
 					;
 				* =>
-					ok = 0;	# woff2, embedded-opentype, svg, collection
+					ok = 0;	# embedded-opentype, svg, collection
 				}
 			"tech" =>
 				ok = 0;
@@ -476,6 +480,43 @@ needed(ranges: array of int, used: array of byte): int
 	return 0;
 }
 
+# <object data=...>: fetch each, and keep those whose data is an image
+# (or a document, shown as an empty frame until there are nested
+# documents).  The rest fall back to their contents: data that fails to
+# load, or is of a type we cannot show (HTML 4.01 §13.3.1; Acid2).
+findobjects(p: ref Pg)
+{
+	d := p.doc;
+	urls: list of (int, string);
+	for(n := 1; n < d.n; n++) {
+		nd := d.nodes[n];
+		if(nd.kind != Dom->Element || nd.tag != Dom->Tobject || nd.ns != Dom->HTML)
+			continue;
+		if((data := d.attr(n, "data")) == nil)
+			continue;
+		urls = (n, style->resolveurl(d.url, data)) :: urls;
+	}
+	if(urls == nil)
+		return;
+	ul: list of string;
+	for(l := urls; l != nil; l = tl l)
+		ul = (hd l).t1 :: ul;
+	got := fetchall(ul);
+	r: list of (int, int, string);
+	for(l = urls; l != nil; l = tl l) {
+		(n, u) := hd l;
+		(data, ctype, err) := fetched(got, u);
+		if(err != nil)
+			continue;
+		ct := lower(ctype);
+		if(decodeimage(data, ctype, u) != nil)
+			r = (n, Layout->Oimage, u) :: r;
+		else if(prefix(ct, "text/html") || prefix(ct, "application/xhtml") || prefix(ct, "text/plain"))
+			r = (n, Layout->Odoc, u) :: r;
+	}
+	p.objects = r;
+}
+
 # Background and list-style images the computed styles ask for.
 loadbgimages(p: ref Pg)
 {
@@ -529,6 +570,8 @@ loadimages(p: ref Pg, root: ref Box)
 			(data, ctype, err) := fetched(got, b.url);
 			if(err == nil)
 				img = decodeimage(data, ctype, b.url);
+			if(img != nil && (prefix(lower(ctype), "image/svg") || looksvg(data)))
+				svgsrc = (b.url, data) :: svgsrc;
 			else
 				p.errors = b.url + ": " + err :: p.errors;
 			cache = (b.url, img) :: cache;
@@ -543,6 +586,86 @@ loadimages(p: ref Pg, root: ref Box)
 }
 
 # Inline <svg>: the subtree as markup, rendered at the box's size.
+# SVG images' source, by URL, to draw again at another size
+svgsrc: list of (string, array of byte);
+
+# The SVG with its root element's size set to w by h: the content is
+# then drawn to fit, through a viewBox (one made from the old size if it
+# had none).
+svgresize(data: array of byte, w, h: int): array of byte
+{
+	s := string data;
+	i := 0;
+	for(;;) {
+		i = strindex(s, "<svg", i);
+		if(i < 0 || i + 4 >= len s)
+			return data;
+		c := s[i+4];
+		if(c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '>' || c == '/')
+			break;
+		i += 4;
+	}
+	e := strindex(s, ">", i);
+	if(e < 0)
+		return data;
+	tag := s[i+4:e];
+	ow, oh: string;
+	(tag, ow) = dropattr(tag, "width");
+	(tag, oh) = dropattr(tag, "height");
+	vb := "";
+	if(strindex(tag, "viewBox", 0) < 0 && strindex(tag, "viewbox", 0) < 0) {
+		# "65px" converts as 65; a percentage gives no box to fit
+		if(ow != nil && oh != nil && ow[len ow-1] != '%' && oh[len oh-1] != '%')
+			vb = sys->sprint(" viewBox=\"0 0 %g %g\"", real ow, real oh);
+	}
+	n := s[0:i] + sys->sprint("<svg width=\"%d\" height=\"%d\"%s", w, h, vb) + tag + s[e:];
+	return array of byte n;
+}
+
+# remove attribute nm="..." from a tag's text; its value
+dropattr(tag, nm: string): (string, string)
+{
+	for(i := 0; (i = strindex(tag, nm, i)) >= 0; i += len nm) {
+		if(i > 0 && tag[i-1] != ' ' && tag[i-1] != '\t' && tag[i-1] != '\n' && tag[i-1] != '\r')
+			continue;
+		j := i + len nm;
+		while(j < len tag && (tag[j] == ' ' || tag[j] == '\t'))
+			j++;
+		if(j >= len tag || tag[j] != '=')
+			continue;
+		j++;
+		while(j < len tag && (tag[j] == ' ' || tag[j] == '\t'))
+			j++;
+		if(j >= len tag)
+			return (tag, nil);
+		q := tag[j];
+		v0, v1, end: int;
+		if(q == '"' || q == '\'') {
+			v0 = j + 1;
+			for(v1 = v0; v1 < len tag && tag[v1] != q; v1++)
+				;
+			end = v1 + 1;
+		} else {
+			v0 = j;
+			for(v1 = v0; v1 < len tag && tag[v1] != ' ' && tag[v1] != '>' && tag[v1] != '/'; v1++)
+				;
+			end = v1;
+		}
+		if(end > len tag)
+			end = len tag;
+		return (tag[0:i] + tag[end:], tag[v0:v1]);
+	}
+	return (tag, nil);
+}
+
+strindex(s, t: string, from: int): int
+{
+	for(i := from; i + len t <= len s; i++)
+		if(s[i:i+len t] == t)
+			return i;
+	return -1;
+}
+
 inlinesvg(p: ref Pg, b: ref Box)
 {
 	if(b.kind == Layout->Kreplaced && b.url == nil && b.node != 0) {
@@ -553,6 +676,17 @@ inlinesvg(p: ref Pg, b: ref Box)
 			if(w > 0 && h > 0 && (b.img == nil || b.img.r.dx() != w || b.img.r.dy() != h))
 				b.img = decodeimage(array of byte svgmarkup(p.doc, b.node, w, h), "image/svg+xml", nil);
 		}
+	} else if(b.kind == Layout->Kreplaced && b.url != nil && b.img != nil) {
+		# an SVG image: drawn at the size it is shown, not scaled
+		w := b.w - b.bl - b.br - b.pl - b.pr;
+		h := b.h - b.bt - b.bb - b.pt - b.pb;
+		if(w > 0 && h > 0 && (b.img.r.dx() != w || b.img.r.dy() != h))
+			for(sl := svgsrc; sl != nil; sl = tl sl)
+				if((hd sl).t0 == b.url) {
+					if((img := decodeimage(svgresize((hd sl).t1, w, h), "image/svg+xml", nil)) != nil)
+						b.img = img;
+					break;
+				}
 	}
 	for(i := 0; i < len b.kids; i++)
 		inlinesvg(p, b.kids[i]);

@@ -45,6 +45,9 @@ OutlineFont: module {
 		# Unrounded advance width in pixels (for text layout)
 		advance:	fn(f: self ref Face, gid: int, size: real): real;
 
+		# Kerning between two glyphs ('kern' table), in font units
+		kern:	fn(f: self ref Face, left, right: int): int;
+
 		# The glyph's top (yMax), in font units; 0 if unknown (CFF)
 		ymax:	fn(f: self ref Face, gid: int): int;
 

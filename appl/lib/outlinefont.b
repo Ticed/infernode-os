@@ -112,6 +112,8 @@ FaceData: adt {
 	locaoffs:	array of int;	# per-glyph byte offset into glyf table
 	ttfcmap:	array of int;	# charcode → GID
 	ttfwidths:	array of int;	# per-glyph advance width (font units)
+	kernpairs:	int;		# 'kern' format 0: offset of the sorted pairs in ttfdata
+	nkern:	int;		# and how many
 };
 
 # Module state
@@ -345,6 +347,29 @@ Face.ymax(f: self ref Face, gid: int): int
 	if(off >= fd.glyfoff + fd.locaoffs[gid+1] || off + 10 > len fd.ttfdata)
 		return 0;
 	return geti16be(fd.ttfdata, off + 8);
+}
+
+Face.kern(f: self ref Face, left, right: int): int
+{
+	fd := getfacedata(f);
+	if(fd == nil || fd.nkern == 0 || left < 0 || right < 0)
+		return 0;
+	key := (left << 16) | right;
+	d := fd.ttfdata;
+	lo := 0;
+	hi := fd.nkern - 1;
+	while(lo <= hi) {
+		m := (lo + hi) / 2;
+		o := fd.kernpairs + m*6;
+		k := (getu16be(d, o) << 16) | getu16be(d, o + 2);
+		if(k == key)
+			return geti16be(d, o + 4);
+		if(k < key)
+			lo = m + 1;
+		else
+			hi = m - 1;
+	}
+	return 0;
 }
 
 Face.metrics(f: self ref Face, size: real): (int, int, int)
@@ -1184,7 +1209,8 @@ parsecff(data: array of byte): (ref FaceData, string)
 		fdlsubrs,
 		fdsel,
 		cidmap,
-		0, nil, 0, 0, nil, cffcmap, nil	# ttfcmap = cffcmap for charcode→GID
+		0, nil, 0, 0, nil, cffcmap, nil,	# ttfcmap = cffcmap for charcode→GID
+		0, 0
 	);
 
 	return (fd, nil);
@@ -1684,6 +1710,8 @@ getf2dot14(data: array of byte, off: int): real
 # Parse TrueType sfnt font data
 parsettf(data: array of byte): (ref FaceData, string)
 {
+	if(len data >= 12 && string data[0:4] == "OTTO")
+		return parseotf(data);
 	if(len data < 12)
 		return (nil, "data too small for sfnt");
 
@@ -1699,6 +1727,7 @@ parsettf(data: array of byte): (ref FaceData, string)
 	cmapoff := 0; cmaplen := 0;
 	hheaoff := 0;
 	hmtxoff := 0;
+	kernoff := 0;
 	nameoff := 0;
 
 	for(i := 0; i < numtables; i++){
@@ -1725,6 +1754,8 @@ parsettf(data: array of byte): (ref FaceData, string)
 			hmtxoff = tableoff;
 		"name" =>
 			nameoff = tableoff;
+		"kern" =>
+			kernoff = tableoff;
 		}
 	}
 
@@ -1788,6 +1819,30 @@ parsettf(data: array of byte): (ref FaceData, string)
 	if(cmapoff != 0 && cmaplen > 0)
 		ttfcmap = parsettfcmap(data, cmapoff, cmaplen);
 
+	# 'kern' (version 0): the first horizontal format 0 subtable
+	kernpairs := 0;
+	nkern := 0;
+	if(kernoff != 0 && kernoff + 4 <= len data && getu16be(data, kernoff) == 0) {
+		nt := getu16be(data, kernoff + 2);
+		st := kernoff + 4;
+		for(i = 0; i < nt && st + 14 <= len data; i++) {
+			slen := getu16be(data, st + 2);
+			cov := getu16be(data, st + 4);
+			# format 0, horizontal, not minimum or cross-stream
+			if((cov >> 8) == 0 && (cov & 16r7) == 1) {
+				n := getu16be(data, st + 6);
+				if(st + 14 + n*6 <= len data) {
+					kernpairs = st + 14;
+					nkern = n;
+				}
+				break;
+			}
+			if(slen <= 0)
+				break;
+			st += slen;
+		}
+	}
+
 	# Get font name
 	fontname := "TrueType";
 	if(nameoff != 0)
@@ -1816,9 +1871,52 @@ parsettf(data: array of byte): (ref FaceData, string)
 		glyflen,
 		locaoffs,
 		ttfcmap,
-		ttfwidths
+		ttfwidths,
+		kernpairs,
+		nkern
 	);
 
+	return (fd, nil);
+}
+
+# OpenType with CFF outlines: the glyphs from the 'CFF ' table, the
+# character mapping and vertical metrics from the sfnt's own tables
+parseotf(data: array of byte): (ref FaceData, string)
+{
+	ntab := getu16be(data, 4);
+	cffoff, cfflen, cmapoff, cmaplen, headoff, hheaoff: int;
+	for(i := 0; i < ntab; i++) {
+		e := 12 + i*16;
+		if(e + 16 > len data)
+			break;
+		off := getu32be(data, e + 8);
+		ln := getu32be(data, e + 12);
+		if(off < 0 || ln < 0 || off + ln > len data)
+			continue;
+		case string data[e:e+4] {
+		"CFF " =>	(cffoff, cfflen) = (off, ln);
+		"cmap" =>	(cmapoff, cmaplen) = (off, ln);
+		"head" =>	headoff = off;
+		"hhea" =>	hheaoff = off;
+		}
+	}
+	if(cfflen == 0)
+		return (nil, "OpenType font without CFF outlines (CFF2 is not supported)");
+	(fd, err) := parsecff(data[cffoff:cffoff + cfflen]);
+	if(fd == nil)
+		return (nil, err);
+	if(cmaplen > 0)
+		fd.ttfcmap = parsettfcmap(data, cmapoff, cmaplen);
+	if(headoff != 0 && hheaoff != 0 && hheaoff + 8 <= len data) {
+		upem := getu16be(data, headoff + 18);
+		if(upem > 0) {
+			# head's units are the outlines' (an OpenType CFF's FontMatrix
+			# is 1/unitsPerEm), not the 1000 a bare CFF program assumes
+			fd.upem = upem;
+			fd.ascent = geti16be(data, hheaoff + 4);
+			fd.descent = geti16be(data, hheaoff + 6);
+		}
+	}
 	return (fd, nil);
 }
 

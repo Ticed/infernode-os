@@ -1693,7 +1693,7 @@ St.new(): ref St
 		0, 0, 0.0, 0.0, 0, 0,	# border-spacing: 0 (the UA sheet gives <table> 2px)
 		0, a, 3, Bnone, Ccurrent,
 		0, nil, "auto", 1, 1, 0, Ccurrent,
-		nil, 0);
+		nil, 0, 0);
 }
 
 nextsid := 1;
@@ -1717,6 +1717,7 @@ inherit(p: ref St): ref St
 	s.indent = p.indent;
 	s.transform = p.transform;
 	s.letterspacing = p.letterspacing;
+	s.nokern = p.nokern;
 	s.wordspacing = p.wordspacing;
 	s.whitespace = p.whitespace;
 	s.breakall = p.breakall;
@@ -1767,7 +1768,8 @@ isinherited(nm: string): int
 	"text-shadow" or "direction" or "tab-size" or "visibility" or
 	"list-style-type" or "list-style-position" or "list-style-image" or "quotes" or
 	"cursor" or "pointer-events" or "border-collapse" or "border-spacing" or
-	"caption-side" or "empty-cells" or "accent-color" or "caret-color" =>
+	"caption-side" or "empty-cells" or "accent-color" or "caret-color" or
+	"font-kerning" or "font-feature-settings" =>
 		return 1;
 	}
 	return 0;
@@ -3468,6 +3470,7 @@ background(v: array of ref Tok): list of (string, array of ref Tok)
 	col := array[] of {ref Tok(Kident, "transparent", 0.0, 0, nil)};
 	comma := ref Tok(Kcomma, ",", 0.0, 0, nil);
 	li := 0;
+	colset := 0;
 	for(; layers != nil; layers = tl layers) {
 		x := nows(hd layers);
 		limg, lrep, lpos, lsize, latt: list of ref Tok;
@@ -3516,8 +3519,9 @@ background(v: array of ref Tok): list of (string, array of ref Tok)
 				continue;
 			}
 			(ok, nil) := color(x[k:k+1]);
-			if(ok && li == nl-1) {
+			if(ok && li == nl-1 && !colset) {
 				col = x[k:k+1];
+				colset = 1;	# a second colour makes the declaration invalid
 				continue;
 			}
 			return nil;
@@ -4075,6 +4079,26 @@ apply(st: ref St, nm: string, v: array of ref Tok, parent: ref St, ctx: ref Ctx)
 			st.letterspacing = sp;
 		else
 			st.wordspacing = sp;
+	"font-kerning" =>
+		case id {
+		"none" => st.nokern = 1;
+		"normal" or "auto" => st.nokern = 0;
+		* => return 0;
+		}
+	"font-feature-settings" =>
+		# only "kern" matters here: off or 0 turns kerning off
+		on := -1;
+		for(k := 0; k < len v; k++)
+			if(v[k].kind == Kstring && v[k].s == "kern") {
+				on = 1;
+				for(j := k+1; j < len v && v[j].kind != Kcomma; j++)
+					if(v[j].kind == Kident && lower(v[j].s) == "off" || v[j].kind == Knumber && v[j].n == 0.0)
+						on = 0;
+			}
+		if(id == "normal")
+			on = 1;
+		if(on >= 0)
+			st.nokern = !on;
 	"white-space" or "white-space-collapse" or "text-wrap-mode" or "text-wrap" =>
 		x := nows(v);
 		for(k := 0; k < len x; k++) {
@@ -4863,6 +4887,7 @@ copyprop(d, s: ref St, nm: string)
 	"text-indent" => d.indent = s.indent;
 	"text-transform" => d.transform = s.transform;
 	"letter-spacing" => d.letterspacing = s.letterspacing;
+	"font-kerning" or "font-feature-settings" => d.nokern = s.nokern;
 	"word-spacing" => d.wordspacing = s.wordspacing;
 	"white-space" or "white-space-collapse" or "text-wrap" or "text-wrap-mode" => d.whitespace = s.whitespace;
 	"word-break" =>

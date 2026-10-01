@@ -24,9 +24,11 @@ Fonts: module
 		fallback:	ref Draw->Font;
 		parts:	array of ref Part;	# a web family: its faces, by unicode-range
 		next:	cyclic ref Typeface;	# the next family, for what this one lacks
+		nokern:	int;		# kerning off
 
 		width:	fn(f: self ref Typeface, s: string): real;
-		xheight:	fn(f: self ref Typeface): real;	# px: the top of "x" (the ex unit)
+		xheight:	fn(f: self ref Typeface): real;
+		kernpair:	fn(f: self ref Typeface, a, b: int): real;	# px between the characters a and b	# px: the top of "x" (the ex unit)
 		draw:	fn(f: self ref Typeface, dst: ref Draw->Image, p: Draw->Point, s: string, src: ref Draw->Image): real;	# p is on the baseline
 	};
 

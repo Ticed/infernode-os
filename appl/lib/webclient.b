@@ -24,6 +24,8 @@ include "string.m";
 include "webclient.m";
 include "publicnet.m";
 	publicnet: Publicnet;
+include "brotli.m";
+	brotli: Brotli;
 include "filter.m";
 	inflate: Filter;
 include "daytime.m";
@@ -184,6 +186,14 @@ requestjar(method, requrl: string, hdrs: list of Header, body: array of byte, ja
 				resp.body = b;
 			else if((b = decompress(resp.body, "")) != nil)
 				resp.body = b;
+		"br" =>
+			if(brotli == nil)
+				brotli = load Brotli Brotli->PATH;
+			if(brotli != nil) {
+				(b, nil) := brotli->decompress(resp.body, -1);
+				if(b != nil)
+					resp.body = b;
+			}
 		}
 	}
 	return (resp, err);

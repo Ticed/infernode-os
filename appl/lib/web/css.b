@@ -475,9 +475,11 @@ rules(v: array of ref Tok, top: int): array of ref Rule
 	for(i := 0; i < len v; ) {
 		t := v[i];
 		case t.kind {
-		Kws or Ksemicolon =>
+		Kws =>
 			i++;
 			continue;
+		# a stray ";" is not skipped: it starts the next rule's prelude
+		# and so invalidates its selector (CSS Syntax 3 §5.4.1; Acid2)
 		Kcdo or Kcdc =>
 			if(top) {
 				i++;

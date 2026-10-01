@@ -14,6 +14,8 @@ include "outlinefont.m";
 	Face: import ofont;
 include "filter.m";
 	inflate: Filter;
+include "woff2.m";
+	woff2: Woff2;
 include "web/fonts.m";
 
 # bitmap fallbacks for what the outlines lack (CJK, symbols), by size
@@ -145,7 +147,7 @@ face(families: list of string, weight, italic: int, size: real): ref Typeface
 		o := parts[0].outline;
 		asc := real o.ascent * size / real o.upem;
 		desc := real -o.descent * size / real o.upem;
-		f := ref Typeface(o, size, asc, desc, asc + desc, 0.0, fallback(size), parts, nil);
+		f := ref Typeface(o, size, asc, desc, asc + desc, 0.0, fallback(size), parts, nil, 0);
 		f.next = shipped(tl l, weight, italic, size);
 		f.space = advance(f, ' ');
 		cache[h] = f :: cache[h];
@@ -180,7 +182,7 @@ shipped(families: list of string, weight, italic: int, size: real): ref Typeface
 		return nil;
 	asc := real o.ascent * size / real o.upem;
 	desc := real -o.descent * size / real o.upem;
-	f := ref Typeface(o, size, asc, desc, asc + desc, 0.0, fallback(size), nil, nil);
+	f := ref Typeface(o, size, asc, desc, asc + desc, 0.0, fallback(size), nil, nil, 0);
 	f.space = advance(f, ' ');
 	cache[h] = f :: cache[h];
 	return f;
@@ -229,6 +231,22 @@ advance(f: ref Typeface, c: int): real
 	return o.advance(g, f.size);
 }
 
+# kerning between s[i-1] and s[i]: not where either is a space, as
+# browsers shape a word at a time
+kerns(s: string, i: int): int
+{
+	return s[i] != ' ' && s[i] != 16rA0 && s[i-1] != ' ' && s[i-1] != 16rA0;
+}
+
+Typeface.kernpair(f: self ref Typeface, a, b: int): real
+{
+	(oa, ga) := glyph(f, a);
+	(ob, gb) := glyph(f, b);
+	if(oa == nil || oa != ob)
+		return 0.0;
+	return real oa.kern(ga, gb) * f.size / real oa.upem;
+}
+
 Typeface.xheight(f: self ref Typeface): real
 {
 	(o, g) := glyph(f, 'x');
@@ -240,17 +258,29 @@ Typeface.xheight(f: self ref Typeface): real
 Typeface.width(f: self ref Typeface, s: string): real
 {
 	w := 0.0;
-	for(i := 0; i < len s; i++)
+	po: ref OutlineFont->Face;
+	pg := -1;
+	for(i := 0; i < len s; i++) {
+		(o, g) := glyph(f, s[i]);
+		if(o != nil && o == po && !f.nokern && kerns(s, i))
+			w += real o.kern(pg, g) * f.size / real o.upem;
+		(po, pg) = (o, g);
 		w += advance(f, s[i]);
+	}
 	return w;
 }
 
 Typeface.draw(f: self ref Typeface, dst: ref Image, p: Point, s: string, src: ref Image): real
 {
 	x := real p.x;
+	po: ref OutlineFont->Face;
+	pg := -1;
 	for(i := 0; i < len s; i++) {
 		c := s[i];
 		(o, g) := glyph(f, c);
+		if(o != nil && o == po && !f.nokern && kerns(s, i))
+			x += real o.kern(pg, g) * f.size / real o.upem;	# pair kerning
+		(po, pg) = (o, g);
 		if(o == nil && f.fallback != nil) {
 			t := "";
 			t[0] = c;
@@ -309,8 +339,14 @@ addface(family: string, weight, italic: int, ranges: array of int, data: array o
 		(data, err) = woff(data);
 		if(err != nil)
 			return err;
-	} else if(len data >= 4 && string data[0:4] == "wOF2")
-		return "WOFF2 is not supported";
+	} else if(len data >= 4 && string data[0:4] == "wOF2") {
+		if(woff2 == nil && (woff2 = load Woff2 Woff2->PATH) == nil)
+			return sys->sprint("cannot load %s: %r", Woff2->PATH);
+		err: string;
+		(data, err) = woff2->decode(data);
+		if(err != nil)
+			return err;
+	}
 	(o, err) := ofont->open(data, "ttf");
 	if(o == nil)
 		return "cannot read the font: " + err;

@@ -68,6 +68,14 @@ def main():
     os.makedirs(a.o, exist_ok=True)
     rows = []
     for i, url in enumerate(a.urls):
+        # a server that is down gives two identical error pages: a perfect score
+        try:
+            import urllib.request
+            urllib.request.urlopen(url, timeout=30).read(1)
+        except Exception as e:
+            rows.append((url, None, None, 'unreachable: %s' % e))
+            print('%-60s unreachable: %s' % (url, e))
+            continue
         rp, cp = os.path.join(a.o, '%d-chromium.png' % i), os.path.join(a.o, '%d-charon.png' % i)
         for p in (rp, cp):
             if os.path.exists(p):

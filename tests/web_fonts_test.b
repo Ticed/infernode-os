@@ -9,11 +9,15 @@ include "sys.m";
 	sys: Sys;
 include "draw.m";
 	draw: Draw;
-	Display: import draw;
+	Display, Rect, Point, Image: import draw;
 include "testing.m";
 	testing: Testing;
 	T: import testing;
 include "outlinefont.m";
+	ofont: OutlineFont;
+	Face: import ofont;
+include "woff2.m";
+	woff2: Woff2;
 include "web/fonts.m";
 	fonts: Fonts;
 	Typeface: import fonts;
@@ -24,6 +28,7 @@ WebFontsTest: module
 };
 
 SRCFILE: con "/tests/web_fonts_test.b";
+display: ref Display;
 DIR: con "/tests/web/fonts/";
 
 passed := 0;
@@ -113,6 +118,130 @@ testWeights(t: ref T)
 	t.assert(int fonts->face("w" :: nil, 600, 0, 20.0).width("x") != 20, "600 takes 800 (heavier first)");
 }
 
+# WOFF2 against the font it was made from: every character's advance,
+# and its glyph drawn, the same
+woff2vs(t: ref T, file: string)
+{
+	ttf := readfile(DIR + "DejaVuSubset.ttf");
+	(sf, err) := woff2->decode(readfile(DIR + file));
+	t.assertnil(err, file + " decodes");
+	if(sf == nil)
+		return;
+	(a, e1) := ofont->open(ttf, "ttf");
+	(b, e2) := ofont->open(sf, "ttf");
+	t.assertnil(e1, "the TTF opens");
+	t.assertnil(e2, file + " opens as TrueType");
+	if(a == nil || b == nil)
+		return;
+	t.asserteq(b.nglyphs, a.nglyphs, "glyphs");
+	t.asserteq(b.ascent, a.ascent, "ascent");
+	ia := display.newimage(Rect((0, 0), (80, 80)), Draw->GREY8, 0, Draw->White);
+	ib := display.newimage(Rect((0, 0), (80, 80)), Draw->GREY8, 0, Draw->White);
+	pa := array[80*80] of byte;
+	pb := array[80*80] of byte;
+	bad := 0;
+	n := 0;
+	for(c := 16r21; c < 16r100; c++) {
+		if(c >= 16r7F && c < 16rA1)
+			continue;
+		ga := a.lookup(c);
+		gb := b.lookup(c);
+		if(ga < 0)
+			continue;
+		n++;
+		if(gb != ga || a.advance(ga, 40.0) != b.advance(gb, 40.0)) {
+			t.error(sys->sprint("U+%04X: glyph %d/%d advance %g/%g", c, ga, gb, a.advance(ga, 40.0), b.advance(gb, 40.0)));
+			bad++;
+			continue;
+		}
+		ia.draw(ia.r, display.white, nil, (0, 0));
+		ib.draw(ib.r, display.white, nil, (0, 0));
+		a.drawglyph(ga, 40.0, ia, Point(20, 55), display.black);
+		b.drawglyph(gb, 40.0, ib, Point(20, 55), display.black);
+		ia.readpixels(ia.r, pa);
+		ib.readpixels(ib.r, pb);
+		for(k := 0; k < len pa; k++)
+			if(pa[k] != pb[k]) {
+				t.error(sys->sprint("U+%04X (glyph %d) draws differently", c, ga));
+				bad++;
+				break;
+			}
+		if(bad > 5)
+			break;
+	}
+	t.log(sys->sprint("%s: %d characters compared", file, n));
+	t.assert(n > 180, "the subset's characters were found");
+}
+
+testWOFF2(t: ref T)
+{
+	woff2vs(t, "DejaVuSubset.woff2");
+}
+
+testWOFF2hmtx(t: ref T)
+{
+	woff2vs(t, "DejaVuSubset-hmtx.woff2");
+}
+
+# OpenType with CFF outlines, as Font Awesome is: upem 512, the
+# language icon U+F1AB 576 units wide, the magnifier U+F002 512
+testOTF(t: ref T)
+{
+	(a, err) := ofont->open(readfile(DIR + "FASubset.otf"), "ttf");
+	t.assertnil(err, "an OTTO font opens");
+	if(a == nil)
+		return;
+	(sf, e2) := woff2->decode(readfile(DIR + "FASubset.woff2"));
+	t.assertnil(e2, "its WOFF2 decodes");
+	(b, e3) := ofont->open(sf, "ttf");
+	t.assertnil(e3, "and opens");
+	if(b == nil)
+		return;
+	lang := a.lookup(16rF1AB);
+	mag := a.lookup(16rF002);
+	t.assert(lang > 0 && mag > 0, "both icons mapped");
+	t.assert(a.lookup('A') < 0, "nothing else");
+	t.asserteq(int a.advance(lang, 64.0), 72, "language icon: 576/512 em");
+	t.asserteq(int a.advance(mag, 64.0), 64, "magnifier: 1 em");
+	t.asserteq(a.ascent * 512 / a.upem, 448, "ascent from hhea, in the outlines' units");
+	ia := display.newimage(Rect((0, 0), (100, 100)), Draw->GREY8, 0, Draw->White);
+	ib := display.newimage(Rect((0, 0), (100, 100)), Draw->GREY8, 0, Draw->White);
+	a.drawglyph(lang, 64.0, ia, Point(10, 70), display.black);
+	b.drawglyph(b.lookup(16rF1AB), 64.0, ib, Point(10, 70), display.black);
+	pa := array[100*100] of byte;
+	pb := array[100*100] of byte;
+	ia.readpixels(ia.r, pa);
+	ib.readpixels(ib.r, pb);
+	ink := 0;
+	outside := 0;
+	same := 1;
+	for(k := 0; k < len pa; k++) {
+		if(pa[k] != pb[k])
+			same = 0;
+		if(int pa[k] < 128) {
+			ink++;
+			(x, y) := (k % 100, k / 100);
+			# the em box: x 10..82, y 70-56..70+8
+			if(x < 9 || x > 83 || y < 13 || y > 79)
+				outside++;
+		}
+	}
+	t.log(sys->sprint("ink %d, outside the em box %d", ink, outside));
+	t.assert(ink > 800, "the icon is drawn");
+	t.asserteq(outside, 0, "and within its em box");
+	t.assert(same, "the WOFF2 draws the same");
+}
+
+testWOFF2face(t: ref T)
+{
+	fonts->clearfaces();
+	t.assertnil(fonts->addface("dv", 400, 0, nil, readfile(DIR + "DejaVuSubset.woff2")), "add a WOFF2 face");
+	f := fonts->face("dv" :: nil, 400, 0, 20.0);
+	t.assert(f != nil && f.parts != nil, "a face from it");
+	(nil, err) := woff2->decode(array of byte "wOF2 not really a font");
+	t.assertnotnil(err, "a broken WOFF2 is an error");
+}
+
 init(nil: ref Draw->Context, args: list of string)
 {
 	sys = load Sys Sys->PATH;
@@ -123,7 +252,15 @@ init(nil: ref Draw->Context, args: list of string)
 		if(hd a == "-v")
 			testing->verbose(1);
 	fonts = load Fonts Fonts->PATH;
-	if(fonts == nil || (err := fonts->init(Display.allocate(nil))) != nil) {
+	display = Display.allocate(nil);
+	ofont = load OutlineFont OutlineFont->PATH;
+	woff2 = load Woff2 Woff2->PATH;
+	if(ofont == nil || woff2 == nil) {
+		sys->fprint(sys->fildes(2), "cannot load outlinefont or woff2: %r\n");
+		raise "fail:load";
+	}
+	ofont->init(display);
+	if(fonts == nil || (err := fonts->init(display)) != nil) {
 		sys->fprint(sys->fildes(2), "cannot load fonts: %r\n");
 		raise "fail:load";
 	}
@@ -131,6 +268,10 @@ init(nil: ref Draw->Context, args: list of string)
 	run("WOFF", testWOFF);
 	run("Ranges", testRanges);
 	run("Weights", testWeights);
+	run("WOFF2", testWOFF2);
+	run("WOFF2hmtx", testWOFF2hmtx);
+	run("WOFF2face", testWOFF2face);
+	run("OTF", testOTF);
 	if(testing->summary(passed, failed, skipped) > 0)
 		raise "fail:tests failed";
 }

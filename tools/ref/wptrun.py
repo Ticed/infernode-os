@@ -137,6 +137,22 @@ class Quiet(http.server.SimpleHTTPRequestHandler):
             return 'application/xhtml+xml'
         return super().guess_type(path)
 
+    def do_GET(self):
+        # wptserve's ?pipe=status(N): the file, with that status
+        m = re.search(r'[?&]pipe=status\((\d+)\)', self.path)
+        if not m:
+            return super().do_GET()
+        path = self.translate_path(self.path.split('?')[0])
+        try:
+            body = open(path, 'rb').read()
+        except OSError:
+            return self.send_error(404)
+        self.send_response(int(m.group(1)))
+        self.send_header('Content-Type', self.guess_type(path))
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
 
 def serve(root):
     handler = functools.partial(Quiet, directory=root)
@@ -157,6 +173,7 @@ def renderbatch(jobs, workdir, shard):
     """Render [(url, imgpath-in-emu)] in one emu; returns {img: error or None}.
     A crash or a page that hangs ends the emu: the rest go to a new one."""
     results = {}
+    retried = set()
     todo = list(jobs)
     while todo:
         lst = os.path.join(workdir, 'list.%d' % shard)
@@ -186,8 +203,18 @@ def renderbatch(jobs, workdir, shard):
             results[out] = None if st == 'ok' else (rest[0] if rest else 'fail')
         n = len(got)
         if n < len(todo):	# the next one crashed or hung
-            results[todo[n][1]] = 'crash or hang'
-            todo = todo[n+1:]
+            u, o = todo[n]
+            tail = '\n'.join(l for l in lines[-15:] if 'fsqid' not in l)
+            if (u, o) in retried:
+                results[o] = 'crash or hang'
+                with open(os.path.join(workdir, 'crashes.txt'), 'a') as cf:
+                    cf.write('== %s\n%s\n' % (u, tail))
+                todo = todo[n+1:]
+            else:
+                # once more, alone in a fresh emu: a loaded machine can
+                # make a page miss its time
+                retried.add((u, o))
+                todo = [todo[n]] + todo[n+1:]
         else:
             todo = []
     return results
@@ -281,8 +308,10 @@ def main():
                     ok = n != 0
                 if not ok:
                     status, detail = 'FAIL', '%s maxdiff=%d pixels=%d' % (kind, mx, n)
-            if status != 'PASS' and js:
-                status = 'NEEDSJS'
+            if status == 'PASS' and ti is not None and (ti == ti[0, 0]).all():
+                detail = 'blank'	# a pass that shows nothing proves little
+            if js:
+                status = 'NEEDSJS'	# a pass without the script would be luck'
             rel = os.path.relpath(t, root)
             rows.append((status, rel, detail))
             if status in ('FAIL', 'ERROR') and len(fails) < a.keep:

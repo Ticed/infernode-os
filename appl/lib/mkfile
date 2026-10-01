@@ -13,6 +13,8 @@ DIRS=\
 	web\
 
 TARG=\
+	woff2.dis\
+	brotli.dis\
 	popup.dis\
 	scoretable.dis\
 	acmewin.dis\
@@ -182,6 +184,8 @@ TARG=\
 
 MODULES=
 SYSMODULES=\
+	woff2.m\
+	brotli.m\
 	9p.m\
 	acmewin.m\
 	agentlib.m\
