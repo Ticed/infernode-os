@@ -533,6 +533,7 @@ replaced(b: ref B, n: int, st: ref St): ref Box
 			if(r.text == "")
 				r.text = b.d.attr(n, "placeholder");
 			r.iw = int (st.fontsize * 10.0);	# about 20 characters
+			r.ih = int (st.fontsize * 1.25);	# a line
 		}
 		return r;
 	Dom->Ttextarea =>

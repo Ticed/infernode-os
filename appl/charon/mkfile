@@ -16,6 +16,7 @@ TARG=\
 	layout.dis\
 	lex.dis\
 	url.dis\
+	web.dis\
 
 ICONS=\
 	bookmark.bit\
@@ -85,10 +86,12 @@ $ROOT/dis/charon.dis:	charon.dis
 	rm -f $target
 	cp charon.dis $target
 
-$ROOT/dis/wm/charon.dis:	charon.dis
+# the browser people launch is the new engine's (web.b); the old
+# engine stays at /dis/charon.dis for Xenith's render mode until it goes
+$ROOT/dis/wm/charon.dis:	web.dis
 	mkdir -p $ROOT/dis/wm
 	rm -f $target
-	cp charon.dis $target
+	cp web.dis $target
 
 charon.dis:	$MODULES $SYS_MODULE
 

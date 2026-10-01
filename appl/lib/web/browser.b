@@ -635,6 +635,8 @@ Session.set(s: self ref Session, n: int, value: string): string
 	if(err == nil)
 		pg.update();
 	unlock(s);
+	if(err == nil)
+		event(s, "update");
 	return err;
 }
 
@@ -804,6 +806,70 @@ Session.paint(s: self ref Session, dst: ref Draw->Image, scroll: Point)
 	unlock(s);
 }
 
+Session.boxof(s: self ref Session, n: int): (int, Draw->Rect)
+{
+	pg := s.pg;
+	if(pg == nil)
+		return (0, ((0, 0), (0, 0)));
+	for(l := layout->boxes(pg.root, n); l != nil; l = tl l) {
+		b := hd l;
+		x := absx(b);
+		y := absy(b);
+		return (1, ((x, y), (x + b.w, y + b.h)));
+	}
+	return (0, ((0, 0), (0, 0)));
+}
+
+Session.linkat(s: self ref Session, x, y: int): string
+{
+	pg := s.pg;
+	if(pg == nil)
+		return nil;
+	d := pg.doc;
+	for(m := s.nodeat(x, y); m > 1; m = d.nodes[m].parent) {
+		nd := d.nodes[m];
+		if(nd.kind == Dom->Element && nd.ns == Dom->HTML && (nd.tag == Dom->Ta || nd.tag == Dom->Tarea) && d.hasattr(m, "href"))
+			return resolve(d.url, d.attr(m, "href"));
+	}
+	return nil;
+}
+
+Session.findat(s: self ref Session, what: string, after: int): (int, Draw->Rect)
+{
+	pg := s.pg;
+	if(pg == nil || what == "")
+		return (0, ((0, 0), (0, 0)));
+	(ok, r) := findin(pg.root, lower(what), after, 0, 0);
+	return (ok, r);
+}
+
+# The first text fragment below y=after containing what, in page
+# coordinates; ox, oy are b's parent's position.
+findin(b: ref Box, what: string, after, ox, oy: int): (int, Draw->Rect)
+{
+	x := ox + b.x;
+	y := oy + b.y;
+	for(i := 0; i < len b.lines; i++) {
+		ln := b.lines[i];
+		for(j := 0; j < len ln.frags; j++) {
+			f := ln.frags[j];
+			if(f.kind == Layout->Ftext && y + ln.y + f.y > after && contains(lower(f.text), what))
+				return (1, ((x + f.x, y + ln.y + f.y), (x + f.x + f.w, y + ln.y + f.y + ln.h)));
+		}
+	}
+	for(i = 0; i < len b.kids; i++) {
+		(ok, r) := findin(b.kids[i], what, after, x, y);
+		if(ok)
+			return (ok, r);
+	}
+	for(l := b.pos; l != nil; l = tl l) {
+		(ok, r) := findin(hd l, what, after, x, y);
+		if(ok)
+			return (ok, r);
+	}
+	return (0, ((0, 0), (0, 0)));
+}
+
 Session.pageheight(s: self ref Session): int
 {
 	if(s.pg == nil)
@@ -870,6 +936,7 @@ Session.click(s: self ref Session, n: int): string
 					d.setattr(p, "open", "");
 				pg.update();
 				unlock(s);
+				event(s, "update");
 			}
 			return nil;
 		}

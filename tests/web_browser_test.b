@@ -274,6 +274,34 @@ testForms(t: ref T)
 	t.assertseq(rd("title"), "Page B\n", "landed on the action");
 }
 
+postname: string;
+
+# The posted session, mounted from a separate name space as an agent's
+# tool would: the same session, its own connection.
+testPosted(t: ref T)
+{
+	t.assertseq(postname, "fs", "posted as fs");
+	c := chan of string;
+	spawn otherns(c);
+	t.assertseq(<-c, "Page B\n", "title through the posted file");
+}
+
+otherns(c: chan of string)
+{
+	sys->pctl(Sys->FORKNS, nil);
+	sys->unmount(nil, MNT);
+	fd := sys->open("#scharontest/" + postname, Sys->ORDWR);
+	if(fd == nil) {
+		c <-= sys->sprint("open: %r");
+		return;
+	}
+	if(sys->mount(fd, nil, MNT, Sys->MREPL, nil) < 0) {
+		c <-= sys->sprint("mount: %r");
+		return;
+	}
+	c <-= rd("title");
+}
+
 init(nil: ref Draw->Context, args: list of string)
 {
 	sys = load Sys Sys->PATH;
@@ -302,6 +330,11 @@ init(nil: ref Draw->Context, args: list of string)
 		raise "fail:serve";
 	}
 
+	(posted, perr) := charonfs->post("charontest");
+	if(perr != nil)
+		sys->fprint(sys->fildes(2), "post: %s\n", perr);
+	postname = posted;
+
 	run("Open", testOpen);
 	run("Links", testLinks);
 	run("History", testHistory);
@@ -309,6 +342,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("Find", testFind);
 	run("Image", testImage);
 	run("Forms", testForms);
+	run("Posted", testPosted);
 
 	if(testing->summary(passed, failed, skipped) > 0)
 		raise "fail:tests failed";

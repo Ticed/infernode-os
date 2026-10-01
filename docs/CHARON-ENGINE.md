@@ -1,6 +1,6 @@
 # Charon's new engine — design sketch
 
-Status: **accepted** (decisions at the end); being built.
+Status: **accepted** (decisions at the end); milestones 1–8 built: the new engine is the browser people launch (`wm/charon`, source `appl/charon/web.b`), the old one remains only for Xenith's render mode until milestone 9.
 Owner of the question: what web browser would Bell Labs build?
 
 ## Why a new engine
@@ -196,6 +196,18 @@ block 0 0 100 100
 ; cat /mnt/charon/dom/5/style | grep display
 display flex
 ```
+
+Posting: `/mnt/charon` is a mount in the browser's own name space, so
+it alone would not reach an agent whose name space was built before the
+browser started. The browser therefore also posts the session as
+`#scharon/fs`: `#s` with a spec is one directory per spec and user across
+every name space, Inferno's `/srv`, and each open of the posted file is
+its own 9P connection (`mount -A '#scharon/fs' /mnt/charon`). Agents run
+with `NODEVS`, which refuses `#s` with a spec, so they cannot attach it
+themselves: tools9p mounts it at `/mnt/charon` for the charon tool only,
+before `NODEVS`, and nsconstruct grants that path to that tool only.
+`event` also carries `update` when a form control changes, so the window
+repaints when an agent fills in a field.
 
 `dom/<n>/box` and `style` make layout assertable from the shell, which is
 how most engine tests are written: no pixels, no images. The `dom/` tree

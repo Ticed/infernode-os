@@ -42,6 +42,7 @@ names := array[] of {
 
 # an open event file
 Evq: adt {
+	srv:	ref Styxserver;	# the connection it is open on
 	fid:	int;
 	lines:	list of string;	# reversed
 	reads:	list of ref Tmsg.Read;	# waiting, reversed
@@ -74,20 +75,151 @@ serve(b: Browser, s: ref Session, d: ref Display, mountpt: string): string
 	user = readfile("/dev/user");
 	if(user == nil)
 		user = "inferno";
+	if(mountpt == nil)
+		return nil;
 	fds := array[2] of ref Sys->FD;
 	if(sys->pipe(fds) < 0)
 		return sys->sprint("pipe: %r");
-	navops := chan of ref Navop;
-	spawn navigator(navops);
-	(tchan, srv) := Styxserver.new(fds[0], Navigator.new(navops), big Qroot);
-	fds[0] = nil;
-	evc := s.listen();
-	pidc := chan of int;
-	spawn serveloop(tchan, srv, evc, navops, pidc);
-	<-pidc;
+	serveconn(fds[0]);
 	if(sys->mount(fds[1], nil, mountpt, Sys->MREPL, nil) < 0)
 		return sys->sprint("mount %s: %r", mountpt);
 	return nil;
+}
+
+# Serve one 9P connection on fd.
+serveconn(fd: ref Sys->FD)
+{
+	navops := chan of ref Navop;
+	spawn navigator(navops);
+	(tchan, srv) := Styxserver.new(fd, Navigator.new(navops), big Qroot);
+	evc := sess.listen();
+	pidc := chan of int;
+	spawn serveloop(tchan, srv, evc, navops, pidc);
+	<-pidc;
+}
+
+# ---- posting: /srv, Inferno style ----
+#
+# #s<spec> is one directory per spec (and user) across every name
+# space, so a file posted in #scharon is where any process of this
+# user can find the session, whatever its name space was built from:
+#	mount -A '#scharon/fs' /mnt/charon
+# Each open of the posted file is its own 9P connection.
+
+post(spec: string): (string, string)
+{
+	if(sess == nil)
+		return (nil, "not serving");
+	dir := "#s" + spec;
+	name := "fs";
+	io: ref Sys->FileIO;
+	for(i := 1; i < 32; i++) {
+		(ok, nil) := sys->stat(dir + "/" + name);
+		if(ok < 0 && (io = sys->file2chan(dir, name)) != nil)
+			break;
+		name = "fs." + string i;
+	}
+	if(io == nil)
+		return (nil, sys->sprint("file2chan: %r"));
+	spawn poster(io);
+	return (name, nil);
+}
+
+Conn: adt {
+	fid:	int;
+	fd:	ref Sys->FD;	# our end of the connection's pipe
+	rq:	chan of (int, Sys->Rread);
+	wq:	chan of (array of byte, Sys->Rwrite);
+};
+
+poster(io: ref Sys->FileIO)
+{
+	conns: list of ref Conn;
+	for(;;) alt {
+	(nil, count, fid, rc) := <-io.read =>
+		if(rc == nil) {
+			conns = hangup(conns, fid);
+			continue;
+		}
+		c: ref Conn;
+		(conns, c) = conn(conns, fid);
+		if(c == nil)
+			rc <-= (nil, "cannot connect");
+		else
+			c.rq <-= (count, rc);
+	(nil, data, fid, wc) := <-io.write =>
+		if(wc == nil) {
+			conns = hangup(conns, fid);
+			continue;
+		}
+		c: ref Conn;
+		(conns, c) = conn(conns, fid);
+		if(c == nil)
+			wc <-= (0, "cannot connect");
+		else
+			c.wq <-= (data, wc);
+	}
+}
+
+conn(l: list of ref Conn, fid: int): (list of ref Conn, ref Conn)
+{
+	for(t := l; t != nil; t = tl t)
+		if((hd t).fid == fid)
+			return (l, hd t);
+	fds := array[2] of ref Sys->FD;
+	if(sys->pipe(fds) < 0)
+		return (l, nil);
+	c := ref Conn(fid, fds[1], chan[4] of (int, Sys->Rread), chan[16] of (array of byte, Sys->Rwrite));
+	serveconn(fds[0]);
+	spawn connreader(c);
+	spawn connwriter(c);
+	return (c :: l, c);
+}
+
+hangup(l: list of ref Conn, fid: int): list of ref Conn
+{
+	r: list of ref Conn;
+	for(; l != nil; l = tl l) {
+		c := hd l;
+		if(c.fid != fid) {
+			r = c :: r;
+			continue;
+		}
+		c.rq <-= (-1, nil);
+		c.wq <-= (nil, nil);
+	}
+	return r;
+}
+
+connreader(c: ref Conn)
+{
+	for(;;) {
+		(count, rc) := <-c.rq;
+		if(rc == nil)
+			return;
+		buf := array[count] of byte;
+		n := sys->read(c.fd, buf, len buf);
+		if(n < 0)
+			rc <-= (nil, sys->sprint("%r"));
+		else
+			rc <-= (buf[0:n], nil);
+	}
+}
+
+connwriter(c: ref Conn)
+{
+	for(;;) {
+		(data, wc) := <-c.wq;
+		if(wc == nil) {
+			c.fd = nil;	# the server sees end of file
+			return;
+		}
+		n := sys->write(c.fd, data, len data);
+		if(n < 0)
+			wc <-= (0, sys->sprint("%r"));
+		else
+			wc <-= (n, nil);
+	}
 }
 
 path(n, t: int): big
@@ -124,10 +256,18 @@ Serve:
 	e := <-evc =>
 		for(l := evqs; l != nil; l = tl l) {
 			q := hd l;
+			if(q.srv != srv)
+				continue;
 			q.lines = e :: q.lines;
 			drain(srv, q);
 		}
 	}
+	# the connection is gone: so are its event files
+	r: list of ref Evq;
+	for(l := evqs; l != nil; l = tl l)
+		if((hd l).srv != srv)
+			r = hd l :: r;
+	evqs = r;
 	sess.unlisten(evc);
 	navops <-= nil;
 }
@@ -141,7 +281,7 @@ handle(srv: ref Styxserver, gm: ref Tmsg)
 			break;
 		t := ftype(f.path);
 		if(t == Qevent)
-			evqs = ref Evq(f.fid, nil, nil) :: evqs;
+			evqs = ref Evq(srv, f.fid, nil, nil) :: evqs;
 		else if(t != Qctl && t != Qfind && (f.qtype & Sys->QTDIR) == 0)
 			f.data = contents(t, fnode(f.path));
 	Read =>
@@ -156,7 +296,7 @@ handle(srv: ref Styxserver, gm: ref Tmsg)
 		}
 		case ftype(f.path) {
 		Qevent =>
-			q := findq(f.fid);
+			q := findq(srv, f.fid);
 			if(q == nil) {
 				srv.reply(ref Rmsg.Error(m.tag, "event file not open"));
 				break;
@@ -197,6 +337,8 @@ handle(srv: ref Styxserver, gm: ref Tmsg)
 	Flush =>
 		for(l := evqs; l != nil; l = tl l) {
 			q := hd l;
+			if(q.srv != srv)
+				continue;
 			r: list of ref Tmsg.Read;
 			for(rl := q.reads; rl != nil; rl = tl rl)
 				if((hd rl).tag != m.oldtag)
@@ -207,29 +349,29 @@ handle(srv: ref Styxserver, gm: ref Tmsg)
 		}
 		srv.default(gm);
 	Clunk =>
-		dropq(m.fid);
+		dropq(srv, m.fid);
 		srv.clunk(m);
 	Remove =>
-		dropq(m.fid);
+		dropq(srv, m.fid);
 		srv.remove(m);
 	* =>
 		srv.default(gm);
 	}
 }
 
-findq(fid: int): ref Evq
+findq(srv: ref Styxserver, fid: int): ref Evq
 {
 	for(l := evqs; l != nil; l = tl l)
-		if((hd l).fid == fid)
+		if((hd l).srv == srv && (hd l).fid == fid)
 			return hd l;
 	return nil;
 }
 
-dropq(fid: int)
+dropq(srv: ref Styxserver, fid: int)
 {
 	r: list of ref Evq;
 	for(l := evqs; l != nil; l = tl l)
-		if((hd l).fid != fid)
+		if((hd l).srv != srv || (hd l).fid != fid)
 			r = hd l :: r;
 	evqs = r;
 }

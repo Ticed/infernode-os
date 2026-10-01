@@ -69,6 +69,9 @@ Browser: module
 		click:	fn(s: self ref Session, node: int): string;	# a link, button or control
 		nodeat:	fn(s: self ref Session, x, y: int): int;	# page coordinates
 		paint:	fn(s: self ref Session, dst: ref Draw->Image, scroll: Draw->Point);
+		boxof:	fn(s: self ref Session, n: int): (int, Draw->Rect);	# node n's first border box, page coordinates
+		linkat:	fn(s: self ref Session, x, y: int): string;	# the URL of the link under a point
+		findat:	fn(s: self ref Session, what: string, after: int): (int, Draw->Rect);	# next text match below y=after
 		pageheight:	fn(s: self ref Session): int;
 		dom:	fn(s: self ref Session, n: int, what: string): (string, string);	# tag attrs text style box children
 	};

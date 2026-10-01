@@ -14,7 +14,8 @@
 #	find	write: text to look for; read: the lines of text containing it
 #	image	the viewport, rendered, as an image(6)
 #	event	one line per event, "loading <url>", "done <url>",
-#		  "error <msg>" or "stopped", from when it was opened; reads block
+#		  "error <msg>", "stopped", or "update" (a form changed),
+#		  from when it was opened; reads block
 #	dom/<n>/	tag attrs text style box children
 #
 # A file's contents are taken when it is opened, so a reader sees one
@@ -28,4 +29,8 @@ Charonfs: module
 	# serve s, mounted at mountpt; returns once it is mounted.
 	# b is the (initialised) Browser instance s came from.
 	serve:	fn(b: Browser, s: ref Browser->Session, d: ref Draw->Display, mountpt: string): string;
+	# Post the session as #s<spec>/fs (or fs.N if that is taken) so a
+	# process in another name space can mount it; returns the name.
+	post:	fn(spec: string): (string, string);
+	SPEC:	con "charon";
 };
