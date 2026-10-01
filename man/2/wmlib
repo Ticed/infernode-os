@@ -13,6 +13,11 @@ init:       fn();
 connect:	fn(ctxt: ref Draw->Context): ref Draw->Wmcontext;
 startinput:	fn(w: ref Draw->Wmcontext, devs: list of string): string;
 wmctl:	fn(w: ref Draw->Wmcontext, request: string): (string, ref Draw->Image, string);
+
+Border:	con 2;
+Hotzone:	con 3;
+inframe:	fn(r: Draw->Rect, p: Draw->Point): int;
+embedded:	fn(w: ref Draw->Wmcontext): int;
 snarfput:	fn(buf: string);
 snarfget:	fn(): string;
 
@@ -71,6 +76,33 @@ and
 .B snarfput
 retrieve and replace the contents of the window
 manager's snarf buffer.
+.PP
+Every window has the same frame, drawn by
+.IR tkclient (2)
+and
+.IR wmclient (2):
+a line
+.B Border
+pixels wide in the current theme's
+.B windowborder
+colour.
+.B Inframe
+reports whether
+.IR p ,
+a point on the screen, is in the frame of a window with rectangle
+.IR r ,
+or in the
+.B Hotzone
+pixels of the window just inside it; a press there belongs to the frame.
+.B Embedded
+asks the window manager, with the request
+.BR embedded ,
+whether it frames and places the window itself,
+as Lucifer's presentation zone and Matrix's panes do;
+if so, the window has no frame of its own.
+A window manager that does not know the request, such as
+.IR wm (1),
+leaves the frame to the window.
 .SH FILES
 .TF /chan/snarf
 .TP
