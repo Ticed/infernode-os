@@ -1,6 +1,6 @@
 # Charon's new engine — design sketch
 
-Status: **proposal**, for review before the engine is built.
+Status: **accepted** (decisions at the end); being built.
 Owner of the question: what web browser would Bell Labs build?
 
 ## Why a new engine
@@ -145,13 +145,13 @@ The same list serves hit testing in reverse.
 
 ### Fonts
 
-Today the tree has DejaVu Sans, Sans Bold and Sans Mono pre-rendered at
-six sizes (12–48 px). Phase 1 maps CSS font sizes to the nearest set,
-which is honest but coarse. `outlinefont` already parses TrueType and
-fills glyphs through the draw device, so arbitrary sizes, weights and
-italics need only the font files themselves: DejaVu (Sans, Serif, Mono;
-regular, bold, oblique) is ~6 MB under a free licence. Shipping them is a
-release-size decision, flagged below. Web fonts (`@font-face`) come after.
+Text is drawn from TrueType outlines through `outlinefont`, which fills
+glyphs with the draw device's anti-aliased paths, so any size, weight or
+slant a style asks for is available. The tree ships DejaVu (Sans, Serif,
+Mono; regular, bold, oblique; ~6 MB, free licence) as the default faces,
+with the existing pre-rendered DejaVu subfonts as the fallback when a face
+is missing. Glyphs are cached per (face, size) as masks, so a page draws
+each distinct glyph once. Web fonts (`@font-face`) come after.
 
 ## Widgets: Tk
 
@@ -207,10 +207,12 @@ egress capability (it makes the browser fetch), so granting it is granting
 network reach, bounded by whatever the browser's own namespace can dial.
 The two are not paired by default.
 
-**Network.** Charon keeps its own HTTP/1.1 + TLS 1.3 transport for now
-(cookies, cache, keep-alive). Fetching through `webfs` (`/mnt/web`) is the
-eventual shape, so that a browser's reach is literally a mount; it needs
-cookie and cache support in `webfs` first, and is out of scope here.
+**Network.** The new engine fetches through `webfs` (`/mnt/web`), so a
+browser's reach is literally a mount: bind a different `webfs` (or none)
+and the same browser sees a different (or no) network. `webfs` gains what
+a browser needs first: a cookie jar, an HTTP cache, `data:` and `file:`
+URLs, and content decoding. Charon's private HTTP/TLS transport goes when
+the old engine does.
 
 ## The JavaScript seam
 
@@ -254,16 +256,18 @@ is then removed.
 | 5 | flex, grid | flex, grid |
 | 6 | tables, lists, generated content | table, list |
 | 7 | images (PNG, JPEG, GIF, SVG via readsvg, WebP), `data:` URLs | img |
+| 7a | `webfs`: cookie jar, cache, `data:`/`file:`, content decoding; engine fetches only through `/mnt/web` | network |
 | 8 | Tk chrome + canvas viewport + form controls; `/mnt/charon` | interactive |
 | 9 | default switch; old engine removed | everything |
 
-## Decisions for review
+## Decisions (2026-10-01)
 
-1. **The rewrite itself**, and its home: new modules under `appl/lib/web/`
+1. **The rewrite**: yes. New modules under `appl/lib/web/`
    (`/dis/lib/web/*.dis`, interfaces in `module/web/`), usable by Xenith
    and Veltro as well as Charon.
-2. **Shipping TrueType fonts** (~6 MB) for arbitrary sizes, weights and
-   italics. Without them text sizes stay at six steps.
-3. **`/mnt/charon`** as the browser's interface, replacing
-   `/tmp/veltro/browser/` (the Veltro `charon` tool moves with it).
-4. **Network via webfs** later rather than now.
+2. **TrueType fonts ship** (~6 MB) for arbitrary sizes, weights and
+   slants; the bitmap subfonts are the fallback.
+3. **`/mnt/charon`** is the browser's interface, replacing
+   `/tmp/veltro/browser/`; the Veltro `charon` tool moves with it.
+4. **Network via `webfs` now**: the new engine never dials; `webfs`
+   grows cookies, caching and the URL schemes it needs.
