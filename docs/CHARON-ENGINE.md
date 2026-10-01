@@ -214,6 +214,16 @@ a browser needs first: a cookie jar, an HTTP cache, `data:` and `file:`
 URLs, and content decoding. Charon's private HTTP/TLS transport goes when
 the old engine does.
 
+Done (7a): `webfs` fetches concurrently (one slow resource stalls only its
+own readers); keeps one RFC 6265 cookie jar per instance, readable and
+writable as `/mnt/web/cookies`, so a browsing session is a mount;
+decodes gzip and deflate; and reports the URL that answered (`N/url`,
+which the engine uses as the document's base) and the response header
+(`N/header`). The engine fetches a page's sheets and images six at a time.
+`data:` and `file:` stay in the engine, which reads them without
+`webfs`: neither touches the network. Still to come: the HTTP cache. See
+webfs(4).
+
 ## The JavaScript seam
 
 There is no JS engine in this plan. The design leaves exactly one place

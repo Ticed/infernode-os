@@ -130,6 +130,28 @@ run(ch: CharonMod, ctxt: ref Draw->Context, args: list of string)
 	ch->init(ctxt, args);
 }
 
+Command: module
+{
+	init:	fn(nil: ref Draw->Context, nil: list of string);
+};
+
+# http(s) comes through webfs; start one if there isn't one already.
+startwebfs(): string
+{
+	if(sys->open("/mnt/web/clone", Sys->OREAD) != nil)
+		return nil;
+	webfs := load Command "/dis/webfs.dis";
+	if(webfs == nil)
+		return sys->sprint("cannot load webfs: %r");
+	spawn webfs->init(nil, "webfs" :: nil);
+	for(i := 0; i < 100; i++) {
+		if(sys->open("/mnt/web/clone", Sys->OREAD) != nil)
+			return nil;
+		sys->sleep(20);
+	}
+	return "webfs did not start";
+}
+
 newengine(disp: ref Display, w, h, crop: int, outimg, url: string): string
 {
 	page = load Page Page->PATH;
@@ -139,6 +161,8 @@ newengine(disp: ref Display, w, h, crop: int, outimg, url: string): string
 		return ierr;
 	layout = load Layout Layout->PATH;
 	layout->init(disp);
+	if(len url > 4 && url[0:4] == "http" && (werr := startwebfs()) != nil)
+		return werr;
 	vh := h;
 	if(crop)
 		vh = 768;	# a viewport for vh units; the image is the page

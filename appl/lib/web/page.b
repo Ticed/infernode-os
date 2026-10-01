@@ -52,7 +52,9 @@ init(d: ref Display): string
 	display = d;
 	html->init();
 	css->init();
-	if((err := layout->init(d)) != nil)
+	if((err := style->init()) != nil)
+		return err;
+	if((err = layout->init(d)) != nil)
 		return err;
 	if(imageremap != nil)
 		imageremap->init(d);
@@ -61,9 +63,10 @@ init(d: ref Display): string
 
 open(url: string, width, height: int): (ref Pg, string)
 {
-	(data, ctype, err) := fetch(url);
-	if(err != nil)
+	(data, ctype, err, final) := fetchfinal(url);
+	if(err != nil && data == nil)
 		return (nil, err);
+	url = final;	# a redirected page's links are relative to where it is
 	charset := param(ctype, "charset");
 	p := ref Pg(url, nil, Styles.new(), nil, nil,
 		ref Env(width, height, 1.0, 0, 0, 0, 0, 0, 0), nil, width, height, nil);
@@ -120,6 +123,8 @@ Pg.pageheight(p: self ref Pg): int
 loadsheets(p: ref Pg)
 {
 	d := p.doc;
+	# the sheets in document order: (inline text, nil) or (nil, url)
+	sheets: list of (string, string);
 	for(n := 1; n < d.n; n++) {
 		nd := d.nodes[n];
 		if(nd.kind != Dom->Element || nd.ns != Dom->HTML)
@@ -128,7 +133,7 @@ loadsheets(p: ref Pg)
 		Dom->Tstyle =>
 			if(!style->mediamatch(css->tokenize(d.attr(n, "media")), p.env))
 				continue;
-			p.styles.add(css->parse(d.textof(n)), Style->Author, d.url);
+			sheets = (d.textof(n), nil) :: sheets;
 		Dom->Tlink =>
 			rel := " " + lower(d.attr(n, "rel")) + " ";
 			if(index(rel, " stylesheet ") < 0 || index(rel, " alternate ") >= 0)
@@ -140,22 +145,40 @@ loadsheets(p: ref Pg)
 			href := d.attr(n, "href");
 			if(href == nil)
 				continue;
-			u := style->resolveurl(d.url, href);
-			(data, nil, err) := fetch(u);
-			if(err != nil) {
-				p.errors = u + ": " + err :: p.errors;
-				continue;
-			}
-			p.styles.add(css->parse(string data), Style->Author, u);
+			sheets = (nil, style->resolveurl(d.url, href)) :: sheets;
 		}
+	}
+	a := array[len sheets] of (string, string);
+	for(i := len a - 1; i >= 0; i--) {
+		a[i] = hd sheets;
+		sheets = tl sheets;
+	}
+	urls: list of string;
+	for(i = 0; i < len a; i++)
+		if(a[i].t1 != nil)
+			urls = a[i].t1 :: urls;
+	got := fetchall(urls);
+	for(i = 0; i < len a; i++) {
+		(text, u) := a[i];
+		if(u == nil) {
+			p.styles.add(css->parse(text), Style->Author, d.url);
+			continue;
+		}
+		(data, nil, err) := fetched(got, u);
+		if(err != nil) {
+			p.errors = u + ": " + err :: p.errors;
+			continue;
+		}
+		p.styles.add(css->parse(string data), Style->Author, u);
 	}
 	# @import, to a depth of 4
 	for(depth := 0; depth < 4; depth++) {
-		urls := p.styles.imports(p.env);
+		urls = p.styles.imports(p.env);
 		if(urls == nil)
 			break;
+		got = fetchall(urls);
 		for(; urls != nil; urls = tl urls) {
-			(data, nil, err) := fetch(hd urls);
+			(data, nil, err) := fetched(got, hd urls);
 			if(err != nil) {
 				p.errors = hd urls + ": " + err :: p.errors;
 				data = nil;
@@ -170,7 +193,12 @@ loadsheets(p: ref Pg)
 loadimages(p: ref Pg, root: ref Box)
 {
 	cache: list of (string, ref Image);
-	for(l := replacedboxes(root, nil); l != nil; l = tl l) {
+	boxes := replacedboxes(root, nil);
+	urls: list of string;
+	for(l := boxes; l != nil; l = tl l)
+		urls = (hd l).url :: urls;
+	got := fetchall(urls);
+	for(l = boxes; l != nil; l = tl l) {
 		b := hd l;
 		img: ref Image;
 		found := 0;
@@ -180,7 +208,7 @@ loadimages(p: ref Pg, root: ref Box)
 				found = 1;
 			}
 		if(!found) {
-			(data, ctype, err) := fetch(b.url);
+			(data, ctype, err) := fetched(got, b.url);
 			if(err == nil)
 				img = decodeimage(data, ctype, b.url);
 			else
@@ -358,7 +386,76 @@ looksvg(data: array of byte): int
 
 # ---- fetching ----
 
+NFETCH: con 6;	# fetches at once, as browsers do per host
+
+Got: adt {
+	url:	string;
+	data:	array of byte;
+	ctype:	string;
+	err:	string;
+};
+
+# Fetch urls concurrently, each distinct URL once.
+fetchall(urls: list of string): list of ref Got
+{
+	todo: list of string;
+	n := 0;
+	for(; urls != nil; urls = tl urls) {
+		u := hd urls;
+		if(u == nil)
+			continue;
+		for(t := todo; t != nil; t = tl t)
+			if(hd t == u)
+				break;
+		if(t == nil) {
+			todo = u :: todo;
+			n++;
+		}
+	}
+	if(n == 0)
+		return nil;
+	work := chan[n] of string;
+	for(; todo != nil; todo = tl todo)
+		work <-= hd todo;
+	res := chan of ref Got;
+	nw := NFETCH;
+	if(nw > n)
+		nw = n;
+	for(i := 0; i < nw; i++)
+		spawn fetcher(work, res);
+	got: list of ref Got;
+	for(i = 0; i < n; i++)
+		got = <-res :: got;
+	return got;
+}
+
+fetcher(work: chan of string, res: chan of ref Got)
+{
+	for(;;) alt {
+	u := <-work =>
+		(data, ctype, err) := fetch(u);
+		res <-= ref Got(u, data, ctype, err);
+	* =>
+		return;
+	}
+}
+
+fetched(got: list of ref Got, url: string): (array of byte, string, string)
+{
+	for(; got != nil; got = tl got)
+		if((hd got).url == url)
+			return ((hd got).data, (hd got).ctype, (hd got).err);
+	return (nil, nil, "not fetched");
+}
+
 fetch(url: string): (array of byte, string, string)
+{
+	(data, ctype, err, nil) := fetchfinal(url);
+	return (data, ctype, err);
+}
+
+# fetch, and the URL the resource came from in the end
+fetchfinal(url: string): (array of byte, string, string, string)
 {
 	(scheme, rest) := splitscheme(url);
 	case scheme {
@@ -372,15 +469,18 @@ fetch(url: string): (array of byte, string, string)
 			path = path[i:];	# file://host/path: the host is ignored
 		}
 		path = pctdecode(cutfrag(path));
-		return readfile(path);
+		(d, c, e) := readfile(path);
+		return (d, c, e, url);
 	"data" =>
-		return dataurl(rest);
+		(d, c, e) := dataurl(rest);
+		return (d, c, e, url);
 	"http" or "https" =>
 		return webfs(url);
 	"" =>
-		return readfile(url);
+		(d, c, e) := readfile(url);
+		return (d, c, e, url);
 	}
-	return (nil, nil, "unsupported scheme: " + scheme);
+	return (nil, nil, "unsupported scheme: " + scheme, url);
 }
 
 splitscheme(u: string): (string, string)
@@ -512,28 +612,33 @@ hexv(c: int): int
 
 # http and https through webfs (see webfs(4)): clone a connection,
 # write its URL, read its body.
-webfs(url: string): (array of byte, string, string)
+webfs(url: string): (array of byte, string, string, string)
 {
 	cfd := sys->open(WEBFS + "/clone", Sys->OREAD);
 	if(cfd == nil)
-		return (nil, nil, "no webfs at " + WEBFS + ": " + sys->sprint("%r"));
+		return (nil, nil, "no webfs at " + WEBFS + ": " + sys->sprint("%r"), url);
 	buf := array[32] of byte;
 	n := sys->read(cfd, buf, len buf);
 	if(n <= 0)
-		return (nil, nil, sys->sprint("webfs clone: %r"));
+		return (nil, nil, sys->sprint("webfs clone: %r"), url);
 	id := squash(string buf[0:n]);
 	dir := WEBFS + "/" + id;
 	ctl := sys->open(dir + "/ctl", Sys->OWRITE);
 	if(ctl == nil || sys->fprint(ctl, "url %s", url) < 0)
-		return (nil, nil, sys->sprint("webfs: %r"));
+		return (nil, nil, sys->sprint("webfs: %r"), url);
 	bfd := sys->open(dir + "/body", Sys->OREAD);
 	if(bfd == nil)
-		return (nil, nil, sys->sprint("%s: %r", url));
+		return (nil, nil, sys->sprint("%s: %r", url), url);
 	data := readall(bfd);
+	final := readstr(dir + "/url");
+	if(final == "")
+		final = url;	# an older webfs
+	ctype := readstr(dir + "/contenttype");
+	# an error's body comes too: a page shows a 404's, nothing else does
 	status := readstr(dir + "/status");
 	if(status != "" && !prefix(status, "2"))
-		return (nil, nil, url + ": " + status);
-	return (data, readstr(dir + "/contenttype"), nil);
+		return (data, ctype, status, final);
+	return (data, ctype, nil, final);
 }
 
 readstr(path: string): string

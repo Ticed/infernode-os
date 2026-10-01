@@ -11,7 +11,7 @@ include "testing.m";
 
 include "webclient.m";
 	webclient: Webclient;
-	Response, Header: import webclient;
+	Response, Header, Jar: import webclient;
 
 WebclientTest: module
 {
@@ -113,11 +113,47 @@ testHeaderLookup(t: ref T)
 {
 	hdrs := Header("Content-Type", "text/html") ::
 		Header("X-Custom", "hello") :: nil;
-	resp := ref Response(200, "HTTP/1.1 200 OK", hdrs, nil);
+	resp := ref Response(200, "HTTP/1.1 200 OK", hdrs, nil, nil);
 	t.assertseq(resp.hdrval("Content-Type"), "text/html", "Content-Type");
 	t.assertseq(resp.hdrval("content-type"), "text/html", "case insensitive");
 	t.assertseq(resp.hdrval("X-Custom"), "hello", "custom header");
 	t.assertnil(resp.hdrval("Missing"), "missing header is nil");
+}
+
+testCookieJar(t: ref T)
+{
+	j := Jar.new();
+	j.set("http://www.example.org/a/b", "sid=1; Path=/");
+	j.set("http://www.example.org/a/b", "here=2");
+	j.set("http://www.example.org/", "wide=3; Domain=.example.org");
+	j.set("http://www.example.org/", "other=4; Domain=example.com");
+	j.set("http://www.example.org/", "sec=5; Secure");
+	j.set("https://www.example.org/", "sec=6; Secure; HttpOnly");
+
+	t.assertseq(j.header("http://www.example.org/a/c"), "sid=1; here=2; wide=3", "path, domain");
+	t.assertseq(j.header("http://www.example.org/x"), "sid=1; wide=3", "default path");
+	t.assertseq(j.header("http://img.example.org/"), "wide=3", "domain cookie on a sibling");
+	t.assertseq(j.header("https://www.example.org/"), "sid=1; wide=3; sec=6", "secure");
+	t.assertnil(j.header("http://example.com/"), "another site");
+	t.assertnil(j.header("http://badexample.org/"), "suffix is not a domain match");
+
+	j.set("http://www.example.org/", "sid=x; Max-Age=0");
+	t.assertseq(j.header("http://www.example.org/"), "wide=3", "max-age=0 deletes");
+
+	k := Jar.new();
+	for(l := tolines(j.text()); l != nil; l = tl l)
+		t.assertnil(k.add(hd l), "add " + hd l);
+	t.assertseq(k.text(), j.text(), "text/add round trip");
+	t.assertseq(k.header("https://www.example.org/a/"), "here=2; wide=3; sec=6", "restored jar");
+	k.clear();
+	t.assertnil(k.header("https://www.example.org/"), "cleared");
+	t.assertnotnil(k.add("example.org /"), "short line refused");
+}
+
+tolines(s: string): list of string
+{
+	(nil, l) := sys->tokenize(s, "\n");
+	return l;
 }
 
 testPublicRequestRejectsPrivate(t: ref T)
@@ -207,6 +243,7 @@ init(nil: ref Draw->Context, args: list of string)
 
 	# Non-network tests first
 	run("HeaderLookup", testHeaderLookup);
+	run("CookieJar", testCookieJar);
 	run("PublicRequestRejectsPrivate", testPublicRequestRejectsPrivate);
 	run("RejectsControlRequestText", testRejectsControlRequestText);
 
