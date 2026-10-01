@@ -10,6 +10,7 @@ DIRS=\
 	ida\
 	spki\
 	w3c\
+	web\
 
 TARG=\
 	popup.dis\

@@ -1011,3 +1011,6 @@ dis/xenith/xenith.dis
 dis/xenith/xfid.dis
 dis/yacc.dis
 dis/zeros.dis
+dis/lib/web/dom.dis
+dis/lib/web/html.dis
+dis/tests/web_html_test.dis

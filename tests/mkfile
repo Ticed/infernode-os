@@ -111,6 +111,7 @@ TARG=\
 	tkimgrender.dis\
 	tkrender.dis\
 	charonshot.dis\
+	web_html_test.dis\
 	tls_crypto_test.dis\
 	tls_live_test.dis\
 	tls_protocol_test.dis\

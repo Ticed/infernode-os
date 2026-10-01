@@ -1,0 +1,18 @@
+<$ROOT/mkconfig
+
+TARG=\
+	dom.dis\
+	html.dis\
+
+MODULES=
+
+SYSMODULES=\
+	sys.m\
+	web/dom.m\
+	web/html.m\
+	bufio.m\
+	convcs.m\
+
+DISBIN=$ROOT/dis/lib/web
+
+<$ROOT/mkfiles/mkdis
