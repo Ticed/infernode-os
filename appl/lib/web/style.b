@@ -1652,7 +1652,7 @@ St.new(): ref St
 	nogrid := Gline(0, 0, nil);
 	return ref St(
 		Dinline, Pstatic, Fnone, Cnone, 0,
-		a, a, z, z, kw(Lnone), kw(Lnone), 0.0,
+		a, a, a, a, kw(Lnone), kw(Lnone), 0.0,
 		z, z, z, z,
 		z, z, z, z,
 		3, 3, 3, 3,
@@ -3093,21 +3093,27 @@ longhands(nm: string, v: array of ref Tok): list of (string, array of ref Tok)
 			return (hd sub, x) :: (hd tl sub, x) :: nil;
 		return (hd sub, x) :: (hd tl sub, autov()) :: nil;
 	"grid-area" =>
+		# row-start / column-start / row-end / column-end; a missing
+		# value repeats a <custom-ident> before it, else is auto
 		parts := slashes(x);
-		names := array[] of {"grid-row-start", "grid-column-start", "grid-row-end", "grid-column-end"};
-		r: list of (string, array of ref Tok);
+		if(len parts > 4)
+			return nil;
+		v := array[4] of array of ref Tok;
 		for(k := 0; k < 4; k++) {
-			pv: array of ref Tok;
 			if(k < len parts)
-				pv = parts[k];
-			else if(len parts[0] == 1 && parts[0][0].kind == Kident && k < 4)
-				pv = parts[k % 2];	# names repeat
-			else
-				pv = autov();
-			if(k >= len parts && !(len parts[0] == 1 && parts[0][0].kind == Kident))
-				pv = autov();
-			r = (names[k], pv) :: r;
+				v[k] = parts[k];
+			else {
+				from := v[0];
+				if(k == 3)
+					from = v[1];
+				if(len from == 1 && from[0].kind == Kident)
+					v[k] = from;
+				else
+					v[k] = autov();
+			}
 		}
+		r := ("grid-row-start", v[0]) :: ("grid-column-start", v[1]) ::
+			("grid-row-end", v[2]) :: ("grid-column-end", v[3]) :: nil;
 		if(len x == 1 && x[0].kind == Kident)
 			r = ("-x-grid-area-name", x) :: r;
 		return r;

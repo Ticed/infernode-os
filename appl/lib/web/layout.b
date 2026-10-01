@@ -992,8 +992,9 @@ layblock(l: ref L, b: ref Box, cbw, cbh: int, fc: ref Fctx, ox, oy: int): (Margi
 		}
 		if(adjoining) {
 			# no in-flow content at all
-			if(passbot && sh <= 0 && b.st.minheight.kind == Style->Lpx && b.st.minheight.px == 0.0 &&
-			   b.st.minheight.pct == 0.0 && b.kind == Kblock) {
+			mh := b.st.minheight;
+			if(passbot && sh <= 0 && (mh.kind == Style->Lauto || mh.kind == Style->Lpx && mh.px == 0.0 && mh.pct == 0.0) &&
+			   b.kind == Kblock) {
 				empty = 1;
 				top = collapse(top, pending);
 			}
@@ -1019,6 +1020,1387 @@ layblock(l: ref L, b: ref Box, cbw, cbh: int, fc: ref Fctx, ox, oy: int): (Margi
 		empty = 0;
 	positioned(l, b);
 	return (top, bot, empty);
+}
+
+# ---- flex layout (CSS Flexbox 1 §9) ----
+
+Fi: adt {
+	box:	ref Box;
+	base:	real;		# flex base size (outer main margins excluded)
+	hyp:	real;		# hypothetical main size: base clamped
+	main:	real;		# target main size
+	minm, maxm:	real;	# main-size clamps (maxm < 0: none)
+	frozen:	int;
+	mm:	int;		# main-axis margins
+	cross:	int;		# outer cross size
+	pos:	int;		# main position (margin edge)
+};
+
+Fline: adt {
+	items:	array of ref Fi;
+	cross:	int;
+	pos:	int;
+};
+
+# a box's border-box main size from a length, or -1
+mainsize(k: ref Box, v: Len, row, avail: int): int
+{
+	if(row)
+		return specw(k, v, avail);
+	return spech(k, v, avail);
+}
+
+layflex(l: ref L, b: ref Box, cbw, cbh: int)
+{
+	st := b.st;
+	row := st.flexdir < 2;
+	rev := st.flexdir == 1 || st.flexdir == 3;
+	wrap := st.flexwrap != 0;
+	cw := b.w - hextra(b);
+	if(cw < 0)
+		cw = 0;
+	sh := spech(b, st.height, cbh);
+	ch := -1;
+	if(sh >= 0)
+		ch = clamph(b, sh, cbh) - vextra(b);
+	# the main and cross space
+	mainavail := cw;
+	if(!row) {
+		mainavail = ch;
+		if(mainavail < 0) {
+			mx := spech(b, st.maxheight, cbh);
+			if(mx >= 0)
+				mainavail = mx - vextra(b);
+		}
+	}
+	gapmain := res(st.colgap, cw);
+	gapcross := res(st.rowgap, cw);
+	if(!row) {
+		(gapmain, gapcross) = (gapcross, gapmain);
+		if(st.rowgap.kind == Style->Lnormal)
+			gapmain = 0;
+	}
+	if(st.colgap.kind == Style->Lnormal && row)
+		gapmain = 0;
+	if(st.rowgap.kind == Style->Lnormal && row)
+		gapcross = 0;
+
+	# items, in order-modified document order
+	items: list of ref Fi;
+	n := 0;
+	for(i := 0; i < len b.kids; i++) {
+		k := b.kids[i];
+		if(isabs(k)) {
+			l.pending = ref Abs(k, cbof(l, k), b, b.bl + b.pl, b.bt + b.pt) :: l.pending;
+			continue;
+		}
+		items = ref Fi(k, 0.0, 0.0, 0.0, 0.0, -1.0, 0, 0, 0, 0) :: items;
+		n++;
+	}
+	fa := array[n] of ref Fi;
+	for(i = n-1; i >= 0; i--) {
+		fa[i] = hd items;
+		items = tl items;
+	}
+	for(i = 1; i < n; i++)
+		for(j := i; j > 0 && fa[j].box.st.order < fa[j-1].box.st.order; j--)
+			(fa[j], fa[j-1]) = (fa[j-1], fa[j]);
+
+	# flex base sizes and hypothetical main sizes (§9.2)
+	for(i = 0; i < n; i++) {
+		fi := fa[i];
+		k := fi.box;
+		edges(k, cw);
+		if(k.st.ml.kind == Style->Lauto) k.ml = 0;
+		if(k.st.mr.kind == Style->Lauto) k.mr = 0;
+		if(k.st.mt.kind == Style->Lauto) k.mt = 0;
+		if(k.st.mb.kind == Style->Lauto) k.mb = 0;
+		if(row)
+			fi.mm = k.ml + k.mr;
+		else
+			fi.mm = k.mt + k.mb;
+		ks := k.st;
+		base := -1;
+		basis := ks.basis;
+		if(basis.kind == Style->Lauto) {
+			if(row)
+				basis = ks.width;
+			else
+				basis = ks.height;
+		}
+		if(basis.kind != Style->Lauto && basis.kind != Style->Lcontent)
+			base = mainsize(k, basis, row, mainavail);
+		if(base < 0) {
+			# content size
+			if(row) {
+				(nil, mx) := intrinsic(k);
+				base = mx - nz(k.ml) - nz(k.mr);
+			} else {
+				k.w = flexcrossw(k, b, cw);
+				layblock(l, k, cw, -1, nil, 0, 0);
+				base = k.h;
+			}
+		}
+		fi.base = real base;
+		# automatic minimum size: the min-content size
+		mnv := ks.minwidth;
+		mxv := ks.maxwidth;
+		if(!row) {
+			mnv = ks.minheight;
+			mxv = ks.maxheight;
+		}
+		minm := mainsize(k, mnv, row, mainavail);
+		if(minm < 0) {
+			minm = 0;
+			if(mnv.kind == Style->Lauto && ks.overflowx == Style->Ovisible) {
+				if(row) {
+					(mn, nil) := intrinsic(k);
+					minm = mn - nz(k.ml) - nz(k.mr);
+					# no larger than a definite specified size
+					if((sw := specw(k, ks.width, mainavail)) >= 0 && sw < minm)
+						minm = sw;
+				}
+			}
+		}
+		if(row && minm < hextra(k))
+			minm = hextra(k);
+		if(!row && minm < vextra(k))
+			minm = vextra(k);
+		fi.minm = real minm;
+		if(mxv.kind != Style->Lnone)
+			fi.maxm = real mainsize(k, mxv, row, mainavail);
+		fi.hyp = clampr(fi.base, fi.minm, fi.maxm);
+	}
+
+	# flex lines (§9.3)
+	lines: list of ref Fline;
+	st0 := 0;
+	used := 0.0;
+	for(i = 0; i < n; i++) {
+		outer := fa[i].hyp + real fa[i].mm;
+		if(i > st0)
+			outer += real gapmain;
+		if(wrap && i > st0 && mainavail >= 0 && used + outer > real mainavail + 0.5) {
+			lines = ref Fline(fa[st0:i], 0, 0) :: lines;
+			st0 = i;
+			used = fa[i].hyp + real fa[i].mm;
+		} else
+			used += outer;
+	}
+	if(n > 0 || lines == nil)
+		lines = ref Fline(fa[st0:n], 0, 0) :: lines;
+	la := array[len lines] of ref Fline;
+	for(i = len la - 1; i >= 0; i--) {
+		la[i] = hd lines;
+		lines = tl lines;
+	}
+
+	# resolve flexible lengths (§9.7), then lay each item out at its size
+	usedmain := 0;
+	for(i = 0; i < len la; i++) {
+		ln := la[i];
+		avail := mainavail;
+		if(avail < 0) {
+			# indefinite (a column with auto height): sizes are hypothetical
+			avail = 0;
+			for(j := 0; j < len ln.items; j++)
+				avail += ir(ln.items[j].hyp) + ln.items[j].mm;
+			avail += gapmain * nz(len ln.items - 1);
+		}
+		resolveflex(ln.items, real (avail - gapmain * nz(len ln.items - 1)));
+		cross := 0;
+		for(j := 0; j < len ln.items; j++) {
+			fi := ln.items[j];
+			k := fi.box;
+			m := ir(fi.main);
+			if(row) {
+				k.w = m;
+				hch := -1;
+				if(ch >= 0 && !wrap)
+					hch = ch;
+				layblock(l, k, cw, hch, nil, 0, 0);
+				fi.cross = k.h + k.mt + k.mb;
+			} else {
+				k.w = flexcrossw(k, b, cw);
+				layblock(l, k, cw, m, nil, 0, 0);
+				k.h = m;
+				fi.cross = k.w + k.ml + k.mr;
+			}
+			if(fi.cross > cross)
+				cross = fi.cross;
+		}
+		# a single line in a definite cross size takes all of it
+		if(len la == 1 && !wrap) {
+			if(row && ch >= 0)
+				cross = ch;
+			if(!row)
+				cross = cw;
+		}
+		ln.cross = cross;
+		tot := 0;
+		for(j = 0; j < len ln.items; j++)
+			tot += ir(ln.items[j].main) + ln.items[j].mm;
+		tot += gapmain * nz(len ln.items - 1);
+		if(tot > usedmain)
+			usedmain = tot;
+	}
+
+	# the container's cross size
+	crosssum := 0;
+	for(i = 0; i < len la; i++)
+		crosssum += la[i].cross;
+	crosssum += gapcross * nz(len la - 1);
+	containercross := crosssum;
+	if(row && ch >= 0)
+		containercross = ch;
+	if(!row)
+		containercross = cw;
+
+	# align-content: distribute extra cross space among lines (§9.4.15)
+	ac := st.aligncontent;
+	free := containercross - crosssum;
+	off := 0;
+	between := 0;
+	if(len la > 1 || wrap) {
+		case ac {
+		Style->ALnormal or Style->ALstretch =>
+			if(free > 0 && len la > 0) {
+				per := free / len la;
+				for(i = 0; i < len la; i++)
+					la[i].cross += per;
+			}
+		Style->ALend =>
+			off = free;
+		Style->ALcenter =>
+			off = free/2;
+		Style->ALbetween =>
+			if(len la > 1)
+				between = free / (len la - 1);
+		Style->ALaround =>
+			between = free / nz1(len la);
+			off = between/2;
+		Style->ALevenly =>
+			between = free / (len la + 1);
+			off = between;
+		}
+		if(between < 0)
+			between = 0;
+	}
+	cpos := off;
+	for(i = 0; i < len la; i++) {
+		la[i].pos = cpos;
+		cpos += la[i].cross + gapcross + between;
+	}
+
+	# main-axis alignment (§9.5) and cross-axis alignment (§9.6)
+	for(i = 0; i < len la; i++) {
+		ln := la[i];
+		nit := len ln.items;
+		space := 0;
+		if(row)
+			space = cw;
+		else if(ch >= 0)
+			space = ch;
+		else
+			space = usedmain;
+		used2 := gapmain * nz(nit - 1);
+		autos := 0;
+		for(j := 0; j < nit; j++) {
+			fi := ln.items[j];
+			used2 += ir(fi.main) + fi.mm;
+			ks := fi.box.st;
+			if(row) {
+				if(ks.ml.kind == Style->Lauto) autos++;
+				if(ks.mr.kind == Style->Lauto) autos++;
+			} else {
+				if(ks.mt.kind == Style->Lauto) autos++;
+				if(ks.mb.kind == Style->Lauto) autos++;
+			}
+		}
+		freem := space - used2;
+		start := 0;
+		gap := gapmain;
+		if(autos > 0 && freem > 0) {
+			# auto margins take the free space
+			per := freem / autos;
+			for(j = 0; j < nit; j++) {
+				k := ln.items[j].box;
+				ks := k.st;
+				if(row) {
+					if(ks.ml.kind == Style->Lauto) k.ml = per;
+					if(ks.mr.kind == Style->Lauto) k.mr = per;
+					ln.items[j].mm = k.ml + k.mr;
+				} else {
+					if(ks.mt.kind == Style->Lauto) k.mt = per;
+					if(ks.mb.kind == Style->Lauto) k.mb = per;
+					ln.items[j].mm = k.mt + k.mb;
+				}
+			}
+			freem = 0;
+		}
+		jc := st.justifycontent;
+		if(rev && (jc == Style->ALstart || jc == Style->ALnormal))
+			jc = -1;	# packs toward the end, as it is reversed
+		case jc {
+		Style->ALend or Style->ALright =>
+			start = freem;
+		-1 =>
+			start = freem;
+		Style->ALcenter =>
+			start = freem/2;
+		Style->ALbetween =>
+			if(nit > 1 && freem > 0)
+				gap += freem / (nit - 1);
+		Style->ALaround =>
+			if(freem > 0) {
+				gap += freem / nz1(nit);
+				start = freem / nz1(nit) / 2;
+			}
+		Style->ALevenly =>
+			if(freem > 0) {
+				gap += freem / (nit + 1);
+				start = freem / (nit + 1);
+			}
+		}
+		if(rev && jc == -1)
+			start = 0;
+		mp := start;
+		for(j = 0; j < nit; j++) {
+			idx := j;
+			if(rev)
+				idx = nit - 1 - j;
+			fi := ln.items[idx];
+			fi.pos = mp;
+			mp += ir(fi.main) + fi.mm + gap;
+		}
+		if(rev) {
+			# reversed: mirror within the space
+			for(j = 0; j < nit; j++) {
+				fi := ln.items[j];
+				fi.pos = space - fi.pos - ir(fi.main) - fi.mm;
+				if(jc == -1)
+					fi.pos -= 0;
+			}
+		}
+		for(j = 0; j < nit; j++) {
+			fi := ln.items[j];
+			k := fi.box;
+			ks := k.st;
+			al := ks.alignself;
+			if(al == Style->ALauto)
+				al = st.alignitems;
+			if(al == Style->ALnormal)
+				al = Style->ALstretch;
+			lc := ln.cross;
+			if(st.flexwrap == 2)
+				;	# wrap-reverse: lines run the other way (not modelled)
+			cpos = 0;
+			if(row) {
+				if(al == Style->ALstretch && ks.height.kind == Style->Lauto &&
+				   ks.mt.kind != Style->Lauto && ks.mb.kind != Style->Lauto)
+					k.h = clamph(k, lc - k.mt - k.mb, ch);
+				outer := k.h + k.mt + k.mb;
+				if(ks.mt.kind == Style->Lauto && ks.mb.kind == Style->Lauto)
+					cpos = (lc - outer)/2;
+				else if(ks.mt.kind == Style->Lauto)
+					cpos = lc - outer;
+				else
+					cpos = crossoff(al, lc, outer);
+				k.x = b.bl + b.pl + fi.pos + k.ml;
+				k.y = b.bt + b.pt + ln.pos + cpos + k.mt;
+			} else {
+				if(al == Style->ALstretch && ks.width.kind == Style->Lauto &&
+				   ks.ml.kind != Style->Lauto && ks.mr.kind != Style->Lauto)
+					k.w = clampw(k, lc - k.ml - k.mr, cw);
+				outer := k.w + k.ml + k.mr;
+				if(ks.ml.kind == Style->Lauto && ks.mr.kind == Style->Lauto)
+					cpos = (lc - outer)/2;
+				else
+					cpos = crossoff(al, lc, outer);
+				k.x = b.bl + b.pl + ln.pos + cpos + k.ml;
+				k.y = b.bt + b.pt + fi.pos + k.mt;
+			}
+			relative(k, cw, ch);
+		}
+	}
+	# the container's height
+	h := sh;
+	if(h < 0) {
+		if(row)
+			h = containercross + vextra(b);
+		else
+			h = usedmain + vextra(b);
+	}
+	b.h = clamph(b, h, cbh);
+}
+
+crossoff(al, space, outer: int): int
+{
+	case al {
+	Style->ALend or Style->ALright =>
+		return space - outer;
+	Style->ALcenter =>
+		return (space - outer)/2;
+	}
+	return 0;
+}
+
+clampr(v, mn, mx: real): real
+{
+	if(mx >= 0.0 && v > mx)
+		v = mx;
+	if(v < mn)
+		v = mn;
+	return v;
+}
+
+# the width of an item in a column flex container: stretched to the
+# container, or fit to its content
+flexcrossw(k, b: ref Box, cw: int): int
+{
+	ks := k.st;
+	w := specw(k, ks.width, cw);
+	if(w >= 0)
+		return clampw(k, w, cw);
+	al := ks.alignself;
+	if(al == Style->ALauto)
+		al = b.st.alignitems;
+	if(al == Style->ALnormal || al == Style->ALstretch)
+		return clampw(k, cw - k.ml - k.mr, cw);
+	(mn, mx) := intrinsic(k);
+	return clampw(k, fit(mn, mx, cw) - nz(k.ml) - nz(k.mr), cw);
+}
+
+# §9.7: grow or shrink items to fill avail, freezing those that hit a limit
+resolveflex(items: array of ref Fi, avail: real)
+{
+	n := len items;
+	if(n == 0)
+		return;
+	sum := 0.0;
+	for(i := 0; i < n; i++)
+		sum += items[i].hyp + real items[i].mm;
+	grow := sum < avail;
+	for(i = 0; i < n; i++) {
+		fi := items[i];
+		fi.frozen = 0;
+		ks := fi.box.st;
+		if(grow && ks.grow == 0.0 || !grow && ks.shrink == 0.0 ||
+		   grow && fi.base > fi.hyp || !grow && fi.base < fi.hyp) {
+			fi.frozen = 1;
+			fi.main = fi.hyp;
+		} else
+			fi.main = fi.base;
+	}
+	for(iter := 0; iter < n + 2; iter++) {
+		free := avail;
+		factor := 0.0;
+		unfrozen := 0;
+		for(i = 0; i < n; i++) {
+			fi := items[i];
+			if(fi.frozen)
+				free -= fi.main + real fi.mm;
+			else {
+				free -= fi.base + real fi.mm;
+				unfrozen++;
+				if(grow)
+					factor += fi.box.st.grow;
+				else
+					factor += fi.box.st.shrink * fi.base;
+			}
+		}
+		if(unfrozen == 0)
+			break;
+		if(grow && factor < 1.0 && factor > 0.0) {
+			# flex factors summing to less than 1 take only that share
+			f := 0.0;
+			for(i = 0; i < n; i++)
+				if(!items[i].frozen)
+					f += items[i].box.st.grow;
+			if(free * f < free)
+				free = free * f;
+		}
+		viol := 0.0;
+		for(i = 0; i < n; i++) {
+			fi := items[i];
+			if(fi.frozen)
+				continue;
+			t := fi.base;
+			if(factor > 0.0) {
+				if(grow)
+					t += free * fi.box.st.grow / factor;
+				else
+					t += free * fi.box.st.shrink * fi.base / factor;
+			}
+			c := clampr(t, fi.minm, fi.maxm);
+			if(c < 0.0)
+				c = 0.0;
+			viol += c - t;
+			fi.main = c;
+		}
+		# freeze the violators of the direction of the total violation
+		done := 1;
+		for(i = 0; i < n; i++) {
+			fi := items[i];
+			if(fi.frozen)
+				continue;
+			t := fi.base;
+			if(factor > 0.0) {
+				if(grow)
+					t += free * fi.box.st.grow / factor;
+				else
+					t += free * fi.box.st.shrink * fi.base / factor;
+			}
+			if(viol == 0.0 || viol > 0.0 && fi.main > t || viol < 0.0 && fi.main < t)
+				fi.frozen = 1;
+			else
+				done = 0;
+		}
+		if(done)
+			break;
+	}
+}
+
+# ---- grid layout (CSS Grid 1) ----
+
+# a track sizing function's two ends
+Tfixed, Tpct, Tfr, Tauto, Tmin, Tmax: con iota;
+
+Tsz: adt {
+	kind:	int;
+	v:	real;		# px, percent or fr
+};
+
+Track: adt {
+	lo, hi:	Tsz;		# minmax(lo, hi); a plain size has lo == hi
+	base:	real;		# the track's size as it is worked out
+	limit:	real;		# growth limit (-1: infinite)
+};
+
+Gi: adt {
+	box:	ref Box;
+	r0, r1, c0, c1:	int;	# lines, 0-based: rows r0..r1-1, columns c0..c1-1
+};
+
+# the size a track function names, or Tauto if it is not one
+tsz(t: ref Tok): (int, Tsz)
+{
+	case t.kind {
+	Css->Kdimension =>
+		if(t.s == "fr")
+			return (1, Tsz(Tfr, t.n));
+		if(t.s == "px")
+			return (1, Tsz(Tfixed, t.n));
+	Css->Kpercent =>
+		return (1, Tsz(Tpct, t.n));
+	Css->Knumber =>
+		if(t.n == 0.0)
+			return (1, Tsz(Tfixed, 0.0));
+	Css->Kident =>
+		case lower(t.s) {
+		"auto" => return (1, Tsz(Tauto, 0.0));
+		"min-content" => return (1, Tsz(Tmin, 0.0));
+		"max-content" => return (1, Tsz(Tmax, 0.0));
+		}
+	}
+	return (0, Tsz(Tauto, 0.0));
+}
+
+# one track from a token: a size, minmax() or fit-content()
+track(t: ref Tok): ref Track
+{
+	if(t.kind == Css->Kfunction) {
+		a := commas(t.kids);
+		case t.s {
+		"minmax" =>
+			if(len a != 2)
+				return nil;
+			x := nows(hd a);
+			y := nows(hd tl a);
+			if(len x != 1 || len y != 1)
+				return nil;
+			(ok1, lo) := tsz(x[0]);
+			(ok2, hi) := tsz(y[0]);
+			if(!ok1 || !ok2)
+				return nil;
+			if(lo.kind == Tfr)
+				lo = Tsz(Tauto, 0.0);
+			return ref Track(lo, hi, 0.0, 0.0);
+		"fit-content" =>
+			x := nows(t.kids);
+			if(len x != 1)
+				return nil;
+			(ok, hi) := tsz(x[0]);
+			if(!ok)
+				return nil;
+			return ref Track(Tsz(Tauto, 0.0), hi, 0.0, 0.0);
+		}
+		return nil;
+	}
+	(ok, sz) := tsz(t);
+	if(!ok)
+		return nil;
+	lo := sz;
+	if(sz.kind == Tfr)
+		lo = Tsz(Tauto, 0.0);	# 1fr is minmax(auto, 1fr)
+	return ref Track(lo, sz, 0.0, 0.0);
+}
+
+# A track list, with repeat() expanded (auto-fill/auto-fit against
+# avail) and line names collected: names[i] are the names of line i.
+tracks(v: array of ref Tok, avail, gap: int): (array of ref Track, array of list of string)
+{
+	tlist: list of ref Track;
+	names: list of (int, string);
+	nt := 0;
+	for(i := 0; i < len v; i++) {
+		t := v[i];
+		case t.kind {
+		Css->Kws =>
+			continue;
+		Css->Kblock =>
+			if(t.s == "[")
+				for(k := 0; k < len t.kids; k++)
+					if(t.kids[k].kind == Css->Kident)
+						names = (nt, t.kids[k].s) :: names;
+			continue;
+		Css->Kfunction =>
+			if(t.s == "repeat") {
+				a := commas(t.kids);
+				if(len a < 2)
+					continue;
+				cnt := nows(hd a);
+				if(len cnt != 1)
+					continue;
+				rest := tl a;
+				# the repeated part is everything after the first comma
+				x := array[0] of ref Tok;
+				for(r := rest; r != nil; r = tl r) {
+					if(len x > 0) {
+						y := array[len x + 1 + len hd r] of ref Tok;
+						y[0:] = x;
+						y[len x] = ref Tok(Css->Kcomma, ",", 0.0, 0, nil);
+						y[len x + 1:] = hd r;
+						x = y;
+					} else
+						x = hd r;
+				}
+				(rt, rn) := tracks(x, -1, gap);
+				if(len rt == 0)
+					continue;
+				reps := 1;
+				if(cnt[0].kind == Css->Knumber)
+					reps = int cnt[0].n;
+				else if(cnt[0].kind == Css->Kident) {
+					# auto-fill, auto-fit: as many as fit
+					per := 0.0;
+					for(k := 0; k < len rt; k++) {
+						sz := rt[k].hi;
+						if(sz.kind != Tfixed && sz.kind != Tpct)
+							sz = rt[k].lo;
+						case sz.kind {
+						Tfixed => per += sz.v;
+						Tpct => per += sz.v * real avail / 100.0;
+						}
+					}
+					per += real (gap * len rt);
+					reps = 1;
+					if(avail > 0 && per > 0.0)
+						reps = int ((real avail + real gap) / per - 0.4999);
+					if(reps < 1)
+						reps = 1;
+				}
+				for(k := 0; k < reps; k++) {
+					for(m := 0; m < len rt; m++) {
+						for(nl := rn[m]; nl != nil; nl = tl nl)
+							names = (nt, hd nl) :: names;
+						tlist = ref *rt[m] :: tlist;
+						nt++;
+					}
+				}
+				if(len rn > len rt)
+					for(nl := rn[len rt]; nl != nil; nl = tl nl)
+						names = (nt, hd nl) :: names;
+				continue;
+			}
+		}
+		tr := track(t);
+		if(tr != nil) {
+			tlist = tr :: tlist;
+			nt++;
+		}
+	}
+	a := array[nt] of ref Track;
+	for(i = nt - 1; i >= 0; i--) {
+		a[i] = hd tlist;
+		tlist = tl tlist;
+	}
+	n := array[nt + 1] of list of string;
+	for(; names != nil; names = tl names) {
+		(at, nm) := hd names;
+		if(at <= nt)
+			n[at] = nm :: n[at];
+	}
+	return (a, n);
+}
+
+# the line a Gline names, 0-based, given the explicit grid's line names;
+# -1 if auto
+lineof(g: Style->Gline, names: array of list of string, ntracks: int, end: int): int
+{
+	if(g.name != nil && g.n == 0 && !g.span) {
+		suffix := "-start";
+		if(end)
+			suffix = "-end";
+		for(i := 0; i < len names; i++)
+			for(l := names[i]; l != nil; l = tl l)
+				if(hd l == g.name || hd l == g.name + suffix)
+					return i;
+		return -1;
+	}
+	if(g.span || g.n == 0)
+		return -1;
+	if(g.n > 0)
+		return g.n - 1;
+	n := ntracks + 1 + g.n;	# -1 is the last line
+	if(n < 0)
+		n = 0;
+	return n;
+}
+
+# named areas as lines: (name, r0, r1, c0, c1)
+areas(rows: array of string): list of (string, int, int, int, int)
+{
+	r: list of (string, int, int, int, int);
+	for(i := 0; i < len rows; i++) {
+		(nil, cells) := sys->tokenize(rows[i], " \t\n");
+		j := 0;
+		for(; cells != nil; cells = tl cells) {
+			nm := hd cells;
+			if(nm != "." && nm[0] != '.') {
+				found := 0;
+				nr: list of (string, int, int, int, int);
+				for(a := r; a != nil; a = tl a) {
+					(an, r0, r1, c0, c1) := hd a;
+					if(an == nm) {
+						found = 1;
+						if(i+1 > r1) r1 = i+1;
+						if(j+1 > c1) c1 = j+1;
+						if(i < r0) r0 = i;
+						if(j < c0) c0 = j;
+					}
+					nr = (an, r0, r1, c0, c1) :: nr;
+				}
+				r = nr;
+				if(!found)
+					r = (nm, i, i+1, j, j+1) :: r;
+			}
+			j++;
+		}
+	}
+	return r;
+}
+
+laygrid(l: ref L, b: ref Box, cbw, cbh: int)
+{
+	st := b.st;
+	cw := b.w - hextra(b);
+	if(cw < 0)
+		cw = 0;
+	sh := spech(b, st.height, cbh);
+	ch := -1;
+	if(sh >= 0)
+		ch = clamph(b, sh, cbh) - vextra(b);
+	colgap := 0;
+	rowgap := 0;
+	if(st.colgap.kind != Style->Lnormal)
+		colgap = res(st.colgap, cw);
+	if(st.rowgap.kind != Style->Lnormal)
+		rowgap = res(st.rowgap, nz(ch));
+	(cols, colnames) := tracks(st.gridcols, cw, colgap);
+	(rows, rownames) := tracks(st.gridrows, ch, rowgap);
+	ars := areas(st.gridareas);
+	for(a := ars; a != nil; a = tl a) {
+		(nil, nil, r1, nil, c1) := hd a;
+		if(c1 > len cols)
+			cols = growtracks(cols, c1, st.autocols, cw);
+		if(r1 > len rows)
+			rows = growtracks(rows, r1, st.autorows, ch);
+	}
+	ncols := len cols;
+	if(ncols == 0)
+		ncols = 1;
+
+	# placement
+	gi: list of ref Gi;
+	for(i := 0; i < len b.kids; i++) {
+		k := b.kids[i];
+		if(isabs(k)) {
+			l.pending = ref Abs(k, cbof(l, k), b, b.bl + b.pl, b.bt + b.pt) :: l.pending;
+			continue;
+		}
+		ks := k.st;
+		g := ref Gi(k, -1, -1, -1, -1);
+		if(ks.gridarea != nil) {
+			for(a = ars; a != nil; a = tl a) {
+				(an, r0, r1, c0, c1) := hd a;
+				if(an == ks.gridarea) {
+					(g.r0, g.r1, g.c0, g.c1) = (r0, r1, c0, c1);
+					break;
+				}
+			}
+		}
+		if(g.r0 < 0) {
+			(g.c0, g.c1) = gridspan(ks.colstart, ks.colend, colnames, len cols, ars, 1);
+			(g.r0, g.r1) = gridspan(ks.rowstart, ks.rowend, rownames, len rows, ars, 0);
+		}
+		gi = g :: gi;
+	}
+	items := array[len gi] of ref Gi;
+	for(i = len items - 1; i >= 0; i--) {
+		items[i] = hd gi;
+		gi = tl gi;
+	}
+	colflow := st.autoflow & 1;
+	dense := st.autoflow & 2;
+	# columns grow to hold definite placements
+	for(i = 0; i < len items; i++)
+		if(items[i].c1 > ncols)
+			ncols = items[i].c1;
+	occ := ref Occ(array[0] of array of byte, ncols);
+	# 1: definite in both
+	for(i = 0; i < len items; i++) {
+		g := items[i];
+		if(g.r0 >= 0 && g.c0 >= 0)
+			occ.mark(g.r0, g.r1, g.c0, g.c1);
+	}
+	# 2: definite in one axis, then 3: fully automatic
+	cr := 0;
+	cc := 0;
+	for(i = 0; i < len items; i++) {
+		g := items[i];
+		if(g.r0 >= 0 && g.c0 >= 0)
+			continue;
+		rs := spanof(g.r0, g.r1, items[i].box.st.rowstart, items[i].box.st.rowend);
+		cs := spanof(g.c0, g.c1, items[i].box.st.colstart, items[i].box.st.colend);
+		if(cs > ncols && !colflow)
+			cs = ncols;
+		if(colflow) {
+			# column-major: transpose the search
+			if(g.c0 < 0) {
+				c := cc;
+				r := cr;
+				if(dense) {
+					c = 0;
+					r = 0;
+				}
+				for(;; ) {
+					if(g.r0 >= 0)
+						r = g.r0;
+					if(r + rs > nz1(len rows) && g.r0 < 0) {
+						r = 0;
+						c++;
+						continue;
+					}
+					if(occ.free(r, r + rs, c, c + cs))
+						break;
+					r++;
+					if(g.r0 >= 0) {
+						c++;
+						r = g.r0;
+					}
+				}
+				g.c0 = c;
+				g.c1 = c + cs;
+				if(g.r0 < 0) {
+					g.r0 = r;
+					g.r1 = r + rs;
+				}
+				cc = g.c0;
+				cr = g.r1;
+			} else {
+				r := 0;
+				while(!occ.free(r, r + rs, g.c0, g.c1))
+					r++;
+				g.r0 = r;
+				g.r1 = r + rs;
+			}
+		} else {
+			if(g.r0 < 0) {
+				r := cr;
+				c := cc;
+				if(dense) {
+					r = 0;
+					c = 0;
+				}
+				for(;;) {
+					if(g.c0 >= 0)
+						c = g.c0;
+					if(c + cs > ncols) {
+						c = 0;
+						r++;
+						continue;
+					}
+					if(occ.free(r, r + rs, c, c + cs))
+						break;
+					if(g.c0 >= 0) {
+						r++;
+						continue;
+					}
+					c++;
+				}
+				if(g.c0 < 0) {
+					g.c0 = c;
+					g.c1 = c + cs;
+				}
+				g.r0 = r;
+				g.r1 = r + rs;
+				cr = g.r0;
+				cc = g.c1;
+			} else {
+				r := 0;
+				while(!occ.free(r, r + rs, g.c0, g.c1))
+					r++;
+				g.r0 = r;
+				g.r1 = r + rs;
+			}
+		}
+		if(g.c1 > ncols)
+			ncols = g.c1;
+		occ.mark(g.r0, g.r1, g.c0, g.c1);
+	}
+	nrows := len rows;
+	for(i = 0; i < len items; i++)
+		if(items[i].r1 > nrows)
+			nrows = items[i].r1;
+	cols = growtracks(cols, ncols, st.autocols, cw);
+	rows = growtracks(rows, nrows, st.autorows, ch);
+
+	# column sizes, then rows (laying items out at their column widths)
+	sizetracks(cols, items, 1, cw, colgap, b);
+	cpos := trackpos(cols, colgap, cw, st.justifycontent);
+	for(i = 0; i < len items; i++) {
+		g := items[i];
+		k := g.box;
+		edges(k, areaw(cols, cpos, g.c0, g.c1, colgap));
+	}
+	# items' heights at their widths
+	for(i = 0; i < len items; i++) {
+		g := items[i];
+		k := g.box;
+		aw := areaw(cols, cpos, g.c0, g.c1, colgap);
+		k.w = gridw(k, aw, b);
+		layblock(l, k, aw, -1, nil, 0, 0);
+	}
+	sizetracks(rows, items, 0, ch, rowgap, b);
+	gh := 0;
+	for(i = 0; i < len rows; i++)
+		gh += ir(rows[i].base);
+	gh += rowgap * nz(len rows - 1);
+	avh := ch;
+	if(avh < 0)
+		avh = gh;
+	rpos := trackpos(rows, rowgap, avh, st.aligncontent);
+
+	# place each item in its area, aligned
+	for(i = 0; i < len items; i++) {
+		g := items[i];
+		k := g.box;
+		ks := k.st;
+		ax := cpos[g.c0];
+		aw := areaw(cols, cpos, g.c0, g.c1, colgap);
+		ay := rpos[g.r0];
+		ah := trackend(rows, rpos, g.r1 - 1, rowgap) - ay;
+		js := ks.justifyself;
+		if(js == Style->ALauto)
+			js = st.justifyitems;
+		as := ks.alignself;
+		if(as == Style->ALauto)
+			as = st.alignitems;
+		if((as == Style->ALnormal || as == Style->ALstretch) && ks.height.kind == Style->Lauto &&
+		   ks.mt.kind != Style->Lauto && ks.mb.kind != Style->Lauto && k.kind != Kreplaced) {
+			nh := clamph(k, ah - k.mt - k.mb, ah);
+			if(nh != k.h) {
+				k.h = nh;
+			}
+		}
+		x := ax + k.ml + crossoff(js, aw, k.w + k.ml + k.mr);
+		if(ks.ml.kind == Style->Lauto && ks.mr.kind == Style->Lauto)
+			x = ax + (aw - k.w)/2;
+		y := ay + k.mt + crossoff(as, ah, k.h + k.mt + k.mb);
+		if(ks.mt.kind == Style->Lauto && ks.mb.kind == Style->Lauto)
+			y = ay + (ah - k.h)/2;
+		k.x = b.bl + b.pl + x;
+		k.y = b.bt + b.pt + y;
+		relative(k, aw, ah);
+	}
+	h := sh;
+	if(h < 0)
+		h = gh + vextra(b);
+	b.h = clamph(b, h, cbh);
+}
+
+Occ: adt {
+	rows:	array of array of byte;
+	ncols:	int;
+	free:	fn(o: self ref Occ, r0, r1, c0, c1: int): int;
+	mark:	fn(o: self ref Occ, r0, r1, c0, c1: int);
+};
+
+Occ.free(o: self ref Occ, r0, r1, c0, c1: int): int
+{
+	for(r := r0; r < r1 && r < len o.rows; r++)
+		for(c := c0; c < c1; c++)
+			if(c < len o.rows[r] && o.rows[r][c] != byte 0)
+				return 0;
+	return 1;
+}
+
+Occ.mark(o: self ref Occ, r0, r1, c0, c1: int)
+{
+	if(r1 > len o.rows) {
+		a := array[r1] of array of byte;
+		a[0:] = o.rows;
+		for(i := len o.rows; i < r1; i++)
+			a[i] = array[0] of byte;
+		o.rows = a;
+	}
+	for(r := r0; r < r1; r++) {
+		if(c1 > len o.rows[r]) {
+			a := array[c1] of {* => byte 0};
+			a[0:] = o.rows[r];
+			o.rows[r] = a;
+		}
+		for(c := c0; c < c1; c++)
+			o.rows[r][c] = byte 1;
+	}
+}
+
+# lines (start, end) for one axis; (-1, -1) when automatic
+gridspan(s, e: Style->Gline, names: array of list of string, ntracks: int, ars: list of (string, int, int, int, int), cols: int): (int, int)
+{
+	a := lineof(s, names, ntracks, 0);
+	b := lineof(e, names, ntracks, 1);
+	# a name that is an area names its edge lines
+	if(s.name != nil && a < 0)
+		for(l := ars; l != nil; l = tl l) {
+			(an, r0, nil, c0, nil) := hd l;
+			if(an == s.name) {
+				a = r0;
+				if(cols)
+					a = c0;
+			}
+		}
+	if(e.name != nil && b < 0)
+		for(m := ars; m != nil; m = tl m) {
+			(an, nil, r1, nil, c1) := hd m;
+			if(an == e.name) {
+				b = r1;
+				if(cols)
+					b = c1;
+			}
+		}
+	if(a >= 0 && b >= 0) {
+		if(b < a)
+			(a, b) = (b, a);
+		if(b == a)
+			b = a + 1;
+		return (a, b);
+	}
+	if(a >= 0) {
+		n := 1;
+		if(e.span)
+			n = e.span;
+		return (a, a + n);
+	}
+	if(b >= 0) {
+		n := 1;
+		if(s.span)
+			n = s.span;
+		if(b - n < 0)
+			return (0, n);
+		return (b - n, b);
+	}
+	return (-1, -1);
+}
+
+spanof(a0, a1: int, s, e: Style->Gline): int
+{
+	if(a0 >= 0)
+		return a1 - a0;
+	n := 1;
+	if(s.span)
+		n = s.span;
+	if(e.span)
+		n = e.span;
+	return n;
+}
+
+# make tracks n long, the new ones from the implicit track sizes
+growtracks(t: array of ref Track, n: int, auto: array of ref Tok, avail: int): array of ref Track
+{
+	if(n <= len t)
+		return t;
+	(at, nil) := tracks(auto, avail, 0);
+	r := array[n] of ref Track;
+	r[0:] = t;
+	for(i := len t; i < n; i++) {
+		if(len at > 0)
+			r[i] = ref *at[(i - len t) % len at];
+		else
+			r[i] = ref Track(Tsz(Tauto, 0.0), Tsz(Tauto, 0.0), 0.0, 0.0);
+	}
+	return r;
+}
+
+# The track sizing algorithm (§11), much simplified: fixed sizes; content
+# sizes from items spanning one track, then spanning items spread over
+# the intrinsic tracks they cross; leftover space to fr tracks, else to
+# auto tracks.
+sizetracks(t: array of ref Track, items: array of ref Gi, cols: int, avail, gap: int, b: ref Box)
+{
+	n := len t;
+	if(n == 0)
+		return;
+	for(i := 0; i < n; i++) {
+		tr := t[i];
+		tr.base = 0.0;
+		tr.limit = -1.0;
+		case tr.lo.kind {
+		Tfixed => tr.base = tr.lo.v;
+		Tpct =>
+			if(avail >= 0)
+				tr.base = tr.lo.v * real avail / 100.0;
+		}
+		case tr.hi.kind {
+		Tfixed => tr.limit = tr.hi.v;
+		Tpct =>
+			if(avail >= 0)
+				tr.limit = tr.hi.v * real avail / 100.0;
+		}
+		if(tr.limit >= 0.0 && tr.limit < tr.base)
+			tr.limit = tr.base;
+	}
+	# content contributions, single-span items first
+	for(pass := 1; pass <= 2; pass++)
+		for(i = 0; i < len items; i++) {
+			g := items[i];
+			a0 := g.c0;
+			a1 := g.c1;
+			if(!cols) {
+				a0 = g.r0;
+				a1 = g.r1;
+			}
+			nspan := a1 - a0;
+			if(pass == 1 && nspan != 1 || pass == 2 && nspan == 1)
+				continue;
+			k := g.box;
+			mn, mx: int;
+			if(cols)
+				(mn, mx) = intrinsic(k);
+			else {
+				mn = k.h + k.mt + k.mb;
+				mx = mn;
+			}
+			# what the spanned tracks already provide
+			have := 0.0;
+			nintr := 0;
+			hasfr := 0;
+			for(j := a0; j < a1 && j < n; j++) {
+				have += t[j].base;
+				if(t[j].hi.kind == Tfr)
+					hasfr = 1;
+				if(intrinsiclo(t[j]))
+					nintr++;
+			}
+			have += real (gap * (nspan - 1));
+			if(pass == 2 && hasfr)
+				continue;	# spanning fr tracks: left to the fr step
+			need := real mn - have;
+			if(need > 0.0 && nintr > 0) {
+				per := need / real nintr;
+				for(j = a0; j < a1 && j < n; j++)
+					if(intrinsiclo(t[j]))
+						t[j].base += per;
+			}
+			# growth limits for auto and max-content tracks
+			if(nspan == 1 && a0 < n) {
+				tr := t[a0];
+				if(tr.hi.kind == Tauto || tr.hi.kind == Tmax) {
+					lim := real mx;
+					if(tr.limit < lim)
+						tr.limit = lim;
+				}
+				if(tr.hi.kind == Tmin && tr.limit < real mn)
+					tr.limit = real mn;
+			}
+		}
+	for(i = 0; i < n; i++)
+		if(t[i].limit >= 0.0 && t[i].limit < t[i].base)
+			t[i].limit = t[i].base;
+	# free space
+	used := real (gap * (n - 1));
+	for(i = 0; i < n; i++)
+		used += t[i].base;
+	if(avail < 0) {
+		# indefinite: intrinsic tracks grow to their limits; fr as max-content
+		for(i = 0; i < n; i++)
+			if(t[i].limit > t[i].base)
+				t[i].base = t[i].limit;
+		return;
+	}
+	free := real avail - used;
+	# grow tracks with a finite limit toward it
+	if(free > 0.0) {
+		want := 0.0;
+		for(i = 0; i < n; i++)
+			if(t[i].hi.kind != Tfr && t[i].limit > t[i].base)
+				want += t[i].limit - t[i].base;
+		if(want > 0.0) {
+			f := 1.0;
+			if(want > free)
+				f = free / want;
+			for(i = 0; i < n; i++)
+				if(t[i].hi.kind != Tfr && t[i].limit > t[i].base) {
+					d := (t[i].limit - t[i].base) * f;
+					t[i].base += d;
+					free -= d;
+				}
+		}
+	}
+	# fr tracks share what is left (§11.7), never below their base
+	sumfr := 0.0;
+	for(i = 0; i < n; i++)
+		if(t[i].hi.kind == Tfr)
+			sumfr += t[i].hi.v;
+	if(sumfr > 0.0) {
+		left := free;
+		for(i = 0; i < n; i++)
+			if(t[i].hi.kind == Tfr)
+				left += t[i].base;
+		inflex := array[n] of {* => 0};
+		for(iter := 0; iter < n; iter++) {
+			fs := 0.0;
+			sp := left;
+			for(i = 0; i < n; i++)
+				if(t[i].hi.kind == Tfr && !inflex[i])
+					fs += t[i].hi.v;
+				else if(t[i].hi.kind == Tfr)
+					sp -= t[i].base;
+			if(fs <= 0.0)
+				break;
+			unit := sp / maxr(fs, 1.0);
+			changed := 0;
+			for(i = 0; i < n; i++)
+				if(t[i].hi.kind == Tfr && !inflex[i] && unit * t[i].hi.v < t[i].base) {
+					inflex[i] = 1;
+					changed = 1;
+				}
+			if(changed)
+				continue;
+			for(i = 0; i < n; i++)
+				if(t[i].hi.kind == Tfr && !inflex[i])
+					t[i].base = unit * t[i].hi.v;
+			break;
+		}
+		return;
+	}
+	# else stretch auto tracks
+	if(free > 0.0) {
+		na := 0;
+		for(i = 0; i < n; i++)
+			if(t[i].hi.kind == Tauto)
+				na++;
+		if(na > 0)
+			for(i = 0; i < n; i++)
+				if(t[i].hi.kind == Tauto)
+					t[i].base += free / real na;
+	}
+}
+
+maxr(a, b: real): real
+{
+	if(a > b)
+		return a;
+	return b;
+}
+
+intrinsiclo(t: ref Track): int
+{
+	return t.lo.kind == Tauto || t.lo.kind == Tmin || t.lo.kind == Tmax;
+}
+
+# track start positions, with justify/align-content distribution
+trackpos(t: array of ref Track, gap, avail, align: int): array of int
+{
+	n := len t;
+	pos := array[n + 1] of int;
+	used := gap * nz(n - 1);
+	for(i := 0; i < n; i++)
+		used += ir(t[i].base);
+	free := avail - used;
+	start := 0;
+	extra := 0;
+	if(free > 0)
+		case align {
+		Style->ALend or Style->ALright =>
+			start = free;
+		Style->ALcenter =>
+			start = free/2;
+		Style->ALbetween =>
+			if(n > 1)
+				extra = free / (n - 1);
+		Style->ALaround =>
+			extra = free / nz1(n);
+			start = extra/2;
+		Style->ALevenly =>
+			extra = free / (n + 1);
+			start = extra;
+		}
+	# accumulate in reals and round each edge, so fractional tracks
+	# tile without gaps
+	p := real start;
+	for(i = 0; i < n; i++) {
+		pos[i] = ir(p);
+		p += t[i].base + real (gap + extra);
+	}
+	pos[n] = ir(p) - gap - extra;
+	return pos;
+}
+
+areaw(t: array of ref Track, pos: array of int, a0, a1, gap: int): int
+{
+	if(a0 < 0 || a1 > len t || a1 <= a0)
+		return 0;
+	return trackend(t, pos, a1 - 1, gap) - pos[a0];
+}
+
+# where track i ends: the next track's start less the gap, so rounded
+# tracks meet exactly
+trackend(t: array of ref Track, pos: array of int, i, gap: int): int
+{
+	if(i + 1 < len t)
+		return pos[i+1] - gap;
+	return pos[i] + ir(t[i].base);
+}
+
+gridw(k: ref Box, aw: int, b: ref Box): int
+{
+	ks := k.st;
+	w := specw(k, ks.width, aw);
+	if(w >= 0)
+		return clampw(k, w, aw);
+	js := ks.justifyself;
+	if(js == Style->ALauto)
+		js = b.st.justifyitems;
+	if((js == Style->ALnormal || js == Style->ALstretch) && ks.ml.kind != Style->Lauto && ks.mr.kind != Style->Lauto && k.kind != Kreplaced)
+		return clampw(k, aw - k.ml - k.mr, aw);
+	if(k.kind == Kreplaced) {
+		(rw, nil) := replacedsize(k, aw, -1);
+		return clampw(k, rw + hextra(k), aw);
+	}
+	(mn, mx) := intrinsic(k);
+	return clampw(k, fit(mn, mx, aw) - nz(k.ml) - nz(k.mr), aw);
 }
 
 # ---- positioning (CSS 2.2 §9.3, §10.3.7, §10.6.4) ----
@@ -1284,15 +2666,7 @@ placefloat(l: ref L, k: ref Box, fc: ref Fctx, cx, y, cw, ox, oy: int)
 	relative(k, cw, -1);
 }
 
-layflex(l: ref L, b: ref Box, cbw, cbh: int)
-{
-	asblock(l, b, cbw, cbh);
-}
 
-laygrid(l: ref L, b: ref Box, cbw, cbh: int)
-{
-	asblock(l, b, cbw, cbh);
-}
 
 laytable(l: ref L, b: ref Box, cbw, cbh: int)
 {
