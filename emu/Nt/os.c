@@ -83,6 +83,9 @@ pfree(Proc *p)
 	}
 	free(p->prog);
 	CloseHandle((HANDLE)p->os);
+	/* forget p before freeing it: lock() counts into up->nlocks (see kproc-pthreads.c:/^pexit) */
+	if(p == up)
+		up = nil;
 	free(p);
 }
 
