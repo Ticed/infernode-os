@@ -11,10 +11,11 @@ Wmlib: module
 	wmctl:	fn(w: ref Draw->Wmcontext, request: string): (string, ref Draw->Image, string);
 
 	# The window frame, the same for every window (tkclient and
-	# wmclient alike): a Border-wide line in the theme's windowborder,
-	# and inside it a Hotzone-wide band of the window's own content.
-	# A press in either is the frame's, rio's way: button 1 or 2
-	# reshapes from the nearest edge or corner, button 3 moves.
+	# wmclient alike): a Border-wide line in the theme's windowborder.
+	# A press on it is the frame's, rio's way: button 1 or 2 reshapes
+	# from the nearest edge or corner, button 3 moves.  Hotzone pixels
+	# just outside the window do the same; they are the window
+	# manager's (wm/wm), since a press there never reaches the client.
 	Border:	con 2;
 	Hotzone:	con 3;
 	inframe:	fn(r: Draw->Rect, p: Draw->Point): int;

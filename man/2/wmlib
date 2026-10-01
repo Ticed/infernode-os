@@ -90,10 +90,11 @@ colour.
 reports whether
 .IR p ,
 a point on the screen, is in the frame of a window with rectangle
-.IR r ,
-or in the
+.IR r ;
+a press there belongs to the frame.
 .B Hotzone
-pixels of the window just inside it; a press there belongs to the frame.
+pixels just outside a window are its hot zone, which the window manager handles:
+a press there never reaches the client.
 .B Embedded
 asks the window manager, with the request
 .BR embedded ,

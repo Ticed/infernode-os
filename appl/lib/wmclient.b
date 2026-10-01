@@ -142,7 +142,7 @@ Window.pointer(w: self ref Window, p: Draw->Pointer): int
 	if(p.buttons & (8|16))
 		return 0;
 
-	# A press in the frame or its hot zone (wmlib->inframe) is the
+	# A press on the frame (wmlib->inframe) is the
 	# frame's, rio's way: button 1 or 2 reshapes from the nearest edge
 	# or corner, button 3 moves.  The request goes once, on the press;
 	# the rest of the press is the window manager's.

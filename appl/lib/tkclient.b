@@ -71,7 +71,7 @@ toplevel(ctxt: ref Draw->Context, topconfig: string, title: string, buts: int): 
 	return (top, c);
 }
 
-# A press in the window's frame or hot zone (wmlib->inframe) is the
+# A press on the window's frame (wmlib->inframe) is the
 # frame's, rio's way: button 1 or 2 reshapes, button 3 moves.  It goes
 # to the app's own loop as the old title bar's requests did ("size",
 # "move x y" on the titlebar channel, which the app hands to wmctl), and

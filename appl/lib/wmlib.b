@@ -248,7 +248,7 @@ connect(ctxt: ref Context): ref Wmcontext
 
 inframe(r: Rect, p: Point): int
 {
-	return p.in(r) && !p.in(r.inset(Border+Hotzone));
+	return p.in(r) && !p.in(r.inset(Border));
 }
 
 embedded(wm: ref Wmcontext): int

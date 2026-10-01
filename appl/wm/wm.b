@@ -7,6 +7,7 @@ include "draw.m";
 include "wmsrv.m";
 	wmsrv: Wmsrv;
 	Window, Client: import wmsrv;
+include "wmlib.m";	# Hotzone
 include "wmclient.m";
 	wmclient: Wmclient;
 include "string.m";
@@ -24,6 +25,7 @@ Wm: module {
 
 Ptrstarted, Kbdstarted, Controlstarted, Controller, Fixedorigin: con 1<<iota;
 Bdwidth: con 3;
+Minwin: con 40;		# a reshaped window is at least this big
 Sminx, Sminy, Smaxx, Smaxy: con iota;
 Minx, Miny, Maxx, Maxy: con 1<<iota;
 Background: con int 16r777777FF;
@@ -37,6 +39,7 @@ allowcontrol := 1;
 fakekbd: chan of string;
 fakekbdin: chan of string;
 buttons := 0;
+presspt: Point;		# where the current press began
 
 badmodule(p: string)
 {
@@ -74,8 +77,7 @@ init(ctxt: ref Draw->Context, argv: list of string)
 		ctxt = wmclient->makedrawcontext();
 	display = ctxt.display;
 	menuhit = load Menuhit Menuhit->PATH;
-	# programs to start, then rio's Delete (the last item)
-	menu := ref Menu(array[] of {"acme", "wm/clock", "wm/colors", "Delete"}, nil, 0);
+	menu := ref Menu(array[] of {"acme", "wm/clock", "wm/colors"}, nil, 0);
 
 	buts := Wmclient->Appl;
 	if(ctxt.wm == nil)
@@ -145,7 +147,24 @@ init(ctxt: ref Draw->Context, argv: list of string)
 		if(wmclient->win.pointer(*p))
 			break;
 		if(p.buttons && (ptrfocus == nil || buttons == 0)){
+			presspt = p.xy;
 			c := wmsrv->find(p.xy);
+			if(c == nil && (hc := hotclient(p.xy)) != nil){
+				# just outside a window: its hot zone, which is the
+				# window manager's (wmlib->Hotzone).  rio's buttons:
+				# 1 or 2 reshapes from the nearest edge or corner, 3
+				# moves.  Handled here, as one drag, with no mode.
+				w := hc.window(".");
+				hc.top();
+				setkbdfocus(hc);
+				buttons = p.buttons;
+				if(p.buttons & 4)
+					dragwin(wmctxt.ptr, hc, w, p.xy.sub(w.r.min), 0);
+				else
+					sizewin(wmctxt.ptr, hc, w, Point(0, 0), p.xy, 0);
+				buttons = 0;
+				break;
+			}
 			if(c != nil){
 				ptrfocus = c;
 				c.ctl <-= "raise";
@@ -156,9 +175,7 @@ init(ctxt: ref Draw->Context, argv: list of string)
 				# INFR-160) raises the rio app-launcher menu.
 				mc := ref Mousectl(win.ctxt.ptr, p.buttons, p.xy, p.msec);
 				n := menuhit->menuhit(p.buttons, mc, menu, nil);
-				if(n == len menu.item - 1)
-					deletewin(win.ctxt.ptr);
-				else if(n >= 0 && n < len menu.item){
+				if(n >= 0 && n < len menu.item){
 					spawn command(clientctxt, menu.item[n] :: nil, nil);
 				}
 				break;
@@ -336,11 +353,11 @@ handlerequest(win: ref Wmclient->Window, wmctxt: ref Wmcontext, c: ref Client, r
 		if(ismove){
 			if(n != 5)
 				return "bad arg count";
-			return dragwin(wmctxt.ptr, c, w, Point(int hd args, int hd tl args).sub(w.r.min));
+			return dragwin(wmctxt.ptr, c, w, Point(int hd args, int hd tl args).sub(w.r.min), 1);
 		}else{
 			if(n != 5)
 				return "bad arg count";
-			sizewin(wmctxt.ptr, c, w, Point(int hd args, int hd tl args));
+			return sizewin(wmctxt.ptr, c, w, Point(int hd args, int hd tl args), presspt, 1);
 		}
 	"fixedorigin" =>
 		c.flags |= Fixedorigin;
@@ -429,6 +446,13 @@ reshaped(win: ref Wmclient->Window)
 # Send reshape and rect notifications to a client without blocking the
 # main event loop.  The childminder goroutine buffers these via its Squeue,
 # so the sends will complete once the scheduler runs it.
+# A reshape the window manager starts: the client asks for the new
+# image itself, as for a change of screen size.
+tellreshape(c: ref Client, tag: string, r: Rect)
+{
+	spawn reshapenotify(c.ctl, sys->sprint("!reshape %q -1 %s", tag, r2s(r)), "rect " + r2s(screen.image.r));
+}
+
 reshapenotify(ctl: chan of string, reshape, rect: string)
 {
 	ctl <-= reshape;
@@ -441,7 +465,9 @@ controlevent(e: string)
 		controller.ctl <-= e;
 }
 
-dragwin(ptr: chan of ref Pointer, c: ref Client, w: ref Window, off: Point): string
+# tell: the press was the client's (a frame request), so it gets the
+# release; a press in the hot zone it never saw
+dragwin(ptr: chan of ref Pointer, c: ref Client, w: ref Window, off: Point, tell: int): string
 {
 	if(buttons == 0)
 		return "too late";
@@ -450,33 +476,51 @@ dragwin(ptr: chan of ref Pointer, c: ref Client, w: ref Window, off: Point): str
 		p = <-ptr;
 		w.img.origin(w.img.r.min, p.xy.sub(off));
 	} while (p.buttons != 0);
-	c.ptr <-= p;
+	if(tell)
+		c.ptr <-= p;
 	buttons = 0;
 	r: Rect;
 	r.min = p.xy.sub(off);
 	r.max = r.min.add(w.r.size());
 	if(r.eq(w.r))
 		return "not moved";
+	if(!tell){
+		# the client is not waiting for an image: have it ask
+		tellreshape(c, w.tag, r);
+		return nil;
+	}
 	reshape(c, w.tag, r);
 	return nil;
 }
 
-sizewin(ptrc: chan of ref Pointer, c: ref Client, w: ref Window, minsize: Point): string
+# Reshape window w by sweeping from xy, where the press began, while
+# the button is held: one drag, no mode.  If the press is already over,
+# nothing happens.
+sizewin(ptrc: chan of ref Pointer, c: ref Client, w: ref Window, minsize: Point, xy: Point, tell: int): string
 {
+	if(buttons == 0)
+		return "too late";
+	if(minsize.x < Minwin)
+		minsize.x = Minwin;
+	if(minsize.y < Minwin)
+		minsize.y = Minwin;
 	borders := array[4] of ref Image;
 	showborders(borders, w.r, Minx|Maxx|Miny|Maxy);
 	screen.image.flush(Draw->Flushnow);
-	while((ptr := <-ptrc).buttons == 0)
-		;
-	xy := ptr.xy;
 	move, show: int;
 	offset := Point(0, 0);
 	r := w.r;
 	show = Minx|Miny|Maxx|Maxy;
-	if(xy.in(w.r) == 0){
-		r = (xy, xy);
-		move = Maxx|Maxy;
-	}else {
+	# a press in the hot zone, just outside: as if on the nearest edge
+	if(xy.x < r.min.x)
+		xy.x = r.min.x;
+	if(xy.x >= r.max.x)
+		xy.x = r.max.x-1;
+	if(xy.y < r.min.y)
+		xy.y = r.min.y;
+	if(xy.y >= r.max.y)
+		xy.y = r.max.y-1;
+	{
 		# rio's way: the nearest edge, or a corner within 20 pixels
 		# of one (rio.c, whichcorner): an edge moves one side only.
 		move = 0;
@@ -514,7 +558,14 @@ sizewin(ptrc: chan of ref Pointer, c: ref Client, w: ref Window, minsize: Point)
 			}
 		}
 	}
-	return reshape(c, w.tag, sweep(ptrc, r, offset, borders, move, show, minsize));
+	nr := sweep(ptrc, r, offset, borders, move, show, minsize);
+	if(!tell){
+		# from the hot zone: the client is not waiting for an image
+		if(!nr.eq(w.r))
+			tellreshape(c, w.tag, nr);
+		return nil;
+	}
+	return reshape(c, w.tag, nr);
 }
 
 # which third of lo..hi x falls in, the ends being 20 pixels (rio.c)
@@ -529,26 +580,17 @@ portion(x, lo, hi: int): int
 	return 1;
 }
 
-# rio's Delete: after the menu, a press of button 3 on a window tells
-# its client to exit; any other press, or one on no window, cancels.
-deletewin(ptr: chan of ref Pointer)
+# The client whose main window has p just outside it, within
+# wmlib->Hotzone of its edge: the topmost such, so the zone of a window
+# lying over another wins.
+hotclient(p: Point): ref Client
 {
-	p := <-ptr;
-	while(p.buttons != 0)
-		p = <-ptr;
-	while(p.buttons == 0)
-		p = <-ptr;
-	c := wmsrv->find(p.xy);
-	b := p.buttons;
-	while(p.buttons != 0)
-		p = <-ptr;
-	if(c != nil && (b & 4) != 0)
-		spawn tellexit(c);
-}
-
-tellexit(c: ref Client)
-{
-	c.ctl <-= "exit";
+	for(z := wmsrv->top(); z != nil; z = z.znext){
+		w := z.window(".");
+		if(w != nil && p.in(w.r.inset(-Wmlib->Hotzone)) && !p.in(w.r))
+			return z;
+	}
+	return nil;
 }
 
 reshape(c: ref Client, tag: string, r: Rect): string

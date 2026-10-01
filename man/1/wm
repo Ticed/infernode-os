@@ -27,15 +27,14 @@ that facility must be provided by an auxilliary program,
 .B wm/toolbar
 being one such example.
 .SS Mouse
-A press of button 1 or 2 on a window's frame, or just inside it
+A press of button 1 or 2 on a window's frame, or in its hot zone just outside it
 (see
 .IR wmlib (2)),
-reshapes the window from the nearest edge or corner (a corner within 20 pixels of it);
+reshapes the window from the nearest edge or corner (a corner within 20 pixels of it)
+for as long as the button is held;
 button 3 moves the window.
-A press of button 2 or 3 on the background shows a menu of programs to start, and
-.BR Delete :
-after choosing it, a press of button 3 on a window tells that window's program to exit;
-any other press cancels.
+A press of button 2 or 3 on the background shows a menu of programs to start.
+Closing a window is left to its program.
 .SS Control Interface
 .I Wm
 provides a control interface to programs running inside it
