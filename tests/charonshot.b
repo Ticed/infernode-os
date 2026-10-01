@@ -138,14 +138,14 @@ Command: module
 # http(s) comes through webfs; start one if there isn't one already.
 startwebfs(): string
 {
-	if(sys->open("/mnt/web/clone", Sys->OREAD) != nil)
+	if(webfsup())
 		return nil;
 	webfs := load Command "/dis/webfs.dis";
 	if(webfs == nil)
 		return sys->sprint("cannot load webfs: %r");
 	spawn webfs->init(nil, "webfs" :: nil);
 	for(i := 0; i < 100; i++) {
-		if(sys->open("/mnt/web/clone", Sys->OREAD) != nil)
+		if(webfsup())
 			return nil;
 		sys->sleep(20);
 	}
@@ -202,4 +202,11 @@ halt()
 	fd := sys->open("/dev/sysctl", Sys->OWRITE);
 	if(fd != nil)
 		sys->fprint(fd, "halt");
+}
+
+# a webfs is mounted there, not merely a file by that name
+webfsup(): int
+{
+	(ok, d) := sys->stat("/mnt/web/clone");
+	return ok >= 0 && d.dtype == 'M';
 }

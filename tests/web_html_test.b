@@ -193,6 +193,42 @@ testMutation(t: ref T)
 	t.asserteq(len d.nodes[ul].attrs, 1, "one attribute");
 }
 
+# XHTML parses as XML: CDATA is text, <x/> is empty, namespaces decide
+# which elements are HTML, SVG or neither.
+testXML(t: ref T)
+{
+	src := "<?xml version=\"1.0\"?>\n<!DOCTYPE html PUBLIC \"x\" \"y\" [ <!ENTITY e \"z\"> ]>\n" +
+		"<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:s=\"http://www.w3.org/2000/svg\">" +
+		"<head><style><![CDATA[ p > a { color: red } ]]></style></head>" +
+		"<body><div/><p title=\"a&amp;b\">x&lt;y&#x41;&eacute;</p><s:svg><s:rect/></s:svg>" +
+		"<foo xmlns=\"urn:other\"><p/></foo></body></html>";
+	d := html->parsexml(array of byte src, nil, nil);
+	got := d.dump();
+	t.log(got);
+	want := "| <html>\n" +
+		"|   xmlns=\"http://www.w3.org/1999/xhtml\"\n" +
+		"|   xmlns:s=\"http://www.w3.org/2000/svg\"\n" +
+		"|   <head>\n" +
+		"|     <style>\n" +
+		"|       \" p > a { color: red } \"\n" +
+		"|   <body>\n" +
+		"|     <div>\n" +
+		"|     <p>\n" +
+		"|       title=\"a&b\"\n" +
+		"|       \"x<yAé\"\n" +
+		"|     <svg svg>\n" +
+		"|       <svg rect>\n" +
+		"|     <foo>\n" +
+		"|       xmlns=\"urn:other\"\n" +
+		"|       <p>\n";
+	t.assertseq(got, want, "tree");
+	foo := d.find(1, Dom->Tp);
+	t.assert(foo != 0, "the XHTML p is an HTML p");
+	for(n := 1; n < d.n; n++)
+		if(d.nodes[n].name == "p" && d.nodes[d.nodes[n].parent].name == "foo")
+			t.asserteq(d.nodes[n].tag, Dom->Tnone, "a p in another namespace is not an HTML p");
+}
+
 testTags(t: ref T)
 {
 	for(i := 1; i < Dom->Ntags; i++)
@@ -222,6 +258,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("Trees", testTrees);
 	run("Charset", testCharset);
 	run("Mutation", testMutation);
+	run("XML", testXML);
 
 	if(testing->summary(passed, failed, skipped) > 0)
 		raise "fail:tests failed";

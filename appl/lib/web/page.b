@@ -84,7 +84,9 @@ request(url, method, reqctype: string, body: array of byte, width, height: int):
 		p.doc = html->parsestring("<pre>" + escape(string data) + "</pre>", url);
 	} else if(prefix(lower(ctype), "image/")) {
 		p.doc = html->parsestring("<body style='margin:0'><img src=\"" + url + "\">", url);
-	} else
+	} else if(isxml(ctype))
+		p.doc = html->parsexml(data, charset, url);
+	else
 		p.doc = html->parse(data, charset, url);
 	d := p.doc;
 	# <base href>
@@ -553,11 +555,27 @@ readall(fd: ref Sys->FD): array of byte
 	return buf[0:n];
 }
 
+# an XML document type, parsed as XML (image/svg+xml is an image)
+isxml(ctype: string): int
+{
+	t := lower(ctype);
+	for(i := 0; i < len t; i++)
+		if(t[i] == ';' || t[i] == ' ') {
+			t = t[0:i];
+			break;
+		}
+	return t == "application/xhtml+xml" || t == "application/xml" || t == "text/xml";
+}
+
 mimetype(path: string, data: array of byte): string
 {
 	p := lower(path);
-	if(suffix(p, ".html") || suffix(p, ".htm") || suffix(p, ".xhtml"))
+	if(suffix(p, ".html") || suffix(p, ".htm"))
 		return "text/html";
+	if(suffix(p, ".xht") || suffix(p, ".xhtml"))
+		return "application/xhtml+xml";
+	if(suffix(p, ".xml"))
+		return "application/xml";
 	if(suffix(p, ".css"))
 		return "text/css";
 	if(suffix(p, ".txt") || suffix(p, ".b") || suffix(p, ".m"))

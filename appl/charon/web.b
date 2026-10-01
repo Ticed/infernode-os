@@ -181,14 +181,14 @@ start(w, h: int, mnt: string)
 
 startwebfs(): string
 {
-	if(sys->open("/mnt/web/clone", Sys->OREAD) != nil)
+	if(webfsup())
 		return nil;
 	webfs := load Command "/dis/webfs.dis";
 	if(webfs == nil)
 		return sys->sprint("cannot load webfs: %r");
 	spawn webfs->init(nil, "webfs" :: nil);
 	for(i := 0; i < 100; i++) {
-		if(sys->open("/mnt/web/clone", Sys->OREAD) != nil)
+		if(webfsup())
 			return nil;
 		sys->sleep(20);
 	}
@@ -779,4 +779,11 @@ plural(n: int, s: string): string
 prefix(s, p: string): int
 {
 	return len s >= len p && s[0:len p] == p;
+}
+
+# a webfs is mounted there, not merely a file by that name
+webfsup(): int
+{
+	(ok, d) := sys->stat("/mnt/web/clone");
+	return ok >= 0 && d.dtype == 'M';
 }

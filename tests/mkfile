@@ -111,6 +111,7 @@ TARG=\
 	tkimgrender.dis\
 	tkrender.dis\
 	charonshot.dis\
+	charonbatch.dis\
 	web_html_test.dis\
 	web_css_test.dis\
 	web_style_test.dis\

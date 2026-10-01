@@ -20,6 +20,11 @@ Html: module
 	# UTF-8 is the default.
 	parse:	fn(data: array of byte, charset, url: string): ref Dom->Doc;
 	parsestring:	fn(s, url: string): ref Dom->Doc;
+	# An XML document (application/xhtml+xml, image/svg+xml): no
+	# HTML parsing rules, CDATA sections, <x/> closes, namespaces map
+	# XHTML, SVG and MathML elements to theirs.  Not validating, and
+	# lenient where browsers would show an error page.
+	parsexml:	fn(data: array of byte, charset, url: string): ref Dom->Doc;
 
 	charset:	fn(data: array of byte, transport: string): string;	# the sniffing used by parse
 };

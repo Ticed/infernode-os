@@ -135,6 +135,309 @@ parse(data: array of byte, cs, url: string): ref Doc
 	return parsestring(decode(data, cs), url);
 }
 
+# ---- XML ----
+
+XHTMLNS: con "http://www.w3.org/1999/xhtml";
+SVGNS: con "http://www.w3.org/2000/svg";
+MATHNS: con "http://www.w3.org/1998/Math/MathML";
+OTHERNS: con -1;	# an element in a namespace we know nothing about
+
+parsexml(data: array of byte, cs, url: string): ref Doc
+{
+	if(sys == nil)
+		init();
+	if(cs == nil) {
+		cs = "utf-8";
+		if(len data > 5 && string data[0:5] == "<?xml") {
+			e := 0;
+			while(e < len data && e < 200 && data[e] != byte '>')
+				e++;
+			decl := string data[0:e];
+			if((v := xmlattr(decl, "encoding")) != nil)
+				cs = v;
+		}
+	}
+	cs = charset(data, cs);
+	if(len data >= 3 && data[0] == byte 16rEF && data[1] == byte 16rBB && data[2] == byte 16rBF)
+		data = data[3:];
+	s := normnl(decode(data, cs));
+	if(entities == nil)
+		loadentities();
+
+	d := Doc.new(url);
+	stack := array[256] of int;
+	nss := array[256] of list of (string, string);	# prefix bindings in scope
+	stack[0] = 1;
+	nss[0] = ("xml", "http://www.w3.org/XML/1998/namespace") :: nil;
+	sp := 0;
+	i := 0;
+	n := len s;
+	while(i < n) {
+		if(s[i] != '<') {
+			j := i;
+			while(j < n && s[j] != '<')
+				j++;
+			xmltext(d, stack[sp], xmlunescape(s[i:j]));
+			i = j;
+			continue;
+		}
+		if(hasat(s, i, "<!--")) {
+			e := find(s, i + 4, "-->");
+			c := d.create(Dom->Comment, nil, Dom->HTML);
+			d.settext(c, s[i+4:e]);
+			d.append(stack[sp], c);
+			i = e + 3;
+		} else if(hasat(s, i, "<![CDATA[")) {
+			e := find(s, i + 9, "]]>");
+			xmltext(d, stack[sp], s[i+9:e]);
+			i = e + 3;
+		} else if(hasat(s, i, "<!")) {	# DOCTYPE, with any internal subset
+			depth := 0;
+			for(i += 2; i < n; i++) {
+				if(s[i] == '[')
+					depth++;
+				else if(s[i] == ']')
+					depth--;
+				else if(s[i] == '>' && depth <= 0)
+					break;
+			}
+			i++;
+		} else if(hasat(s, i, "<?")) {
+			i = find(s, i + 2, "?>") + 2;
+		} else if(hasat(s, i, "</")) {
+			e := find(s, i, ">");
+			(nil, name) := splitq(trimws(s[i+2:e]));
+			i = e + 1;
+			for(k := sp; k > 0; k--)
+				if(localname(d, stack[k]) == name) {
+					sp = k - 1;
+					break;
+				}
+		} else {
+			# a start tag: name, attributes, maybe />
+			j := i + 1;
+			while(j < n && !xmlspace(s[j]) && s[j] != '>' && s[j] != '/')
+				j++;
+			name := s[i+1:j];
+			attrs: list of (string, string);
+			empty := 0;
+			for(;;) {
+				while(j < n && xmlspace(s[j]))
+					j++;
+				if(j >= n)
+					break;
+				if(s[j] == '>') {
+					j++;
+					break;
+				}
+				if(s[j] == '/') {
+					empty = 1;
+					j++;
+					continue;
+				}
+				a := j;
+				while(j < n && !xmlspace(s[j]) && s[j] != '=' && s[j] != '>' && s[j] != '/')
+					j++;
+				an := s[a:j];
+				while(j < n && xmlspace(s[j]))
+					j++;
+				av := "";
+				if(j < n && s[j] == '=') {
+					j++;
+					while(j < n && xmlspace(s[j]))
+						j++;
+					if(j < n && (s[j] == '"' || s[j] == '\'')) {
+						q := s[j];
+						e := j + 1;
+						while(e < n && s[e] != q)
+							e++;
+						av = xmlunescape(s[j+1:e]);
+						j = e + 1;
+					}
+				}
+				if(an != "")
+					attrs = (an, av) :: attrs;
+			}
+			i = j;
+			# namespaces in scope here
+			scope := nss[sp];
+			for(l := attrs; l != nil; l = tl l) {
+				(an, av) := hd l;
+				if(an == "xmlns")
+					scope = ("", av) :: scope;
+				else if(len an > 6 && an[0:6] == "xmlns:")
+					scope = (an[6:], av) :: scope;
+			}
+			(prefix, local) := splitq(name);
+			uri := lookupns(scope, prefix);
+			ns := Dom->HTML;
+			case uri {
+			XHTMLNS =>	ns = Dom->HTML;
+			SVGNS =>	ns = Dom->SVG;
+			MATHNS =>	ns = Dom->MathML;
+			* =>		ns = OTHERNS;
+			}
+			el: int;
+			if(ns == OTHERNS) {
+				el = d.create(Dom->Element, name, Dom->HTML);
+				d.nodes[el].tag = Dom->Tnone;	# not an HTML element, whatever its name
+			} else
+				el = d.create(Dom->Element, local, ns);
+			for(r := rev(attrs); r != nil; r = tl r) {
+				(an, av) := hd r;
+				d.setattr(el, an, av);
+			}
+			d.append(stack[sp], el);
+			if(!empty && sp + 1 < len stack) {
+				sp++;
+				stack[sp] = el;
+				nss[sp] = scope;
+			}
+		}
+	}
+	return d;
+}
+
+rev(l: list of (string, string)): list of (string, string)
+{
+	r: list of (string, string);
+	for(; l != nil; l = tl l)
+		r = hd l :: r;
+	return r;
+}
+
+# the element's local name, for matching end tags
+localname(d: ref Doc, n: int): string
+{
+	(nil, l) := splitq(d.nodes[n].name);
+	return l;
+}
+
+splitq(name: string): (string, string)
+{
+	for(i := 0; i < len name; i++)
+		if(name[i] == ':')
+			return (name[0:i], name[i+1:]);
+	return ("", name);
+}
+
+lookupns(scope: list of (string, string), prefix: string): string
+{
+	for(; scope != nil; scope = tl scope)
+		if((hd scope).t0 == prefix)
+			return (hd scope).t1;
+	if(prefix == "")
+		return XHTMLNS;	# no declaration: as browsers treat a bare document
+	return nil;
+}
+
+xmltext(d: ref Doc, parent: int, t: string)
+{
+	if(t == "" || parent == 1)
+		return;	# outside the root element there is no text, only white space
+	last := d.nodes[parent].last;
+	if(last != 0 && d.nodes[last].kind == Dom->Text) {
+		d.settext(last, d.nodes[last].text + t);
+		return;
+	}
+	c := d.create(Dom->Text, nil, Dom->HTML);
+	d.settext(c, t);
+	d.append(parent, c);
+}
+
+xmlunescape(s: string): string
+{
+	for(i := 0; i < len s; i++)
+		if(s[i] == '&')
+			break;
+	if(i == len s)
+		return s;
+	r := s[0:i];
+	while(i < len s) {
+		c := s[i];
+		if(c != '&') {
+			r[len r] = c;
+			i++;
+			continue;
+		}
+		e := i + 1;
+		while(e < len s && e - i < 40 && s[e] != ';' && s[e] != '&' && s[e] != '<')
+			e++;
+		if(e >= len s || s[e] != ';') {
+			r[len r] = c;
+			i++;
+			continue;
+		}
+		name := s[i+1:e];
+		if(len name > 1 && name[0] == '#') {
+			v := 0;
+			if(name[1] == 'x' || name[1] == 'X') {
+				for(k := 2; k < len name; k++)
+					v = v*16 + hexval(name[k:k+1]);
+			} else
+				for(k := 1; k < len name; k++)
+					v = v*10 + name[k] - '0';
+			if(v <= 0 || v > 16r10FFFF)
+				v = 16rFFFD;
+			r[len r] = v;
+		} else {
+			(ok, t) := entity(name + ";");
+			if(ok)
+				r += t;
+			else
+				r += s[i:e+1];
+		}
+		i = e + 1;
+	}
+	return r;
+}
+
+xmlattr(decl, name: string): string
+{
+	i := find(decl, 0, name);
+	if(i >= len decl)
+		return nil;
+	for(i += len name; i < len decl && decl[i] != '"' && decl[i] != '\''; i++)
+		;
+	if(i >= len decl)
+		return nil;
+	q := decl[i];
+	e := i + 1;
+	while(e < len decl && decl[e] != q)
+		e++;
+	return decl[i+1:e];
+}
+
+xmlspace(c: int): int
+{
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+hasat(s: string, i: int, t: string): int
+{
+	return i + len t <= len s && s[i:i+len t] == t;
+}
+
+# the index of t in s at or after i, or len s
+find(s: string, i: int, t: string): int
+{
+	for(; i + len t <= len s; i++)
+		if(s[i:i+len t] == t)
+			return i;
+	return len s;
+}
+
+trimws(s: string): string
+{
+	i := 0;
+	while(i < len s && xmlspace(s[i]))
+		i++;
+	j := len s;
+	while(j > i && xmlspace(s[j-1]))
+		j--;
+	return s[i:j];
+}
+
 normnl(s: string): string
 {
 	for(i := 0; i < len s; i++)

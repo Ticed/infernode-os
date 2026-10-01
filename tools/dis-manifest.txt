@@ -1025,3 +1025,4 @@ dis/lib/web/browser.dis
 dis/lib/web/charonfs.dis
 dis/tests/web_browser_test.dis
 dis/charon/web.dis
+dis/tests/charonbatch.dis
