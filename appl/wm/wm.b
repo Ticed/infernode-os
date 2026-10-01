@@ -23,7 +23,7 @@ Wm: module {
 	init:	fn(ctxt: ref Draw->Context, argv: list of string);
 };
 
-Ptrstarted, Kbdstarted, Controlstarted, Controller, Fixedorigin: con 1<<iota;
+Ptrstarted, Kbdstarted, Controlstarted, Controller, Fixedorigin, Framed: con 1<<iota;
 Bdwidth: con 3;
 Minwin: con 40;		# a reshaped window is at least this big
 Sminx, Sminy, Smaxx, Smaxy: con iota;
@@ -148,13 +148,13 @@ init(ctxt: ref Draw->Context, argv: list of string)
 			break;
 		if(p.buttons && (ptrfocus == nil || buttons == 0)){
 			presspt = p.xy;
-			c := wmsrv->find(p.xy);
-			if(c == nil && (hc := hotclient(p.xy)) != nil){
-				# just outside a window: its hot zone, which is the
-				# window manager's (wmlib->Hotzone).  rio's buttons:
-				# 1 or 2 reshapes from the nearest edge or corner, 3
-				# moves.  Handled here, as one drag, with no mode.
-				w := hc.window(".");
+			(hc, w) := framehit(p.xy);
+			if(hc != nil){
+				# a window's frame, or its hot zone just outside:
+				# wm/wm's, rio's way -- button 1 or 2 reshapes from
+				# the nearest edge or corner, 3 moves -- as one drag
+				# while the button is held, with no mode.  The client
+				# never sees the press.
 				hc.top();
 				setkbdfocus(hc);
 				buttons = p.buttons;
@@ -165,6 +165,7 @@ init(ctxt: ref Draw->Context, argv: list of string)
 				buttons = 0;
 				break;
 			}
+			c := wmsrv->find(p.xy);
 			if(c != nil){
 				ptrfocus = c;
 				c.ctl <-= "raise";
@@ -362,9 +363,11 @@ handlerequest(win: ref Wmclient->Window, wmctxt: ref Wmcontext, c: ref Client, r
 	"fixedorigin" =>
 		c.flags |= Fixedorigin;
 	"embedded" =>
-		# no: wm/wm places windows and leaves their frames to the
-		# clients (wmlib->embedded).  Answered here, before a
-		# controller could be handed the request and accept it.
+		# no: wm/wm places windows and leaves the drawing of their
+		# frames to the clients (wmlib->embedded).  A client that asks
+		# draws one, so its frame's presses are wm/wm's (framehit).
+		# Answered here, before a controller could accept it.
+		c.flags |= Framed;
 		return "not embedded";
 	"rect" =>
 		;
@@ -580,17 +583,28 @@ portion(x, lo, hi: int): int
 	return 1;
 }
 
-# The client whose main window has p just outside it, within
-# wmlib->Hotzone of its edge: the topmost such, so the zone of a window
-# lying over another wins.
-hotclient(p: Point): ref Client
+# The frame under p, if a press there is a frame's: the topmost window
+# at p, counting a framed window's hot zone (wmlib->Hotzone outside it)
+# as its own, when p is on that window's border (wmlib->Border) or in
+# its hot zone rather than inside.  Positions are wm/wm's own (w.r),
+# which follow every move; a client's view of its image may not.
+framehit(p: Point): (ref Client, ref Window)
 {
 	for(z := wmsrv->top(); z != nil; z = z.znext){
-		w := z.window(".");
-		if(w != nil && p.in(w.r.inset(-Wmlib->Hotzone)) && !p.in(w.r))
-			return z;
+		for(wl := z.wins; wl != nil; wl = tl wl){
+			w := hd wl;
+			if(w.img == nil)
+				continue;
+			if(w.tag == "." && (z.flags & Framed) != 0){
+				if(p.in(w.r.inset(Wmlib->Border)))
+					return (nil, nil);	# inside: the app's
+				if(p.in(w.r.inset(-Wmlib->Hotzone)))
+					return (z, w);
+			}else if(p.in(w.r))
+				return (nil, nil);
+		}
 	}
-	return nil;
+	return (nil, nil);
 }
 
 reshape(c: ref Client, tag: string, r: Rect): string
@@ -882,13 +896,23 @@ exportproc(fd: ref Sys->FD)
 
 
 # Synthetic input for tests: parse "/chan/uitest" writes and feed the
-# same channels real input arrives on.  Reads answer empty.
+# same channels real input arrives on.  Reads list the windows (above).
 uitestproc(f: ref Sys->FileIO, ptr: chan of ref Draw->Pointer)
 {
 	for(;;) alt {
-	(nil, nil, nil, rc) := <-f.read =>
-		if(rc != nil)
-			rc <-= (nil, nil);
+	(off, nil, nil, rc) := <-f.read =>
+		# the windows, topmost first: "id minx miny maxx maxy" each,
+		# so a test can check where moves and reshapes left them
+		if(rc == nil)
+			break;
+		t := "";
+		for(z := wmsrv->top(); z != nil; z = z.znext)
+			if((w := z.window(".")) != nil)
+				t += sys->sprint("%d %d %d %d %d\n", z.id, w.r.min.x, w.r.min.y, w.r.max.x, w.r.max.y);
+		b := array of byte t;
+		if(off > len b)
+			off = len b;
+		rc <-= (b[off:], nil);
 	(nil, data, nil, wc) := <-f.write =>
 		if(wc == nil)
 			break;

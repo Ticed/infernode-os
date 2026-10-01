@@ -12,13 +12,11 @@ Wmlib: module
 
 	# The window frame, the same for every window (tkclient and
 	# wmclient alike): a Border-wide line in the theme's windowborder.
-	# A press on it is the frame's, rio's way: button 1 or 2 reshapes
-	# from the nearest edge or corner, button 3 moves.  Hotzone pixels
-	# just outside the window do the same; they are the window
-	# manager's (wm/wm), since a press there never reaches the client.
+	# A press on it, or in the Hotzone pixels just outside the window,
+	# is the window manager's, rio's way: button 1 or 2 reshapes from
+	# the nearest edge or corner, button 3 moves.
 	Border:	con 2;
 	Hotzone:	con 3;
-	inframe:	fn(r: Draw->Rect, p: Draw->Point): int;
 	# Does the window manager frame and place this client's window
 	# itself (Lucifer's presentation zone, a Matrix pane)?  Then the
 	# client draws no frame.  A wm that does not know the request

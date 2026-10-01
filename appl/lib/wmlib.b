@@ -246,11 +246,6 @@ connect(ctxt: ref Context): ref Wmcontext
 	return wm;
 }
 
-inframe(r: Rect, p: Point): int
-{
-	return p.in(r) && !p.in(r.inset(Border));
-}
-
 embedded(wm: ref Wmcontext): int
 {
 	if(wm == nil || wm.connfd == nil)

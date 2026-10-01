@@ -16,7 +16,6 @@ wmctl:	fn(w: ref Draw->Wmcontext, request: string): (string, ref Draw->Image, st
 
 Border:	con 2;
 Hotzone:	con 3;
-inframe:	fn(r: Draw->Rect, p: Draw->Point): int;
 embedded:	fn(w: ref Draw->Wmcontext): int;
 snarfput:	fn(buf: string);
 snarfget:	fn(): string;
@@ -86,15 +85,12 @@ a line
 pixels wide in the current theme's
 .B windowborder
 colour.
-.B Inframe
-reports whether
-.IR p ,
-a point on the screen, is in the frame of a window with rectangle
-.IR r ;
-a press there belongs to the frame.
+A press on the frame, or in the
 .B Hotzone
-pixels just outside a window are its hot zone, which the window manager handles:
-a press there never reaches the client.
+pixels just outside the window, is the window manager's
+(see
+.IR wm (1));
+it never reaches the client.
 .B Embedded
 asks the window manager, with the request
 .BR embedded ,

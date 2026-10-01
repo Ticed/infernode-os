@@ -10,7 +10,6 @@ include "wmlib.m";
 include "wmclient.m";
 include "lucitheme.m";
 
-Focusnone, Focusimage, Focustitle: con iota;
 
 # Single subdued window border, applied uniformly to focused and
 # unfocused windows so every wm app shows the same calm frame in
@@ -133,36 +132,11 @@ findkbdstate(ctxt: ref Draw->Wmcontext): ref KbdState
 	return nil;
 }
 
-Window.pointer(w: self ref Window, p: Draw->Pointer): int
+# A press on the frame is the window manager's (wm/wm's framehit): it
+# alone knows where the window really is on the screen.  Nothing here
+# is the frame's any more; the app has every event.
+Window.pointer(nil: self ref Window, nil: Draw->Pointer): int
 {
-	if(w.screen == nil)
-		return 0;
-
-	# Scroll wheel events (buttons 8/16) should pass through without focus changes
-	if(p.buttons & (8|16))
-		return 0;
-
-	# A press on the frame (wmlib->inframe) is the
-	# frame's, rio's way: button 1 or 2 reshapes from the nearest edge
-	# or corner, button 3 moves.  The request goes once, on the press;
-	# the rest of the press is the window manager's.
-	press := p.buttons != 0 && (w.ptrfocus == Focusnone || w.buttons == 0);
-	if(press){
-		if(w.bd > 0 && wmlib->inframe(w.screen.image.r, p.xy))
-			w.ptrfocus = Focustitle;
-		else
-			w.ptrfocus = Focusimage;
-	}
-	w.buttons = p.buttons;
-	if(w.ptrfocus == Focustitle){
-		if(press){
-			if(p.buttons & 4)
-				w.ctl <-= sys->sprint("!move . -1 %d %d", p.xy.x, p.xy.y);
-			else
-				w.ctl <-= sys->sprint("!size . -1 %d %d", 0, 0);
-		}
-		return 1;
-	}
 	return 0;
 }
 
