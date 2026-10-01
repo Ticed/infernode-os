@@ -86,6 +86,7 @@ open(url: string, width, height: int): (ref Pg, string)
 	p.root = layout->build(d, p.computed);
 	loadimages(p, p.root);
 	layout->lay(p.root, width, height);
+	inlinesvg(p, p.root);
 	return (p, nil);
 }
 
@@ -102,6 +103,7 @@ Pg.relayout(p: self ref Pg, width, height: int)
 	p.root = layout->build(p.doc, p.computed);
 	carryimages(old, p.root);
 	layout->lay(p.root, width, height);
+	inlinesvg(p, p.root);
 }
 
 Pg.paint(p: self ref Pg, dst: ref Image, scroll: Point)
@@ -192,6 +194,100 @@ loadimages(p: ref Pg, root: ref Box)
 			b.text = nil;
 		}
 	}
+}
+
+# Inline <svg>: the subtree as markup, rendered at the box's size.
+inlinesvg(p: ref Pg, b: ref Box)
+{
+	if(b.kind == Layout->Kreplaced && b.url == nil && b.node != 0) {
+		nd := p.doc.nodes[b.node];
+		if(nd.ns == Dom->SVG && nd.name == "svg") {
+			w := b.w - b.bl - b.br - b.pl - b.pr;
+			h := b.h - b.bt - b.bb - b.pt - b.pb;
+			if(w > 0 && h > 0 && (b.img == nil || b.img.r.dx() != w || b.img.r.dy() != h))
+				b.img = decodeimage(array of byte svgmarkup(p.doc, b.node, w, h), "image/svg+xml", nil);
+		}
+	}
+	for(i := 0; i < len b.kids; i++)
+		inlinesvg(p, b.kids[i]);
+	for(l := b.pos; l != nil; l = tl l)
+		inlinesvg(p, hd l);
+	for(i = 0; i < len b.lines; i++) {
+		ln := b.lines[i];
+		for(j := 0; j < len ln.frags; j++)
+			if(ln.frags[j].kind == Layout->Fatomic)
+				inlinesvg(p, ln.frags[j].box);
+	}
+}
+
+svgmarkup(d: ref Doc, n, w, h: int): string
+{
+	s := "<svg xmlns=\"http://www.w3.org/2000/svg\"";
+	s += sys->sprint(" width=\"%d\" height=\"%d\"", w, h);
+	vb := 0;
+	for(a := d.nodes[n].attrs; a != nil; a = tl a) {
+		(k, v) := hd a;
+		case k {
+		"width" or "height" or "xmlns" =>
+			continue;
+		"viewBox" =>
+			vb = 1;
+		}
+		s += " " + k + "=\"" + xmlesc(v) + "\"";
+	}
+	if(!vb) {
+		# without a viewBox the drawing keeps its own units
+		ow := d.attr(n, "width");
+		oh := d.attr(n, "height");
+		if(ow != nil && oh != nil)
+			s += " viewBox=\"0 0 " + xmlesc(num(ow)) + " " + xmlesc(num(oh)) + "\"";
+	}
+	s += ">";
+	for(c := d.nodes[n].first; c != 0; c = d.nodes[c].next)
+		s += xmlnode(d, c);
+	return s + "</svg>";
+}
+
+num(s: string): string
+{
+	i := 0;
+	while(i < len s && (s[i] >= '0' && s[i] <= '9' || s[i] == '.'))
+		i++;
+	return s[0:i];
+}
+
+xmlnode(d: ref Doc, n: int): string
+{
+	nd := d.nodes[n];
+	case nd.kind {
+	Dom->Text =>
+		return xmlesc(nd.text);
+	Dom->Element =>
+		s := "<" + nd.name;
+		for(a := nd.attrs; a != nil; a = tl a)
+			s += " " + (hd a).t0 + "=\"" + xmlesc((hd a).t1) + "\"";
+		if(nd.first == 0)
+			return s + "/>";
+		s += ">";
+		for(c := nd.first; c != 0; c = d.nodes[c].next)
+			s += xmlnode(d, c);
+		return s + "</" + nd.name + ">";
+	}
+	return "";
+}
+
+xmlesc(s: string): string
+{
+	r := "";
+	for(i := 0; i < len s; i++)
+		case s[i] {
+		'<' => r += "&lt;";
+		'>' => r += "&gt;";
+		'&' => r += "&amp;";
+		'"' => r += "&quot;";
+		* => r[len r] = s[i];
+		}
+	return r;
 }
 
 replacedboxes(b: ref Box, acc: list of ref Box): list of ref Box
