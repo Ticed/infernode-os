@@ -1,0 +1,261 @@
+#
+# style.m - the cascade: from a document and its style sheets to a
+# computed style for every element.
+#
+# A Styles holds the sheets that apply to a document, in cascade order,
+# with their rules indexed for matching.  compute() walks the document,
+# matches selectors, sorts the winning declarations by origin, layer,
+# importance, specificity and order, substitutes var(), expands
+# shorthands and computes values.  The result is one St per element
+# (shared where elements have identical styles), plus St for the
+# ::before and ::after pseudo-elements that have content.
+#
+# Values are computed as CSS defines it: lengths are in pixels, except
+# that percentages are kept, because only layout knows what they are a
+# percentage of.  A Len is px + pct% of that basis.
+#
+Style: module
+{
+	PATH:	con "/dis/lib/web/style.dis";
+	UACSS:	con "/lib/web/html.css";
+
+	init:	fn(): string;
+
+	# the media and environment a document is styled for
+	Env: adt {
+		width, height:	int;	# viewport, px
+		dpr:	real;		# device pixels per CSS px
+		dark:	int;		# prefers-color-scheme: dark
+		print:	int;		# media type print, else screen
+		hover:	int;		# element under the pointer, 0 if none
+		focus:	int;		# focused element
+		active:	int;		# element being clicked
+		target:	int;		# element named by the URL fragment
+	};
+
+	# length kinds
+	Lpx, Lauto, Lnone, Lnormal, Lnum, Lmin, Lmax, Lfit, Lcontent, Lcalc: con iota;
+
+	Len: adt {
+		kind:	int;	# Lpx: px + pct% of the basis; Lnum: a bare number (line-height);
+				# Lcalc: needs the basis to evaluate (min/max/clamp with %)
+		px:	real;
+		pct:	real;
+		e:	ref Expr;
+
+		resolve:	fn(l: self Len, basis: real): real;	# auto and the like resolve to 0
+		isauto:	fn(l: self Len): int;
+	};
+
+	# a calc() expression kept for layout; leaves are px + pct
+	Expr: adt {
+		op:	int;	# '+', '-', '*', '/', 'm' (min), 'M' (max), 'c' (clamp), 'n' (leaf)
+		px, pct:	real;
+		kids:	cyclic array of ref Expr;
+	};
+
+	# display
+	Dnone, Dcontents, Dblock, Dinline, Dinlineblock, Dflowroot, Dlistitem,
+	Dflex, Dinlineflex, Dgrid, Dinlinegrid, Dtable, Dinlinetable,
+	Dtablerowgroup, Dtableheadergroup, Dtablefootergroup, Dtablerow,
+	Dtablecell, Dtablecolumngroup, Dtablecolumn, Dtablecaption: con iota;
+
+	Pstatic, Prelative, Pabsolute, Pfixed, Psticky: con iota;	# position
+	Fnone, Fleft, Fright: con iota;			# float
+	Cnone, Cleft, Cright, Cboth: con iota;			# clear
+	Bnone, Bhidden, Bsolid, Bdashed, Bdotted, Bdouble, Bgroove, Bridge, Binset, Boutset: con iota;	# border-style
+	Ovisible, Ohidden, Oclip, Oscroll, Oauto: con iota;	# overflow
+	Vvisible, Vhidden, Vcollapse: con iota;		# visibility
+	Wnormal, Wpre, Wnowrap, Wprewrap, Wpreline, Wbreakspaces: con iota;	# white-space
+	Astart, Aend, Aleft, Aright, Acenter, Ajustify: con iota;	# text-align
+	TTnone, TTupper, TTlower, TTcap: con iota;			# text-transform
+	TDunder, TDover, TDthrough: con 1<<iota;			# text-decoration-line bits
+	VAbaseline, VAtop, VAmiddle, VAbottom, VAtexttop, VAtextbottom, VAsub, VAsuper, VAlen: con iota;
+	FSnormal, FSitalic, FSoblique: con iota;			# font-style
+	# flex/grid alignment
+	ALnormal, ALstretch, ALstart, ALend, ALcenter, ALbaseline, ALbetween,
+	ALaround, ALevenly, ALleft, ALright, ALauto: con iota;
+
+	# a color is 16rRRGGBBAA; Ccurrent stands for currentcolor until computed
+	Ctransparent:	con 0;
+	Ccurrent:	con 16r00000001;
+
+	Shadow: adt {
+		x, y, blur, spread:	real;
+		color:	int;
+		inset:	int;
+	};
+
+	# one background layer
+	Bg: adt {
+		img:	ref Css->Tok;	# url(...) or a gradient function; nil for none
+		rx, ry:	int;		# repeat in x, y (Rrepeat etc.)
+		posx, posy:	Len;
+		sizex, sizey:	Len;	# Lauto; Lcontent with px -1 = cover, -2 = contain
+		clip, origin:	int;	# BOXborder etc.
+		attfixed:	int;	# background-attachment: fixed
+	};
+	Rrepeat, Rnorepeat, Rspace, Rround: con iota;
+	BOXborder, BOXpadding, BOXcontent, BOXtext: con iota;
+
+	# a grid line: a number, a span, or auto
+	Gline: adt {
+		n:	int;		# 0 = auto
+		span:	int;
+		name:	string;
+	};
+
+	St: adt {
+		display:	int;
+		position:	int;
+		float:	int;
+		clear:	int;
+		borderbox:	int;	# box-sizing: border-box
+		width, height, minwidth, minheight, maxwidth, maxheight:	Len;
+		aspect:	real;		# aspect-ratio, 0 = auto
+		mt, mr, mb, ml:	Len;	# margins
+		pt, pr, pb, pl:	Len;	# padding
+		bt, br, bb, bl:	int;	# border widths, px (0 when style is none)
+		bst, bsr, bsb, bsl:	int;	# border styles
+		bct, bcr, bcb, bcl:	int;	# border colours
+		rtl, rtr, rbr, rbl:	Len;	# corner radii
+		top, right, bottom, left:	Len;	# inset
+		z:	int;
+		zauto:	int;
+		overflowx, overflowy:	int;
+		visibility:	int;
+		opacity:	real;
+		color:	int;
+		bgcolor:	int;
+		bg:	array of ref Bg;
+		shadows:	array of ref Shadow;
+		outlinew:	int;
+		outlines:	int;
+		outlinec:	int;
+		outlineoff:	int;
+
+		# text and fonts (inherited)
+		family:	list of string;	# lower case; generic families as written
+		fontsize:	real;	# px
+		weight:	int;		# 100..900
+		fontstyle:	int;
+		smallcaps:	int;
+		lineheight:	Len;	# Lnormal, Lnum (factor in px), or Lpx
+		align:	int;
+		alignlast:	int;
+		indent:	Len;
+		transform:	int;
+		letterspacing:	real;
+		wordspacing:	real;
+		whitespace:	int;
+		breakall:	int;	# word-break: break-all
+		keepall:	int;
+		anywhere:	int;	# overflow-wrap: anywhere / break-word
+		ellipsis:	int;	# text-overflow: ellipsis (not inherited)
+		decoration:	int;	# TDunder etc. (not inherited; propagated by layout)
+		decorationcolor:	int;
+		decorationstyle:	int;
+		valign:	int;
+		valignlen:	Len;
+		textshadows:	array of ref Shadow;
+		dirrtl:	int;		# direction: rtl
+		tabsize:	real;
+
+		# lists and generated content
+		liststyle:	string;	# disc, decimal, ..., "none"; or a <string> marker as "\"x\""
+		listinside:	int;
+		listimage:	ref Css->Tok;
+		content:	array of ref Css->Tok;	# nil = normal/none
+		quotes:	array of string;
+		counterreset, counterincrement, counterset:	array of ref Css->Tok;
+
+		# flex and grid
+		flexdir:	int;	# 0 row, 1 row-reverse, 2 column, 3 column-reverse
+		flexwrap:	int;	# 0 nowrap, 1 wrap, 2 wrap-reverse
+		justifycontent, alignitems, alignself, aligncontent, justifyitems, justifyself:	int;
+		grow, shrink:	real;
+		basis:	Len;	# Lauto, Lcontent or a length
+		order:	int;
+		rowgap, colgap:	Len;	# Lnormal or a length
+		gridcols, gridrows:	array of ref Css->Tok;	# track lists, unparsed
+		gridareas:	array of string;
+		autocols, autorows:	array of ref Css->Tok;
+		autoflow:	int;	# 0 row, 1 column; +2 dense
+		colstart, colend, rowstart, rowend:	Gline;
+		gridarea:	string;	# named area, if grid-area names one
+
+		# tables
+		tablefixed:	int;
+		collapse:	int;	# border-collapse: collapse
+		spacingx, spacingy:	real;
+		captionbottom:	int;
+		hideempty:	int;
+
+		# multi-column
+		colcount:	int;	# 0 auto
+		colwidth:	Len;
+		colrulew:	int;
+		colrules:	int;
+		colrulec:	int;
+
+		# replaced elements and the rest
+		objectfit:	int;	# 0 fill, 1 contain, 2 cover, 3 none, 4 scale-down
+		transformv:	array of ref Css->Tok;	# transform, unparsed; nil = none
+		cursor:	string;
+		pointer:	int;	# pointer-events not none
+		appearance:	int;	# appearance not none
+		accent:	int;	# accent-color
+		caret:	int;
+		vars:	ref Vars;	# custom properties
+		sid:	int;		# serial number, for style sharing
+
+		new:	fn(): ref St;		# initial values
+	};
+
+	# custom properties: copy on write, shared with the parent when unchanged
+	Vars: adt {
+		tab:	array of list of (string, array of ref Css->Tok);
+		get:	fn(v: self ref Vars, name: string): array of ref Css->Tok;
+	};
+
+	# origins
+	UA, User, Author: con iota;
+
+	Styles: adt {
+		sheets:	list of (ref Css->Sheet, int, string);	# reversed: (sheet, origin, base url)
+		idx:	ref Index;
+		new:	fn(): ref Styles;
+		add:	fn(s: self ref Styles, sh: ref Css->Sheet, origin: int, base: string);
+		imports:	fn(s: self ref Styles, env: ref Env): list of string;	# @import URLs not yet loaded
+	};
+	Index: adt {
+		id, class, tag:	array of list of ref Entry;	# hashed
+		other:	list of ref Entry;
+		n:	int;
+		layers:	list of string;
+	};
+	Entry: adt {
+		sel:	ref Css->Sel;
+		decls:	array of ref Css->Decl;
+		tier:	int;	# origin and layer, before importance
+		order:	int;
+		anc:	array of int;	# Bloom bits an element's ancestors must have
+		mark:	int;	# candidate-gathering generation
+	};
+
+	# Computed styles for d's elements, indexed by node; before[n] and
+	# after[n] are the pseudo-elements' styles where they generate boxes.
+	Computed: adt {
+		st:	array of ref St;
+		before, after, marker:	array of ref St;
+	};
+
+	compute:	fn(d: ref Dom->Doc, s: ref Styles, env: ref Env): ref Computed;
+	match:	fn(d: ref Dom->Doc, n: int, sel: ref Css->Sel, env: ref Env): int;
+	mediamatch:	fn(q: array of ref Css->Tok, env: ref Env): int;
+	supports:	fn(cond: array of ref Css->Tok): int;
+	color:	fn(v: array of ref Css->Tok): (int, int);	# (ok, RGBA)
+	dump:	fn(st: ref St): string;	# "property value" lines
+	resolveurl:	fn(base, rel: string): string;	# RFC 3986 reference resolution
+	addimport:	fn(url: string, sh: ref Css->Sheet);	# the sheet fetched for an @import
+};

@@ -1016,3 +1016,5 @@ dis/lib/web/html.dis
 dis/tests/web_html_test.dis
 dis/lib/web/css.dis
 dis/tests/web_css_test.dis
+dis/lib/web/style.dis
+dis/tests/web_style_test.dis

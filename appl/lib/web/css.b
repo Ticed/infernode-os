@@ -996,6 +996,8 @@ compound(v: array of ref Tok, i: int, parent: array of ref Sel): (array of ref S
 					pseudo = nm;	# legacy single-colon pseudo-elements
 					continue;
 				}
+				if(!knownpseudo(nm))
+					return (nil, i, nil);	# an unknown pseudo-class invalidates the rule
 				s = ref Simple(Spseudo, nm, 0, nil, 0, 0, 0, nil);
 			Kfunction =>
 				s = pseudofn(pt, parent);
@@ -1035,6 +1037,34 @@ compound(v: array of ref Tok, i: int, parent: array of ref Sel): (array of ref S
 		r = s :: r;
 	}
 	return (rev(r), i, pseudo);
+}
+
+pseudoclasses := array[] of {
+	"active", "any-link", "autofill", "blank", "checked", "closed", "current",
+	"default", "defined", "disabled", "empty", "enabled", "first-child",
+	"first-of-type", "focus", "focus-visible", "focus-within", "fullscreen",
+	"future", "host", "hover", "in-range", "indeterminate", "invalid",
+	"last-child", "last-of-type", "link", "local-link", "modal", "muted",
+	"only-child", "only-of-type", "open", "optional", "out-of-range", "past",
+	"paused", "picture-in-picture", "placeholder-shown", "playing",
+	"popover-open", "read-only", "read-write", "required", "root", "scope",
+	"target", "target-within", "user-invalid", "user-valid", "valid", "visited",
+};
+
+knownpseudo(nm: string): int
+{
+	lo := 0;
+	hi := len pseudoclasses;
+	while(lo < hi) {
+		m := (lo+hi)/2;
+		if(pseudoclasses[m] == nm)
+			return 1;
+		if(pseudoclasses[m] < nm)
+			lo = m+1;
+		else
+			hi = m;
+	}
+	return 0;
 }
 
 rev(l: list of ref Simple): array of ref Simple

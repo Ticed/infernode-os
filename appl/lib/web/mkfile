@@ -4,6 +4,7 @@ TARG=\
 	dom.dis\
 	html.dis\
 	css.dis\
+	style.dis\
 
 MODULES=
 
@@ -12,6 +13,8 @@ SYSMODULES=\
 	web/dom.m\
 	web/html.m\
 	web/css.m\
+	web/style.m\
+	math.m\
 	bufio.m\
 	convcs.m\
 
