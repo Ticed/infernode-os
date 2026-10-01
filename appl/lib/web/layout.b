@@ -69,6 +69,7 @@ newbox(kind, inl, node: int, st: ref St): ref Box
 
 build(d: ref Doc, c: ref Computed): ref Box
 {
+	curdoc = d;
 	root := d.root();
 	if(root == 0 || c.st[root] == nil)
 		return newbox(Kblock, 0, 0, style->anon(nil, Style->Dblock));
@@ -2403,6 +2404,537 @@ gridw(k: ref Box, aw: int, b: ref Box): int
 	return clampw(k, fit(mn, mx, aw) - nz(k.ml) - nz(k.mr), aw);
 }
 
+# ---- tables (CSS 2.2 §17) ----
+
+Tcell: adt {
+	box:	ref Box;
+	row:	ref Box;
+	r, c:	int;		# first row and column
+	rs, cs:	int;		# spans
+};
+
+Tgrid: adt {
+	rows:	array of ref Box;	# row boxes, in display order
+	groups:	array of ref Box;	# each row's group (nil if directly in the table)
+	cells:	list of ref Tcell;
+	ncols:	int;
+	captions:	list of ref Box;
+	colw:	array of int;	# widths from <col>/<colgroup>, 0 if none
+};
+
+isrowgroup(k: ref Box): int
+{
+	case k.st.display {
+	Style->Dtablerowgroup or Style->Dtableheadergroup or Style->Dtablefootergroup =>
+		return 1;
+	}
+	return 0;
+}
+
+iscolumn(k: ref Box): int
+{
+	return k.st.display == Style->Dtablecolumn || k.st.display == Style->Dtablecolumngroup;
+}
+
+# The table's grid: rows in header, body, footer order; cells with their
+# slots, rowspans reserving slots below.
+tgrid(d: ref Doc, b: ref Box): ref Tgrid
+{
+	head, body, foot: list of (ref Box, ref Box);	# (row, group), reversed
+	caps: list of ref Box;
+	cols: list of ref Box;
+	for(i := 0; i < len b.kids; i++) {
+		k := b.kids[i];
+		if(k.st.display == Style->Dtablecaption) {
+			caps = k :: caps;
+			continue;
+		}
+		if(iscolumn(k)) {
+			cols = k :: cols;
+			continue;
+		}
+		if(isrowgroup(k)) {
+			rl: list of (ref Box, ref Box);
+			for(j := 0; j < len k.kids; j++)
+				if(k.kids[j].kind == Krow)
+					rl = (k.kids[j], k) :: rl;
+			case k.st.display {
+			Style->Dtableheadergroup =>
+				for(rr := rev2(rl); rr != nil; rr = tl rr)
+					head = hd rr :: head;
+			Style->Dtablefootergroup =>
+				for(rr := rev2(rl); rr != nil; rr = tl rr)
+					foot = hd rr :: foot;
+			* =>
+				for(rr := rev2(rl); rr != nil; rr = tl rr)
+					body = hd rr :: body;
+			}
+		} else if(k.kind == Krow)
+			body = (k, nil) :: body;
+	}
+	all := rev2(head);
+	for(bl := rev2(body); bl != nil; bl = tl bl)
+		all = hd bl :: all;
+	for(fl := rev2(foot); fl != nil; fl = tl fl)
+		all = hd fl :: all;
+	all = rev2(all);
+	t := ref Tgrid(array[len all] of ref Box, array[len all] of ref Box, nil, 0, rev(caps), nil);
+	i = 0;
+	for(; all != nil; all = tl all) {
+		(t.rows[i], t.groups[i]) = hd all;
+		i++;
+	}
+	# slots: occupied[r] is a list of taken columns
+	taken := array[len t.rows] of list of int;
+	for(r := 0; r < len t.rows; r++) {
+		row := t.rows[r];
+		c := 0;
+		for(j := 0; j < len row.kids; j++) {
+			cell := row.kids[j];
+			if(cell.kind != Kcell && cell.inl)
+				continue;
+			while(intlist(taken[r], c))
+				c++;
+			cs := 1;
+			rs := 1;
+			if(cell.node != 0 && d != nil) {
+				cs = spanattr(d.attr(cell.node, "colspan"), 1000);
+				rs = spanattr(d.attr(cell.node, "rowspan"), 65534);
+				if(d.attr(cell.node, "rowspan") == "0")
+					rs = len t.rows - r;
+			}
+			if(r + rs > len t.rows)
+				rs = len t.rows - r;
+			for(rr := r; rr < r + rs; rr++)
+				for(cc := c; cc < c + cs; cc++)
+					taken[rr] = cc :: taken[rr];
+			t.cells = ref Tcell(cell, row, r, c, rs, cs) :: t.cells;
+			c += cs;
+			if(c > t.ncols)
+				t.ncols = c;
+		}
+	}
+	# column widths from <col> and <colgroup>
+	t.colw = array[t.ncols] of {* => 0};
+	c := 0;
+	for(cl := rev(cols); cl != nil; cl = tl cl) {
+		k := hd cl;
+		n := 1;
+		if(k.node != 0 && d != nil)
+			n = spanattr(d.attr(k.node, "span"), 1000);
+		w := 0;
+		if(k.st.width.kind == Style->Lpx && k.st.width.pct == 0.0)
+			w = ir(k.st.width.px);
+		for(m := 0; m < n && c < t.ncols; m++)
+			t.colw[c++] = w;
+	}
+	return t;
+}
+
+rev2(l: list of (ref Box, ref Box)): list of (ref Box, ref Box)
+{
+	r: list of (ref Box, ref Box);
+	for(; l != nil; l = tl l)
+		r = hd l :: r;
+	return r;
+}
+
+intlist(l: list of int, v: int): int
+{
+	for(; l != nil; l = tl l)
+		if(hd l == v)
+			return 1;
+	return 0;
+}
+
+spanattr(s: string, max: int): int
+{
+	v := 0;
+	for(i := 0; i < len s && s[i] >= '0' && s[i] <= '9'; i++)
+		v = v*10 + s[i] - '0';
+	if(v < 1)
+		return 1;
+	if(v > max)
+		return max;
+	return v;
+}
+
+# column (min, max) widths, and percentages (-1 if none)
+tcolumns(t: ref Tgrid, tw: int): (array of int, array of int, array of real)
+{
+	n := t.ncols;
+	mn := array[n] of {* => 0};
+	mx := array[n] of {* => 0};
+	pct := array[n] of {* => -1.0};
+	for(i := 0; i < n; i++)
+		if(t.colw[i] > 0)
+			mn[i] = mx[i] = t.colw[i];
+	# single-column cells first, then spanning ones spread their excess
+	for(pass := 1; pass <= 2; pass++)
+		for(cl := t.cells; cl != nil; cl = tl cl) {
+			c := hd cl;
+			if((pass == 1) != (c.cs == 1))
+				continue;
+			k := c.box;
+			edges(k, tw);
+			(cmn, cmx) := intrinsic(k);
+			ks := k.st;
+			if(ks.width.kind == Style->Lpx && ks.width.pct != 0.0 && ks.width.px == 0.0) {
+				if(c.cs == 1 && ks.width.pct > pct[c.c])
+					pct[c.c] = ks.width.pct;
+			} else if(ks.width.kind == Style->Lpx && ks.width.pct == 0.0) {
+				w := ir(ks.width.px);
+				if(!ks.borderbox)
+					w += hextra(k);
+				if(w > cmn)
+					cmx = cmn = w;
+				else
+					cmx = cmn;
+			}
+			if(c.cs == 1) {
+				if(cmn > mn[c.c])
+					mn[c.c] = cmn;
+				if(cmx > mx[c.c])
+					mx[c.c] = cmx;
+				continue;
+			}
+			# spanning: grow the spanned columns in proportion to their max
+			smn := 0;
+			smx := 0;
+			for(j := c.c; j < c.c + c.cs; j++) {
+				smn += mn[j];
+				smx += mx[j];
+			}
+			if(cmn > smn)
+				spread(mn, c.c, c.cs, cmn - smn, mx);
+			if(cmx > smx)
+				spread(mx, c.c, c.cs, cmx - smx, mx);
+		}
+	for(i = 0; i < n; i++)
+		if(mx[i] < mn[i])
+			mx[i] = mn[i];
+	return (mn, mx, pct);
+}
+
+spread(a: array of int, c0, n, extra: int, weights: array of int)
+{
+	tot := 0;
+	for(j := c0; j < c0 + n; j++)
+		tot += weights[j];
+	given := 0;
+	for(j = c0; j < c0 + n; j++) {
+		d := extra / n;
+		if(tot > 0)
+			d = extra * weights[j] / tot;
+		if(j == c0 + n - 1)
+			d = extra - given;
+		a[j] += d;
+		given += d;
+	}
+}
+
+tspacing(b: ref Box): (int, int)
+{
+	if(b.st.collapse)
+		return (0, 0);
+	return (ir(b.st.spacingx), ir(b.st.spacingy));
+}
+
+# the table's intrinsic (min, max) border-box widths
+tableintrinsic(b: ref Box): (int, int)
+{
+	t := tgrid(curdoc, b);
+	(mn, mx, nil) := tcolumns(t, 0);
+	(sx, nil) := tspacing(b);
+	smn := sx * (t.ncols + 1);
+	smx := smn;
+	for(i := 0; i < t.ncols; i++) {
+		smn += mn[i];
+		smx += mx[i];
+	}
+	for(cl := t.captions; cl != nil; cl = tl cl) {
+		(cmn, nil) := intrinsic(hd cl);
+		if(cmn > smn)
+			smn = cmn;
+	}
+	return (smn + hextra(b), smx + hextra(b));
+}
+
+laytable(l: ref L, b: ref Box, cbw, cbh: int)
+{
+	st := b.st;
+	t := tgrid(curdoc, b);
+	n := t.ncols;
+	(sx, sy) := tspacing(b);
+	cw := b.w - hextra(b);	# the width the table's grid gets
+	(mn, mx, pct) := tcolumns(t, cw);
+	summn := sx * (n + 1);
+	summx := summn;
+	for(i := 0; i < n; i++) {
+		summn += mn[i];
+		summx += mx[i];
+	}
+	autow := st.width.kind == Style->Lauto;
+	if(autow) {
+		# shrink to fit, between min and the available width
+		w := summx;
+		if(w > cw)
+			w = cw;
+		if(w < summn)
+			w = summn;
+		cw = w;
+	} else if(cw < summn)
+		cw = summn;
+	b.w = cw + hextra(b);
+	# column widths
+	colw := array[n] of int;
+	avail := cw - sx * (n + 1);
+	if(st.tablefixed && !autow) {
+		# fixed layout: specified widths, the rest shared equally
+		fixedw := 0;
+		nfree := 0;
+		for(i = 0; i < n; i++) {
+			if(t.colw[i] > 0)
+				colw[i] = t.colw[i];
+			else if(pct[i] >= 0.0)
+				colw[i] = ir(pct[i] * real avail / 100.0);
+			else
+				colw[i] = -1;
+			if(colw[i] >= 0)
+				fixedw += colw[i];
+			else
+				nfree++;
+		}
+		for(i = 0; i < n; i++)
+			if(colw[i] < 0)
+				colw[i] = nz(avail - fixedw) / nz1(nfree);
+	} else {
+		# percentages first, then between min and max
+		for(i = 0; i < n; i++)
+			if(pct[i] >= 0.0) {
+				w := ir(pct[i] * real avail / 100.0);
+				if(w > mn[i])
+					mn[i] = mx[i] = w;
+			}
+		tmn := 0;
+		tmx := 0;
+		for(i = 0; i < n; i++) {
+			tmn += mn[i];
+			tmx += mx[i];
+		}
+		if(avail <= tmn || tmx == tmn) {
+			for(i = 0; i < n; i++)
+				colw[i] = mn[i];
+		} else if(avail <= tmx) {
+			f := real (avail - tmn) / real (tmx - tmn);
+			for(i = 0; i < n; i++)
+				colw[i] = mn[i] + ir(f * real (mx[i] - mn[i]));
+		} else {
+			# wider than the content wants: share the rest by max width
+			for(i = 0; i < n; i++)
+				colw[i] = mx[i];
+			if(tmx > 0)
+				spread(colw, 0, n, avail - tmx, mx);
+			else if(n > 0)
+				spread(colw, 0, n, avail - tmx, array[n] of {* => 1});
+		}
+	}
+	# fix rounding so the columns fill the table exactly
+	tot := 0;
+	for(i = 0; i < n; i++)
+		tot += colw[i];
+	if(n > 0 && tot != avail && avail > 0)
+		colw[n-1] += avail - tot;
+	colx := array[n + 1] of int;
+	x := b.bl + b.pl + sx;
+	for(i = 0; i < n; i++) {
+		colx[i] = x;
+		x += colw[i] + sx;
+	}
+	colx[n] = x;
+
+	# captions above (or below)
+	y := b.bt + b.pt;
+	for(cl := t.captions; cl != nil; cl = tl cl) {
+		k := hd cl;
+		if(k.st.captionbottom)
+			continue;
+		y = laycaption(l, k, b, cw, y);
+	}
+	gridtop := y;
+	nr := len t.rows;
+	rowh := array[nr] of {* => 0};
+	for(r := 0; r < nr; r++) {
+		row := t.rows[r];
+		edges(row, cw);
+		if((sh := spech(row, row.st.height, -1)) > 0)
+			rowh[r] = sh;
+	}
+	# lay each cell out at its width; single-row cells set row heights
+	for(cl2 := t.cells; cl2 != nil; cl2 = tl cl2) {
+		c := hd cl2;
+		k := c.box;
+		w := colx[c.c + c.cs - 1] + colw[c.c + c.cs - 1] - colx[c.c];
+		edges(k, cw);
+		if(st.collapse) {
+			# collapsed borders (§17.6.2), simply: a border shared with
+			# the next cell or the table's own is drawn once
+			if(c.c + c.cs < n)
+				k.br = 0;
+			else if(b.br > 0)
+				k.br = 0;
+			if(c.r + c.rs < nr)
+				k.bb = 0;
+			else if(b.bb > 0)
+				k.bb = 0;
+			if(c.c == 0 && b.bl > 0)
+				k.bl = 0;
+			if(c.r == 0 && b.bt > 0)
+				k.bt = 0;
+		}
+		k.w = w;
+		layblock(l, k, w, -1, nil, 0, 0);
+		if(c.rs == 1 && k.h > rowh[c.r])
+			rowh[c.r] = k.h;
+	}
+	for(cl2 = t.cells; cl2 != nil; cl2 = tl cl2) {
+		c := hd cl2;
+		if(c.rs < 2)
+			continue;
+		have := sy * (c.rs - 1);
+		for(r = c.r; r < c.r + c.rs; r++)
+			have += rowh[r];
+		if(c.box.h > have)
+			rowh[c.r + c.rs - 1] += c.box.h - have;
+	}
+	# a specified table height grows the rows
+	sh := spech(b, st.height, cbh);
+	if(sh >= 0) {
+		gh := sy * (nr + 1);
+		for(r = 0; r < nr; r++)
+			gh += rowh[r];
+		capsh := gridtop - b.bt - b.pt;
+		extra := sh - vextra(b) - capsh - gh;
+		if(extra > 0 && nr > 0)
+			spread(rowh, 0, nr, extra, rowh);
+	}
+	rowy := array[nr + 1] of int;
+	y = gridtop + sy;
+	for(r = 0; r < nr; r++) {
+		rowy[r] = y;
+		y += rowh[r] + sy;
+	}
+	rowy[nr] = y;
+	# rows and groups as boxes, then cells within their rows
+	for(r = 0; r < nr; r++) {
+		row := t.rows[r];
+		g := t.groups[r];
+		ox := 0;
+		oy := 0;
+		if(g != nil) {
+			ox = g.x;
+			oy = g.y;
+		}
+		row.x = b.bl + b.pl - ox;
+		row.y = rowy[r] - oy;
+		row.w = cw;
+		row.h = rowh[r];
+		if(g != nil && (r == 0 || t.groups[r-1] != g)) {
+			# the group spans its rows
+			last := r;
+			while(last + 1 < nr && t.groups[last + 1] == g)
+				last++;
+			g.x = b.bl + b.pl;
+			g.y = rowy[r];
+			g.w = cw;
+			g.h = rowy[last] + rowh[last] - rowy[r];
+			row.x = 0;
+			row.y = 0;
+		} else if(g != nil) {
+			row.x = 0;
+			row.y = rowy[r] - g.y;
+		}
+	}
+	for(cl2 = t.cells; cl2 != nil; cl2 = tl cl2) {
+		c := hd cl2;
+		k := c.box;
+		h := rowy[c.r + c.rs - 1] + rowh[c.r + c.rs - 1] - rowy[c.r];
+		contenth := k.h;
+		k.h = h;
+		# vertical-align within the cell
+		va := k.st.valign;
+		dy := 0;
+		case va {
+		Style->VAmiddle =>
+			dy = (h - contenth)/2;
+		Style->VAbottom =>
+			dy = h - contenth;
+		}
+		if(dy > 0)
+			shiftcontent(k, dy);
+		# coordinates relative to the cell's row
+		row := c.row;
+		rx := row.x;
+		ry := row.y;
+		g := rowgroupof(t, row);
+		if(g != nil) {
+			rx += g.x;
+			ry += g.y;
+		}
+		k.x = colx[c.c] - rx;
+		k.y = rowy[c.r] - ry;
+	}
+	for(cl = t.captions; cl != nil; cl = tl cl) {
+		k := hd cl;
+		if(k.st.captionbottom)
+			y = laycaption(l, k, b, cw, y);
+	}
+	h := y - b.bt - b.pt + vextra(b);
+	if(sh > h)
+		h = sh;
+	b.h = h;
+}
+
+curdoc: ref Doc;
+
+rowgroupof(t: ref Tgrid, row: ref Box): ref Box
+{
+	for(i := 0; i < len t.rows; i++)
+		if(t.rows[i] == row)
+			return t.groups[i];
+	return nil;
+}
+
+laycaption(l: ref L, k, b: ref Box, cw, y: int): int
+{
+	edges(k, cw);
+	sizew(k, cw);
+	layblock(l, k, cw, -1, nil, 0, 0);
+	k.x = b.bl + b.pl + k.ml;
+	k.y = y + k.mt;
+	return k.y + k.h + k.mb;
+}
+
+# move a box's content down (vertical-align in table cells)
+shiftcontent(b: ref Box, dy: int)
+{
+	for(i := 0; i < len b.lines; i++) {
+		ln := b.lines[i];
+		ln.y += dy;
+		ln.base += dy;
+		for(j := 0; j < len ln.frags; j++) {
+			f := ln.frags[j];
+			f.y += dy;
+			f.base += dy;
+			if(f.kind == Fatomic)
+				f.box.y += dy;
+		}
+	}
+	if(b.lines == nil)
+		for(i = 0; i < len b.kids; i++)
+			b.kids[i].y += dy;
+}
+
 # ---- positioning (CSS 2.2 §9.3, §10.3.7, §10.6.4) ----
 
 ispositioned(b: ref Box): int
@@ -2668,10 +3200,6 @@ placefloat(l: ref L, k: ref Box, fc: ref Fctx, cx, y, cw, ox, oy: int)
 
 
 
-laytable(l: ref L, b: ref Box, cbw, cbh: int)
-{
-	asblock(l, b, cbw, cbh);
-}
 
 asblock(l: ref L, b: ref Box, cbw, cbh: int)
 {
@@ -2762,12 +3290,22 @@ intrinsic(b: ref Box): (int, int)
 		(w, nil) := replacedsize(b, -1, -1);
 		return (w + ex, w + ex);
 	}
+	if(b.kind == Ktable) {
+		(tmn, tmx) := tableintrinsic(b);
+		return (tmn + nz(b.ml) + nz(b.mr), tmx + nz(b.ml) + nz(b.mr));
+	}
 	mn := 0;
 	mx := 0;
 	if(haslines(b) || b.kind == Kinline) {
 		(mn, mx) = inlineintrinsic(b);
 	} else if(b.kind == Kflex && b.st.flexdir < 2 || b.kind == Krow) {
-		# a row: maxima add up
+		# a row: maxima add up, with the gaps between
+		if(b.kind == Kflex && b.st.colgap.kind != Style->Lnormal && len b.kids > 1) {
+			g := res(b.st.colgap, 0) * (len b.kids - 1);
+			mx += g;
+			if(b.st.flexwrap == 0)
+				mn += g;
+		}
 		for(i := 0; i < len b.kids; i++) {
 			k := b.kids[i];
 			edges(k, 0);
@@ -3852,16 +4390,15 @@ paintbackground(dst: ref Image, b: ref Box, r: Rect)
 			(r.max.x + int s.x + int s.spread, r.max.y + int s.y + int s.spread));
 		blur := int s.blur;
 		if(blur <= 0)
-			fillbox(dst, b, sr, s.color);
+			shadowfill(dst, b, sr, r, s.color);
 		else {
 			# approximate the blur with a few widening translucent layers
 			steps := 4;
 			c := s.color;
 			a := (c & 255) / (steps + 1);
-			for(k := steps; k >= 1; k--) {
-				fillbox(dst, b, sr.inset(-blur*k/steps), (c & int 16rFFFFFF00) | a);
-			}
-			fillbox(dst, b, sr.inset(blur/2), (c & int 16rFFFFFF00) | a);
+			for(k := steps; k >= 1; k--)
+				shadowfill(dst, b, sr.inset(-blur*k/steps), r, (c & int 16rFFFFFF00) | a);
+			shadowfill(dst, b, sr.inset(blur/2), r, (c & int 16rFFFFFF00) | a);
 		}
 	}
 	if(visible(st.bgcolor)) {
@@ -3877,6 +4414,17 @@ paintbackground(dst: ref Image, b: ref Box, r: Rect)
 	for(i = len st.bg - 1; i >= 0; i--)
 		if(st.bg[i].img != nil)
 			paintgradient(dst, b, r, st.bg[i]);
+}
+
+# an outer shadow shows only outside the border box (Backgrounds 3 §7.1)
+shadowfill(dst: ref Image, b: ref Box, sr, r: Rect, c: int)
+{
+	if(!rectok(sr))
+		return;
+	(rtl, rtr, rbr, rbl) := radii(b);
+	p := rrect(sr, rtl, rtr, rbr, rbl);
+	addrrect(p, r, rtl, rtr, rbr, rbl);
+	dst.fillpath(p, 1, colorimg(c), (0, 0));	# even-odd: the box is a hole
 }
 
 bgclip(st: ref St): int
