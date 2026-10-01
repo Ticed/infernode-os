@@ -174,7 +174,7 @@ testSelectors(t: ref T)
 		else
 			t.assertseq(css->seltostring(x), want, in);
 	}
-	for(bad := list of {"", "a..b", "p::before .x", "[=x]", ":nth-child(x)", ":not()", "a >", "##x", ":unknown-fn(x)"}; bad != nil; bad = tl bad)
+	for(bad := list of {"", "a..b", "p::before .x", "[=x]", ":nth-child(x)", ":not()", "a >", "##x", ":unknown-fn(x)", "a:-moz-focusring", "p:hoverx"}; bad != nil; bad = tl bad)
 		t.assert(css->parsesels(hd bad) == nil, "should be invalid: " + hd bad);
 	t.assert(len css->parsesels(":is(.a, ::-moz-x, .b)") == 1, "forgiving :is");
 }
