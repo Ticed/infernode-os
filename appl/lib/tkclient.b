@@ -49,8 +49,9 @@ toplevel(ctxt: ref Draw->Context, topconfig: string, title: string, buts: int): 
 {
 	wm := wmlib->connect(ctxt);
 	opts := "";
-	if((buts & Plain) == 0)
-		opts = "-borderwidth 1 -relief raised ";
+	framed := (buts & Plain) == 0 && !wmlib->embedded(wm);
+	if(framed)
+		opts = sys->sprint("-borderwidth %d -relief solid ", Wmlib->Border);
 	top := tk->toplevel(wm.ctxt.display, opts+topconfig);
 	if (top == nil) {
 		sys->fprint(sys->fildes(2), "wmlib: window creation failed (top %ux, i %ux)\n", top, top.image);
@@ -60,7 +61,54 @@ toplevel(ctxt: ref Draw->Context, topconfig: string, title: string, buts: int): 
 	readscreenrect(top);
 	c := titlebar->new(top, buts);
 	titlebar->settitle(top, title);
+	if(framed){
+		# The frame takes its presses before the app sees them: every
+		# reader of top.ctxt.ptr gets the events framefilter passes on.
+		in := wm.ptr;
+		wm.ptr = chan of ref Pointer;
+		spawn framefilter(top, in, wm.ptr, c);
+	}
 	return (top, c);
+}
+
+# A press in the window's frame or hot zone (wmlib->inframe) is the
+# frame's, rio's way: button 1 or 2 reshapes, button 3 moves.  It goes
+# to the app's own loop as the old title bar's requests did ("size",
+# "move x y" on the titlebar channel, which the app hands to wmctl), and
+# the rest of the press is the window manager's.  Everything else is
+# passed through untouched.
+framefilter(top: ref Tk->Toplevel, in, out: chan of ref Pointer, ctl: chan of string)
+{
+	last := 0;
+	held := 0;
+	for(;;){
+		p := <-in;
+		if(held){
+			if(p.buttons == 0)
+				held = 0;
+			last = p.buttons;
+			continue;
+		}
+		if(p.buttons != 0 && last == 0 && (p.buttons & (8|16)) == 0 &&
+		   top.image != nil && wmlib->inframe(top.image.r, p.xy)){
+			held = 1;
+			last = p.buttons;
+			# sent from its own proc: an app that is busy, or never
+			# reads the channel, must not stop its pointer
+			if(p.buttons & 4)
+				spawn send(ctl, sys->sprint("move %d %d", p.xy.x, p.xy.y));
+			else
+				spawn send(ctl, "size");
+			continue;
+		}
+		last = p.buttons;
+		out <-= p;
+	}
+}
+
+send(c: chan of string, s: string)
+{
+	c <-= s;
 }
 
 readscreenrect(top: ref Tk->Toplevel)

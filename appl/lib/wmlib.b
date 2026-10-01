@@ -246,6 +246,18 @@ connect(ctxt: ref Context): ref Wmcontext
 	return wm;
 }
 
+inframe(r: Rect, p: Point): int
+{
+	return p.in(r) && !p.in(r.inset(Border+Hotzone));
+}
+
+embedded(wm: ref Wmcontext): int
+{
+	if(wm == nil || wm.connfd == nil)
+		return 0;
+	return sys->fprint(wm.connfd, "embedded") >= 0;
+}
+
 startinput(wm: ref Wmcontext, devs: list of string): string
 {
 	for(; devs != nil; devs = tl devs)

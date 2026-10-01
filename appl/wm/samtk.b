@@ -109,7 +109,7 @@ newflayer(tag, tp: int): ref Flayer
 	}
 	sys->fprint(ctxt.logfd, "newflayer: creating toplevel (wm=%d)...\n",
 		ctxt.ctxt != nil && ctxt.ctxt.wm != nil);
-	(t, cmdc) := tkclient->toplevel(ctxt.ctxt, "-borderwidth 1 -relief raised", "SamTerm", Tkclient->Appl);
+	(t, cmdc) := tkclient->toplevel(ctxt.ctxt, "", "SamTerm", Tkclient->Appl);
 	sys->fprint(ctxt.logfd, "newflayer: toplevel returned (t=%d)\n", t != nil);
 	tk->cmd(t, ". configure -x "+string x+" -y "+string y+"; update");
 

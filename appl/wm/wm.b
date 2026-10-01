@@ -74,7 +74,8 @@ init(ctxt: ref Draw->Context, argv: list of string)
 		ctxt = wmclient->makedrawcontext();
 	display = ctxt.display;
 	menuhit = load Menuhit Menuhit->PATH;
-	menu := ref Menu(array[] of {"acme", "wm/clock", "wm/colors"}, nil, 0);
+	# programs to start, then rio's Delete (the last item)
+	menu := ref Menu(array[] of {"acme", "wm/clock", "wm/colors", "Delete"}, nil, 0);
 
 	buts := Wmclient->Appl;
 	if(ctxt.wm == nil)
@@ -155,7 +156,9 @@ init(ctxt: ref Draw->Context, argv: list of string)
 				# INFR-160) raises the rio app-launcher menu.
 				mc := ref Mousectl(win.ctxt.ptr, p.buttons, p.xy, p.msec);
 				n := menuhit->menuhit(p.buttons, mc, menu, nil);
-				if(n >= 0 && n < len menu.item){
+				if(n == len menu.item - 1)
+					deletewin(win.ctxt.ptr);
+				else if(n >= 0 && n < len menu.item){
 					spawn command(clientctxt, menu.item[n] :: nil, nil);
 				}
 				break;
@@ -341,6 +344,11 @@ handlerequest(win: ref Wmclient->Window, wmctxt: ref Wmcontext, c: ref Client, r
 		}
 	"fixedorigin" =>
 		c.flags |= Fixedorigin;
+	"embedded" =>
+		# no: wm/wm places windows and leaves their frames to the
+		# clients (wmlib->embedded).  Answered here, before a
+		# controller could be handed the request and accept it.
+		return "not embedded";
 	"rect" =>
 		;
 	"kbdfocus" =>
@@ -469,22 +477,78 @@ sizewin(ptrc: chan of ref Pointer, c: ref Client, w: ref Window, minsize: Point)
 		r = (xy, xy);
 		move = Maxx|Maxy;
 	}else {
-		if(xy.x < (r.min.x+r.max.x)/2){
-			move=Minx;
+		# rio's way: the nearest edge, or a corner within 20 pixels
+		# of one (rio.c, whichcorner): an edge moves one side only.
+		move = 0;
+		case portion(xy.x, r.min.x, r.max.x) {
+		0 =>
+			move |= Minx;
 			offset.x = xy.x - r.min.x;
-		}else{
-			move=Maxx;
+		2 =>
+			move |= Maxx;
 			offset.x = xy.x - r.max.x;
 		}
-		if(xy.y < (r.min.y+r.max.y)/2){
+		case portion(xy.y, r.min.y, r.max.y) {
+		0 =>
 			move |= Miny;
 			offset.y = xy.y - r.min.y;
-		}else{
+		2 =>
 			move |= Maxy;
 			offset.y = xy.y - r.max.y;
 		}
+		if(move == 0){
+			# well inside: the nearest corner, as before
+			if(xy.x < (r.min.x+r.max.x)/2){
+				move = Minx;
+				offset.x = xy.x - r.min.x;
+			}else{
+				move = Maxx;
+				offset.x = xy.x - r.max.x;
+			}
+			if(xy.y < (r.min.y+r.max.y)/2){
+				move |= Miny;
+				offset.y = xy.y - r.min.y;
+			}else{
+				move |= Maxy;
+				offset.y = xy.y - r.max.y;
+			}
+		}
 	}
 	return reshape(c, w.tag, sweep(ptrc, r, offset, borders, move, show, minsize));
+}
+
+# which third of lo..hi x falls in, the ends being 20 pixels (rio.c)
+portion(x, lo, hi: int): int
+{
+	x -= lo;
+	hi -= lo;
+	if(x < 20)
+		return 0;
+	if(x > hi-20)
+		return 2;
+	return 1;
+}
+
+# rio's Delete: after the menu, a press of button 3 on a window tells
+# its client to exit; any other press, or one on no window, cancels.
+deletewin(ptr: chan of ref Pointer)
+{
+	p := <-ptr;
+	while(p.buttons != 0)
+		p = <-ptr;
+	while(p.buttons == 0)
+		p = <-ptr;
+	c := wmsrv->find(p.xy);
+	b := p.buttons;
+	while(p.buttons != 0)
+		p = <-ptr;
+	if(c != nil && (b & 4) != 0)
+		spawn tellexit(c);
+}
+
+tellexit(c: ref Client)
+{
+	c.ctl <-= "exit";
 }
 
 reshape(c: ref Client, tag: string, r: Rect): string
