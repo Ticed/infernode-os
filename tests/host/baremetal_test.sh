@@ -334,6 +334,11 @@ build_kernel() {
         "$LIMBO" -I"$ROOT/module" -o "$BUILD/iplocktest.dis" \
             "$ROOT/os/init/iplocktest.b" 2>>"$BUILD/cc.log" || return 1
 
+        # A nil dereference in JIT-compiled code: the program's
+        # exception, not the machine's panic.
+        "$LIMBO" -I"$ROOT/module" -o "$BUILD/niltest.dis" \
+            "$ROOT/os/init/niltest.b" 2>>"$BUILD/cc.log" || return 1
+
         rootmanifest=(
             "/osinit.dis=$BUILD/osinit.dis"
             "/dis/etherusb.dis=$BUILD/etherusb.dis"
@@ -345,6 +350,7 @@ build_kernel() {
             "/dis/tktest.dis=$BUILD/tktest.dis"
             "/dis/isotest.dis=$BUILD/isotest.dis"
             "/dis/iplocktest.dis=$BUILD/iplocktest.dis"
+            "/dis/niltest.dis=$BUILD/niltest.dis"
 
             # The FAT filesystem, as a program. Imported from upstream
             # Inferno (appl/cmd/dossrv.b) -- MIT, the same provenance as
@@ -1783,6 +1789,7 @@ SHOUT="$(shell_session "$BUILD/$PLAT-kernel.img" \
         'cat /net/iproute' \
         'cat /net/tcp/stats' \
         'iplocktest' \
+        'niltest' \
         'cd /dis; pwd; cd /' \
         'date' \
         'basename /a/b/see-me' \
@@ -1856,6 +1863,17 @@ if grep -q "iplocktest: PASS" <<<"$SHOUT"; then
     pass "os/ip: the interface lock is balanced after an unanswerable IPv6 datagram (#721)"
 else
     fail "os/ip: interface lock leaked by the ICMPv6 unreachable reply -- $(grep -a 'iplocktest:' <<<"$SHOUT" | tail -1)"
+fi
+
+# A nil dereference in JIT-compiled code is the program's exception.
+# os/init/niltest.b loads a field through a nil ref inside an exception
+# block. The JIT emits no nil checks and relies on the hardware fault
+# being turned into "dereference of nil"; the bare-metal trap handler
+# did not, so the load panicked the machine and nothing after it ran.
+if grep -q '^niltest: CAUGHT dereference of nil' <<<"$SHOUT" && grep -q '^niltest: STILL RUNNING' <<<"$SHOUT"; then
+    pass "a nil dereference in JIT code raises 'dereference of nil' in the program, not a kernel panic"
+else
+    fail "nil dereference in JIT code -- $(grep -a -E 'niltest:|unhandled exception|panic:' <<<"$SHOUT" | head -2 | tr '\n' ' ')"
 fi
 
 # The exception handler's search, in the kernel's own interpreter: an
@@ -4733,6 +4751,7 @@ try:
     typed("cat /net/ether0/addr; echo")
     typed("cat /net/ether0/ifstats")
     typed("iplocktest", 3)
+    typed("niltest", 2)
     typed("listen 'tcp!*!17030' export / &")
     typed("sleep 1; mount tcp!127.0.0.1!17030 /n/remote; echo AUTHMOUNT-$status; ls /n/remote/dis/sh.dis", 4)
     typed("cat /dev/sdctl")
@@ -4799,6 +4818,9 @@ vcheck "os/ip + keyring: an authenticated 9P mount works on the kernel (#725)" "
 # os/init/iplocktest.b, typed at the shell: the interface lock is balanced
 # after an ICMPv6 unreachable reply (#721; see the bcm2837 check for the story)
 vcheck "os/ip: the interface lock is balanced after an unanswerable IPv6 datagram (#721)" "iplocktest: PASS"
+# os/init/niltest.b: a nil dereference in JIT code is the program's
+# exception (the bcm2837 check tells the story)
+vcheck "a nil dereference in JIT code is the program's exception, not a panic" "niltest: STILL RUNNING"
 vcheck "DHCP answers over virtio-net"              "etherusb: 10.0.2.15 mask"
 vcheck "a default route is installed"              "etherusb: default route via 10.0.2.2"
 vcheck "the framebuffer is configured through fw_cfg" "fb:   ramfb 1280x720x32"

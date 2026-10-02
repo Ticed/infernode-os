@@ -1483,6 +1483,13 @@ guiloop()
 				# widget with no menu binding and no menu appeared.
 				tk->pointer(top, *ptr);
 				lastbtn1 = 0;
+			} else if(!incanvas(ptr)) {
+				# The frame and title bar round the canvas are Tk's
+				# (titlebar.b): move, resize, close.  Routed through the
+				# layout they hit no leaf and were dropped, so the Matrix
+				# window could be neither resized nor moved.
+				tk->pointer(top, *ptr);
+				lastbtn1 = 0;
 			} else if(comp == nil || comp.layout == nil) {
 				# Empty-state picker: edge-triggered button-1 click.
 				# The picker draws into the frame — translate the
@@ -2604,6 +2611,16 @@ canvasorigin(): Point
 	ox := int tk->cmd(top, ".c cget -actx");
 	oy := int tk->cmd(top, ".c cget -acty");
 	return Point(ox, oy);
+}
+
+# Is the window-space event on the canvas (the frame Matrix draws),
+# rather than on the Tk frame and title bar around it?
+incanvas(p: ref Pointer): int
+{
+	o := canvasorigin();
+	w := int tk->cmd(top, ".c cget -actwidth");
+	h := int tk->cmd(top, ".c cget -actheight");
+	return Rect(o, o.add((w, h))).contains(p.xy);
 }
 
 toframe(p: ref Pointer): ref Pointer
