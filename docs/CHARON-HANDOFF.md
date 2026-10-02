@@ -7,7 +7,8 @@ previous one's context.  Read `docs/CHARON-ENGINE.md` for the design and
 state: what is done, how it is judged, how to set up, what is next, and
 what bit last time.
 
-No pull request exists yet for this branch.
+Pull request: https://github.com/infernode-os/infernode/pull/754 (pushing to
+the branch updates it).
 
 ## Where it stands
 
