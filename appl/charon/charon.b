@@ -2237,6 +2237,8 @@ RENDERTXT: con "/tmp/.charonrender.txt";
 renderonce()
 {
 	start();
+	if(J != nil)
+		J->frametreechanged(top);
 
 	startpage := config.starturl;
 	url := CU->makeabsurl(startpage);
@@ -2258,17 +2260,25 @@ renderonce()
 	get(g, f, GoNormal, nil);
 	G->progress <-= (-1, G->Pdone, 0, "");
 
-	# Write rendered image
+	imgpath := RENDERIMG;
+	txtpath := RENDERTXT;
+	if((CU->config).renderout != nil) {
+		imgpath = (CU->config).renderout;
+		txtpath = imgpath + ".txt";
+	}
+
+	# Write rendered image: the full viewport width, and as much of
+	# the page height as the canvas holds.
 	if(f != nil && f.cim != nil && f.layout != nil) {
-		w := f.layout.width;
-		h := f.layout.height;
-		if(w <= 0) w = 1;
-		if(h <= 0) h = 1;
-		# Clamp to frame content rect
-		if(w > f.cr.dx()) w = f.cr.dx();
-		if(h > f.cr.dy()) h = f.cr.dy();
+		w := f.cr.dx();
+		h := f.cr.dy();
+		if((CU->config).rendercrop) {
+			h = f.layout.height;
+			if(h <= 0) h = 1;
+			if(h > f.cr.dy()) h = f.cr.dy();
+		}
 		origin := Point(f.cr.min.x, f.cr.min.y);
-		ifd := sys->create(RENDERIMG, Sys->OWRITE, 8r600);
+		ifd := sys->create(imgpath, Sys->OWRITE, 8r600);
 		if(ifd != nil) {
 			crop := context.display.newimage(
 				Rect(Point(0,0), Point(w, h)),
@@ -2283,7 +2293,7 @@ renderonce()
 
 	# Write extracted text
 	text := extractbody(f);
-	tfd := sys->create(RENDERTXT, Sys->OWRITE, 8r600);
+	tfd := sys->create(txtpath, Sys->OWRITE, 8r600);
 	if(tfd != nil) {
 		b := array of byte text;
 		sys->write(tfd, b, len b);

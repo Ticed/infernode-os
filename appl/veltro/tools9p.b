@@ -898,12 +898,26 @@ tmpveltrointernalpath(path: string): int
 		path == "/tmp/veltro/tasks" || prefix(path, "/tmp/veltro/tasks/");
 }
 
+# Mount the running browser's session at /mnt/charon in this (forked)
+# name space. No browser, no mount: the tool says charon is not running.
+mountcharon()
+{
+	fd := sys->open("#scharon/fs", Sys->ORDWR);
+	if(fd == nil)
+		return;
+	if(sys->mount(fd, nil, "/mnt/charon", Sys->MREPL, nil) < 0)
+		sys->fprint(stderr, "tools9p: mount charon: %r\n");
+}
+
 appipccontrolpath(path: string): int
 {
 	# These real-file IPC trees are capabilities of their fixed-function tools,
 	# not generic path grants. A raw write/exec grant to them bypasses tool-level
 	# mediation and can drive GUI apps or browser navigation directly.
-	return path == "/tmp/veltro/browser" || prefix(path, "/tmp/veltro/browser/") ||
+	# /mnt/charon is the browser's served session (charonfs), mounted per
+	# charon invocation only.
+	return path == "/mnt/charon" || prefix(path, "/mnt/charon/") ||
+		path == "/tmp/veltro/browser" || prefix(path, "/tmp/veltro/browser/") ||
 		path == "/tmp/veltro/editor" || prefix(path, "/tmp/veltro/editor/") ||
 		path == "/tmp/veltro/shell" || prefix(path, "/tmp/veltro/shell/") ||
 		path == "/tmp/veltro/fractal" || prefix(path, "/tmp/veltro/fractal/") ||
@@ -1260,6 +1274,11 @@ asyncexec(srv: ref Styxserver, tag: int, count: int, ti: ref ToolInfo, data: str
 		releasetaskcreate(locked);
 		return;
 	}
+	# The browser posts its session in #scharon (charonfs(2)); only this
+	# trusted wrapper can attach it, and only for the charon tool, so the
+	# mount has to happen here, before NODEVS shuts device attachment off.
+	if(ti.name == "charon")
+		mountcharon();
 	# Exec opens only its own wait descriptor inside the trusted wrapper, then
 	# applies NODEVS before parsing or running model-supplied shell text.
 	if(ti.name != "exec" && sys->pctl(Sys->NODEVS, nil) < 0) {
@@ -1835,7 +1854,7 @@ addtoolpaths(paths: list of string, tool: string): list of string
 	"launch" =>
 		return addpath(paths, "/dis/wm");
 	"charon" =>
-		return addpath(paths, "/tmp/veltro/browser");
+		return addpath(paths, "/mnt/charon");
 	"editor" =>
 		return addpath(paths, "/tmp/veltro/editor");
 	"shell" =>

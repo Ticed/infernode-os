@@ -258,7 +258,7 @@ init(cu: CharonUtils)
 		return;
 	}
 	#TODO should read from env $font or config
-	if((CU->config).doacme)
+	if((CU->config).doacme && !(CU->config).dorender)
 		for(i := 0; i < len fonts; i++)
 			fonts[i] = Fontinfo("/fonts/combined/unicode.sans.14.font", nil, 0);
 	# make sure default and control fonts are loaded

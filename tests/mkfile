@@ -110,6 +110,14 @@ TARG=\
 	tk_test.dis\
 	tkimgrender.dis\
 	tkrender.dis\
+	charonshot.dis\
+	charonbatch.dis\
+	web_html_test.dis\
+	web_css_test.dis\
+	web_style_test.dis\
+	web_browser_test.dis\
+	web_fonts_test.dis\
+	brotli_test.dis\
 	tls_crypto_test.dis\
 	tls_live_test.dis\
 	tls_protocol_test.dis\
@@ -185,6 +193,17 @@ TARG=\
 MODULES=
 
 SYSMODULES=\
+	woff2.m\
+	brotli.m\
+	web/dom.m\
+	web/html.m\
+	web/css.m\
+	web/style.m\
+	web/fonts.m\
+	web/layout.m\
+	web/page.m\
+	web/browser.m\
+	web/charonfs.m\
 	arg.m\
 	cowfs.m\
 	dial.m\

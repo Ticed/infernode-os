@@ -28,6 +28,9 @@ OutlineFont: module {
 		# Map CID to GID (for CID-keyed fonts).  Returns -1 if not found.
 		cidtogid:	fn(f: self ref Face, cid: int): int;
 
+		# GID for a character via cmap, or -1 if the font has no glyph for it.
+		lookup:	fn(f: self ref Face, charcode: int): int;
+
 		# Map character code to GID via cmap (TrueType).  Identity for CFF.
 		chartogid:	fn(f: self ref Face, charcode: int): int;
 
@@ -38,6 +41,15 @@ OutlineFont: module {
 
 		# Get glyph advance width in pixels at given size
 		glyphwidth:	fn(f: self ref Face, gid: int, size: real): int;
+
+		# Unrounded advance width in pixels (for text layout)
+		advance:	fn(f: self ref Face, gid: int, size: real): real;
+
+		# Kerning between two glyphs ('kern' table), in font units
+		kern:	fn(f: self ref Face, left, right: int): int;
+
+		# The glyph's top (yMax), in font units; 0 if unknown (CFF)
+		ymax:	fn(f: self ref Face, gid: int): int;
 
 		# Get scaled metrics: (height, ascent, descent) in pixels
 		metrics:	fn(f: self ref Face, size: real): (int, int, int);

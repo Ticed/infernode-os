@@ -214,16 +214,17 @@ new_canvas(attrs: Attributes): ref Canvas
 	height := parse_length(attrs.get("height"), real DEFAULT_HEIGHT);
 
 	c := ref Canvas;
-	c.width = int width;
-	c.height = int height;
+	c.width = int (width + 0.5);
+	c.height = int (height + 0.5);
 	if(c.width <= 0) c.width = DEFAULT_WIDTH;
 	if(c.height <= 0) c.height = DEFAULT_HEIGHT;
 	# Clamp to reasonable size
 	if(c.width > 4096) c.width = 4096;
 	if(c.height > 4096) c.height = 4096;
 
-	# a white background (Wikipedia SVGs expect this)
-	c.img = display.newimage(Rect((0, 0), (c.width, c.height)), Draw->RGB24, 0, Draw->White);
+	# transparent where nothing is drawn: a viewer shows it on its own
+	# background, a web page on the page's
+	c.img = display.newimage(Rect((0, 0), (c.width, c.height)), Draw->RGBA32, 0, Draw->Transparent);
 
 	c.viewbox_x = 0.0;
 	c.viewbox_y = 0.0;
@@ -1385,22 +1386,33 @@ canvas_to_rawimage(canvas: ref Canvas): ref Rawimage
 	raw.r.max = Point(canvas.width, canvas.height);
 	raw.transp = 0;
 
-	# RGB24 is stored b, g, r; the background is opaque
+	# RGBA32 is stored a, b, g, r, premultiplied; a Rawimage's alpha is not
 	npix := canvas.width * canvas.height;
-	buf := array[3*npix] of byte;
+	buf := array[4*npix] of byte;
 	canvas.img.readpixels(canvas.img.r, buf);
-	raw.nchans = 3;
-	raw.chandesc = RImagefile->CRGB;
-	raw.chans = array[3] of array of byte;
-	raw.chans[0] = array[npix] of byte;
-	raw.chans[1] = array[npix] of byte;
-	raw.chans[2] = array[npix] of byte;
+	raw.nchans = 4;
+	raw.chandesc = RImagefile->CRGBA;
+	raw.chans = array[4] of array of byte;
+	for(k := 0; k < 4; k++)
+		raw.chans[k] = array[npix] of byte;
 	for(i := 0; i < npix; i++) {
-		raw.chans[0][i] = buf[3*i+2];
-		raw.chans[1][i] = buf[3*i+1];
-		raw.chans[2][i] = buf[3*i];
+		a := int buf[4*i];
+		raw.chans[3][i] = byte a;
+		if(a == 0)
+			continue;	# r, g, b stay 0
+		raw.chans[0][i] = byte unpremul(int buf[4*i+3], a);
+		raw.chans[1][i] = byte unpremul(int buf[4*i+2], a);
+		raw.chans[2][i] = byte unpremul(int buf[4*i+1], a);
 	}
 	return raw;
+}
+
+unpremul(c, a: int): int
+{
+	v := (c * 255 + a/2) / a;
+	if(v > 255)
+		v = 255;
+	return v;
 }
 
 # ==================== Utility Functions ====================

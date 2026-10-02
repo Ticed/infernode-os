@@ -1,0 +1,35 @@
+<$ROOT/mkconfig
+
+TARG=\
+	dom.dis\
+	html.dis\
+	css.dis\
+	style.dis\
+	fonts.dis\
+	layout.dis\
+	page.dis\
+	browser.dis\
+	charonfs.dis\
+
+MODULES=
+
+SYSMODULES=\
+	sys.m\
+	web/dom.m\
+	web/html.m\
+	web/css.m\
+	web/style.m\
+	web/fonts.m\
+	web/layout.m\
+	web/page.m\
+	web/browser.m\
+	web/charonfs.m\
+	outlinefont.m\
+	draw.m\
+	math.m\
+	bufio.m\
+	convcs.m\
+
+DISBIN=$ROOT/dis/lib/web
+
+<$ROOT/mkfiles/mkdis
