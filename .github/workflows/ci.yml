@@ -428,6 +428,13 @@ jobs:
         chmod +x tests/host/jit_boot_test.sh
         tests/host/jit_boot_test.sh
 
+    - name: Run JIT bounds tests (JIT and interpreter)
+      run: |
+        # A negative or overlarge index must raise "array bounds error"
+        # from compiled code, not read or write outside the array.
+        chmod +x tests/host/jit_bounds_test.sh
+        ROOT=. sh tests/host/jit_bounds_test.sh
+
     - name: Run JIT type code reuse test
       run: |
         # A freed type's compiled code goes back on comp-amd64.c's free
@@ -1162,11 +1169,13 @@ jobs:
 
     - name: Run JIT fault tests (JIT and interpreter)
       run: |
-        for c in 1 0; do
-          timeout 300 "$RUNNER_TEMP/emu-rv" -c$c -r . /dis/tests/jit_fault_test.dis -v > jit-fault-c$c.txt 2>&1 < /dev/null || true
-          cat jit-fault-c$c.txt
-          grep -qx PASS jit-fault-c$c.txt && ! grep -q -- '--- FAIL' jit-fault-c$c.txt \
-            || { echo "::error::jit_fault_test failed with -c$c"; exit 1; }
+        for t in jit_fault_test jit_bounds_test; do
+          for c in 1 0; do
+            timeout 300 "$RUNNER_TEMP/emu-rv" -c$c -r . /dis/tests/$t.dis -v > $t-c$c.txt 2>&1 < /dev/null || true
+            cat $t-c$c.txt
+            grep -qx PASS $t-c$c.txt && ! grep -q -- '--- FAIL' $t-c$c.txt \
+              || { echo "::error::$t failed with -c$c"; exit 1; }
+          done
         done
 
     - name: Run JIT boot smoke test
