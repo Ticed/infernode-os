@@ -13,13 +13,13 @@ implement JitFaultTest;
 # -c0 it pins the interpreter's behaviour the JIT must match.
 #
 # The riscv64 JIT passes it. The amd64 and arm64 JITs do not yet: a
-# zero divide surfaces as "sys: fp" (amd64) or not at all (arm64), a
-# bounds fault leaves the handler table without the faulting PC, and
-# the run ends in a kernel panic ("fault while holding 1 lock(s)") that
-# would take the rest of the test runner's suite down with it. So on
-# those two, where /env/cputype says so, the whole module is skipped --
-# under -c0 as well, since a module cannot ask which mode it runs in --
-# until their JITs are fixed. riscv64, hosted or bare metal, runs it.
+# zero divide surfaces as "sys: fp" (amd64) or not at all (arm64), and
+# a nil list dereference is not caught either; the amd64 JIT does raise
+# and catch the bounds fault now (tests/jit_bounds_test.b covers that
+# on its own and runs everywhere). So on those two, where /env/cputype
+# says so, the whole module is skipped -- under -c0 as well, since a
+# module cannot ask which mode it runs in -- until their JITs are
+# fixed. riscv64, hosted or bare metal, runs it.
 #
 
 include "sys.m";

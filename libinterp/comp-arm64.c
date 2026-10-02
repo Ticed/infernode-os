@@ -1998,7 +1998,19 @@ comp(Inst *i)
 		}
 		if(UXDST(i->add) == DST(AIMM)) {
 			if(bflag) {
-				CMP_IMM(RA2, i->d.imm);
+				/*
+				 * CMP (immediate) takes 12 bits: a negative
+				 * or larger literal index (a[-1], a[5000])
+				 * would be encoded into the wrong instruction.
+				 * Sign-extended into a register it compares
+				 * unsigned with the length like any other.
+				 */
+				if(i->d.imm >= 0 && i->d.imm < 4096)
+					CMP_IMM(RA2, i->d.imm);
+				else {
+					con((uvlong)(vlong)i->d.imm, RCON);
+					CMP_REG(RA2, RCON);
+				}
 				bcondbra(LS, MacBNDS);
 			}
 			{
