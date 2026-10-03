@@ -435,12 +435,11 @@ jobs:
         chmod +x tests/host/jit_bounds_test.sh
         ROOT=. sh tests/host/jit_bounds_test.sh
 
-    - name: Run JIT fault tests (JIT and interpreter)
+    - name: Run cpu(1) session lifetime test
       run: |
-        # A zero divide, a nil list or ref dereference and an index out
-        # of range raise the interpreter's exception from compiled code,
-        # caught by the handler around them.
-        ROOT=. sh tests/host/jit_fault_test.sh
+        # A cpu session ends when its command does, or when its caller
+        # hangs up, and what it started ends with it (#732).
+        ROOT=. sh tests/host/cpu_session_test.sh
 
     - name: Run JIT type code reuse test
       run: |
