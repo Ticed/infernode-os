@@ -757,6 +757,13 @@ jobs:
         # the #F device would ship as a stub. Same guard as the GUI jobs.
         ldd emu/Linux/o.emu | grep -i libfido2 || { echo "Emulator not linked against libfido2 — /dev/2fa would be a stub"; exit 1; }
 
+    - name: Build runtime tree
+      run: |
+        # the full Dis tree, as the amd64 and macOS jobs build it: the
+        # host-side JIT tests below run /dis/sh.dis and /dis/tests
+        export PATH="$ROOT/Linux/arm64/bin:$PATH"
+        ./tools/verify-dis-build.sh
+
     - name: Compile test suite
       run: |
         LIMBO="$ROOT/Linux/arm64/bin/limbo"

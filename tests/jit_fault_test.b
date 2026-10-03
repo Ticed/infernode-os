@@ -131,8 +131,7 @@ fault(k: int): string
 		10 =>	x = len tl l;
 		11 =>	x = deep(50);
 		12 =>	x = nilrec.a;
-		13 =>	x = nilrec.b;
-		14 =>	nilrec.a = 1;
+		13 =>	nilrec.a = 1;
 		}
 	} exception e {
 	"*" =>
@@ -176,12 +175,15 @@ testNilList(t: ref T)
 	t.assertseq(fault(10), "dereference of nil", "tl nil");
 }
 
-# a load or store through a nil ref faults in hardware, not in a check
+# a load or store through a nil ref faults in hardware, not in a check.
+# Only the first field: nil is -1, which faults everywhere, but a later
+# field is a small address, which faults only where page zero is not
+# mapped -- not on the bare-metal Pi (#735), nor on mpfs, which runs
+# without paging, so low physical memory simply reads.
 testNilRef(t: ref T)
 {
-	t.assertseq(fault(12), "dereference of nil", "first field");
-	t.assertseq(fault(13), "dereference of nil", "second field");
-	t.assertseq(fault(14), "dereference of nil", "store");
+	t.assertseq(fault(12), "dereference of nil", "load");
+	t.assertseq(fault(13), "dereference of nil", "store");
 }
 
 # a fault in a callee is caught by the caller: R.FP must be the callee's frame
