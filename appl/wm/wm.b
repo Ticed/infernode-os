@@ -40,6 +40,7 @@ fakekbd: chan of string;
 fakekbdin: chan of string;
 buttons := 0;
 presspt: Point;		# where the current press began
+bgheld := 0;		# a press that began on the background is still held
 
 badmodule(p: string)
 {
@@ -146,6 +147,14 @@ init(ctxt: ref Draw->Context, argv: list of string)
 	p := <-wmctxt.ptr =>
 		if(wmclient->win.pointer(*p))
 			break;
+		if(bgheld){
+			# a press that began on the background is the
+			# background's until it ends: motion while it is held
+			# must not open the menu again, or reach a frame
+			if(p.buttons == 0)
+				bgheld = 0;
+			break;
+		}
 		if(p.buttons && (ptrfocus == nil || buttons == 0)){
 			presspt = p.xy;
 			(hc, w) := framehit(p.xy);
@@ -170,17 +179,35 @@ init(ctxt: ref Draw->Context, argv: list of string)
 				ptrfocus = c;
 				c.ctl <-= "raise";
 				setkbdfocus(c);
-			}else if(p.buttons & (2|4)){
-				# Button-2 (desktop middle-click) OR button-3 (a touch
-				# long-press synthesised as button-3 by the SDL3 layer,
-				# INFR-160) raises the rio app-launcher menu.
-				mc := ref Mousectl(win.ctxt.ptr, p.buttons, p.xy, p.msec);
-				n := menuhit->menuhit(p.buttons, mc, menu, nil);
-				if(n >= 0 && n < len menu.item){
-					spawn command(clientctxt, menu.item[n] :: nil, nil);
+			}else{
+				# the background: no window gets this press
+				ptrfocus = nil;
+				bgheld = 1;
+				if(p.buttons & (2|4)){
+					# Button-2 (desktop middle-click) OR button-3 (a touch
+					# long-press synthesised as button-3 by the SDL3 layer,
+					# INFR-160) raises the rio app-launcher menu.
+					mc := ref Mousectl(win.ctxt.ptr, p.buttons, p.xy, p.msec);
+					# menuhit takes the button's number, not its mask:
+					# given 4 for button 3 it watched the wrong bit and
+					# chose the item under the pointer at once (acme)
+					but := 3;
+					if(p.buttons & 2)
+						but = 2;
+					n := menuhit->menuhit(but, mc, menu, nil);
+					# a click that never moved chooses nothing: the menu
+					# opens under the pointer, and a bare click on the
+					# background must not start a program
+					if(mc.xy.eq(p.xy))
+						n = -1;
+					if(n >= 0 && n < len menu.item){
+						spawn command(clientctxt, menu.item[n] :: nil, nil);
+					}
+					# the menu may have had the release itself
+					bgheld = mc.buttons != 0;
 				}
 				break;
-			}	
+			}
 
 		}
 		if(ptrfocus != nil && (ptrfocus.flags & Ptrstarted) != 0){
@@ -514,52 +541,46 @@ sizewin(ptrc: chan of ref Pointer, c: ref Client, w: ref Window, minsize: Point,
 	offset := Point(0, 0);
 	r := w.r;
 	show = Minx|Miny|Maxx|Maxy;
-	# a press in the hot zone, just outside: as if on the nearest edge
-	if(xy.x < r.min.x)
-		xy.x = r.min.x;
-	if(xy.x >= r.max.x)
-		xy.x = r.max.x-1;
-	if(xy.y < r.min.y)
-		xy.y = r.min.y;
-	if(xy.y >= r.max.y)
-		xy.y = r.max.y-1;
-	{
-		# rio's way: the nearest edge, or a corner within 20 pixels
-		# of one (rio.c, whichcorner): an edge moves one side only.
-		move = 0;
-		case portion(xy.x, r.min.x, r.max.x) {
-		0 =>
-			move |= Minx;
-			offset.x = xy.x - r.min.x;
-		2 =>
-			move |= Maxx;
-			offset.x = xy.x - r.max.x;
-		}
-		case portion(xy.y, r.min.y, r.max.y) {
-		0 =>
-			move |= Miny;
-			offset.y = xy.y - r.min.y;
-		2 =>
-			move |= Maxy;
-			offset.y = xy.y - r.max.y;
-		}
-		if(move == 0){
-			# well inside: the nearest corner, as before
-			if(xy.x < (r.min.x+r.max.x)/2){
-				move = Minx;
-				offset.x = xy.x - r.min.x;
-			}else{
-				move = Maxx;
-				offset.x = xy.x - r.max.x;
-			}
-			if(xy.y < (r.min.y+r.max.y)/2){
-				move |= Miny;
-				offset.y = xy.y - r.min.y;
-			}else{
-				move |= Maxy;
-				offset.y = xy.y - r.max.y;
-			}
-		}
+	# rio's way: the nearest edge, or a corner within 20 pixels of one
+	# (rio.c, whichcorner); an edge moves one side only.  A press in
+	# the hot zone, just outside, counts as on the nearest edge for the
+	# choice, and the edge then moves by as much as the pointer does
+	# (offset is from the press itself), so nothing jumps on the press.
+	cx := xy;
+	if(cx.x < r.min.x)
+		cx.x = r.min.x;
+	if(cx.x >= r.max.x)
+		cx.x = r.max.x-1;
+	if(cx.y < r.min.y)
+		cx.y = r.min.y;
+	if(cx.y >= r.max.y)
+		cx.y = r.max.y-1;
+	px := portion(cx.x, r.min.x, r.max.x);
+	py := portion(cx.y, r.min.y, r.max.y);
+	if(px == 1 && py == 1){
+		# well inside: the nearest corner
+		px = py = 2;
+		if(cx.x < (r.min.x+r.max.x)/2)
+			px = 0;
+		if(cx.y < (r.min.y+r.max.y)/2)
+			py = 0;
+	}
+	move = 0;
+	case px {
+	0 =>
+		move |= Minx;
+		offset.x = xy.x - r.min.x;
+	2 =>
+		move |= Maxx;
+		offset.x = xy.x - r.max.x;
+	}
+	case py {
+	0 =>
+		move |= Miny;
+		offset.y = xy.y - r.min.y;
+	2 =>
+		move |= Maxy;
+		offset.y = xy.y - r.max.y;
 	}
 	nr := sweep(ptrc, r, offset, borders, move, show, minsize);
 	if(!tell){

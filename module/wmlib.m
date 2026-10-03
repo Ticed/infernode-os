@@ -16,7 +16,7 @@ Wmlib: module
 	# is the window manager's, rio's way: button 1 or 2 reshapes from
 	# the nearest edge or corner, button 3 moves.
 	Border:	con 2;
-	Hotzone:	con 3;
+	Hotzone:	con 8;
 	# Does the window manager frame and place this client's window
 	# itself (Lucifer's presentation zone, a Matrix pane)?  Then the
 	# client draws no frame.  A wm that does not know the request

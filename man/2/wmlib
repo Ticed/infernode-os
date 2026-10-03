@@ -15,7 +15,7 @@ startinput:	fn(w: ref Draw->Wmcontext, devs: list of string): string;
 wmctl:	fn(w: ref Draw->Wmcontext, request: string): (string, ref Draw->Image, string);
 
 Border:	con 2;
-Hotzone:	con 3;
+Hotzone:	con 8;
 embedded:	fn(w: ref Draw->Wmcontext): int;
 snarfput:	fn(buf: string);
 snarfget:	fn(): string;
