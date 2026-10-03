@@ -4956,8 +4956,24 @@ try:
     typed("dossrv -f /chan/usbdisk0 -m /n/usb0", 3)
     typed("cat /n/usb0/HELLO.TXT")
     typed("echo written-over-usb > /n/usb0/usb.txt; cat /n/usb0/usb.txt", 3)
-    # isochronous: two seconds of silence at the audio device, timed
-    typed("isotest 2", 5)
+    # isochronous: two seconds of silence at the audio device, timed.
+    # Up to three times, stopping at the first that is paced. A starved
+    # runner only ever makes the rate LOW -- the writer comes back late,
+    # the stream's lead runs out and it restarts -- and measured on a
+    # busy host that has read 49 bytes/ms (CI, 2026-10-03) and 94-172
+    # (two QEMUs' worth of load on a Mac). The faults this exists for
+    # do not come and go: a driver that takes the data and returns is
+    # fast every time, one that dribbles is slow every time.
+    for attempt in range(3):
+        n = buf.count(b"bytes/ms")
+        typed("isotest 2", 0)
+        end = time.time() + 20
+        while time.time() < end and buf.count(b"bytes/ms") <= n:
+            time.sleep(0.2)
+        time.sleep(0.5)
+        i = buf.rfind(b"bytes/ms")
+        if buf.count(b"bytes/ms") <= n or b": PACED," in buf[i:buf.find(b"\n", i)]:
+            break
     typed("cat /usb/usb/ctl")
     typed("echo dump > /usb/usb/ctl", 2.5)
     s.close()
@@ -4994,10 +5010,11 @@ fi
 # the controller's frame counter -- 192 bytes a millisecond of wall time
 # at 48 kHz stereo -- and not take the data and return, or dribble it.
 vcheck "xhci: an isochronous OUT endpoint is found on the audio device" "isotest: ep"
+isotries="$(grep -ac 'isotest: .*bytes/ms' <<<"$OUT")"
 if grep -aq "isotest: .*bytes/ms .*: PACED, 0 errors" <<<"$OUT"; then
-    pass "virt: xhci: isochronous writes are paced by the frame counter ($(grep -ao 'wrote [0-9]* bytes in [0-9]* ms = [0-9]* bytes/ms' <<<"$OUT" | tail -1))"
+    pass "virt: xhci: isochronous writes are paced by the frame counter ($(grep -ao 'wrote [0-9]* bytes in [0-9]* ms = [0-9]* bytes/ms' <<<"$OUT" | tail -1); attempt $isotries of 3)"
 else
-    fail "virt: xhci: isochronous pacing -- $(grep -a 'isotest:' <<<"$OUT" | tail -1)"
+    fail "virt: xhci: isochronous pacing, $isotries attempt(s) -- $(grep -a 'isotest:.*bytes/ms' <<<"$OUT" | grep -ao '[0-9]* bytes/ms' | tr '\n' ' ')$(grep -a 'isotest:' <<<"$OUT" | tail -1)"
 fi
 vcheck "xhci: ether0 has QEMU's address"               "etherusb: 10.0.2.15 mask"
 vcheck "xhci: the gateway answers a ping over it"      "ICMP echo reply from 10.0.2.2"
