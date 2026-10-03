@@ -233,7 +233,14 @@ trapFPE(int signo, siginfo_t *si, void *a)
 	char buf[64];
 
 	USED(signo);
-	USED(a);
+	/*
+	 * x86's integer divide traps on a zero divisor.  In compiled code
+	 * that is the program's "zero divide", as the interpreter raises
+	 * it, at the divide (see jitfault); it was "sys: fp: ..." with a
+	 * stale R.PC, so no handler for "zero divide" matched.
+	 */
+	if(si != nil && si->si_code == FPE_INTDIV && jitfault((uintptr)faultpc(a)))
+		disfault(nil, exZdiv);
 	snprint(buf, sizeof(buf), "sys: fp: exception status=%.4lux pc=%#p", getfsr(), si->si_addr);
 	disfault(nil, buf);
 }

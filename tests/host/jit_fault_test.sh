@@ -10,8 +10,8 @@
 # for hd nil, and raised its bounds and nil faults, and every punted
 # op's errors, with R.PC still naming the last call, so no handler
 # around the fault matched; the hosted emulators raised a nil ref
-# load's hardware fault with R.PC just as stale. The test module skips
-# itself on amd64, whose JIT does not pass yet.
+# load's hardware fault, and x86's divide trap, with R.PC just as stale,
+# the divide as "sys: fp: ...".
 #
 # Runs tests/jit_fault_test.b under -c0 and -c1, each of which must
 # print the framework's PASS line and no crash signature.
@@ -22,7 +22,6 @@
 
 [ -x "$EMU" ] || { echo "SKIP: no emulator at $EMU"; exit 77; }
 [ -f "$ROOT/dis/tests/jit_fault_test.dis" ] || { echo "SKIP: dis/tests/jit_fault_test.dis not built"; exit 77; }
-[ "$OBJTYPE" = amd64 ] && { echo "SKIP: the amd64 JIT does not pass jit_fault_test yet"; exit 77; }
 
 TIMEOUT=${TIMEOUT:-120}
 rc=0

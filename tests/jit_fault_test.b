@@ -12,19 +12,13 @@ implement JitFaultTest;
 # picks the wrong handler, or none. Run under -c1 to test a JIT; under
 # -c0 it pins the interpreter's behaviour the JIT must match.
 #
-# The riscv64 and arm64 JITs pass it. The arm64 JIT did not: a zero
-# divide gave 0 (SDIV does not trap), hd and tl of nil raised "array
-# bounds error", and its bounds and nil faults reached their macro by a
-# branch, not a call, so R.PC named the last call and no handler around
-# the fault matched. A nil ref load faults in hardware instead, and the
-# emulator's signal handler raised it with R.PC just as stale (NilRef).
-#
-# The amd64 JIT does not pass yet: a zero divide surfaces as "sys: fp"
-# and a nil list dereference is not caught; it does raise and catch the
-# bounds fault (tests/jit_bounds_test.b covers that on its own and runs
-# everywhere). So on amd64, where /env/cputype says so, the whole module
-# is skipped -- under -c0 as well, since a module cannot ask which mode
-# it runs in -- until its JIT is fixed.
+# Every JIT passes it. The arm64 JIT did not: a zero divide gave 0
+# (SDIV does not trap), hd and tl of nil raised "array bounds error",
+# and its bounds and nil faults reached their macro by a branch, not a
+# call, so R.PC named the last call and no handler around the fault
+# matched. A nil ref or list load faults in hardware instead, and x86's
+# divide traps on zero; the emulator's signal handlers raised those with
+# R.PC just as stale, and the divide as "sys: fp: ...", on amd64 too.
 #
 
 include "sys.m";
@@ -249,19 +243,6 @@ testHandlerChoice(t: ref T)
 	t.asserteq(n, 1000 + 10 + 5 + 3 + 2 + 2 + 1 + 1 + 1 + 1, "loop with a handler");
 }
 
-# the host's cputype, as emu sets it in /env; nil where there is none
-cputype(): string
-{
-	fd := sys->open("/env/cputype", Sys->OREAD);
-	if(fd == nil)
-		return nil;
-	buf := array[32] of byte;
-	n := sys->read(fd, buf, len buf);
-	if(n <= 0)
-		return nil;
-	return string buf[0:n];
-}
-
 init(nil: ref Draw->Context, args: list of string)
 {
 	sys = load Sys Sys->PATH;
@@ -276,11 +257,6 @@ init(nil: ref Draw->Context, args: list of string)
 	for(a := args; a != nil; a = tl a)
 		if(hd a == "-v")
 			testing->verbose(1);
-
-	case cputype() {
-	"amd64" =>
-		raise "skip:this architecture's JIT does not yet raise these faults (see the file's header)";
-	}
 
 	run("DivZero", testDivZero);
 	run("DivValues", testDivValues);

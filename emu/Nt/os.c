@@ -301,6 +301,14 @@ TrapHandler(LPEXCEPTION_POINTERS ureg)
 		disfault(nil, exNilref);
 	}
 
+	/* x86's integer divide traps on zero: the program's "zero divide" (emu/Linux/os.c:trapFPE) */
+	if(code == EXCEPTION_INT_DIVIDE_BY_ZERO) {
+#if defined(_AMD64_)
+		if(jitfault((uintptr)ureg->ContextRecord->Rip))
+			disfault(nil, exZdiv);
+#endif
+	}
+
 #ifdef _AMD64_
 	if(code == EXCEPTION_ACCESS_VIOLATION) {
 		const ULONG_PTR *info = ureg->ExceptionRecord->ExceptionInformation;

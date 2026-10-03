@@ -435,6 +435,13 @@ jobs:
         chmod +x tests/host/jit_bounds_test.sh
         ROOT=. sh tests/host/jit_bounds_test.sh
 
+    - name: Run JIT fault tests (JIT and interpreter)
+      run: |
+        # A zero divide, a nil list or ref dereference and an index out
+        # of range raise the interpreter's exception from compiled code,
+        # caught by the handler around them.
+        ROOT=. sh tests/host/jit_fault_test.sh
+
     - name: Run JIT type code reuse test
       run: |
         # A freed type's compiled code goes back on comp-amd64.c's free

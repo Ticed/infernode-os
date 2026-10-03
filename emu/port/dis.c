@@ -1095,7 +1095,7 @@ isnilfault(uintptr addr)
 
 /*
  * A fault in JIT-compiled code, before it becomes the program's
- * exception.  The JIT keeps R.PC only around calls, so at a fault it
+ * exception; 1 if pc is in the running module's compiled code.  The JIT keeps R.PC only around calls, so at a fault it
  * still names the last call, and handler() searched the exception
  * tables at that place, not at the faulting instruction: a nil load
  * inside a {...} exception block was not caught and the program died
@@ -1108,23 +1108,24 @@ isnilfault(uintptr addr)
  * A fault outside the running module's compiled code (in emu itself,
  * in a builtin) leaves R.PC alone.
  */
-void
+int
 jitfault(uintptr pc)
 {
 	Modlink *ml;
 
 	if(up == nil || up->type != Interp)
-		return;
+		return 0;
 	ml = R.M;
 	if(ml == nil || ml == H || !ml->compiled || ml->m == nil)
-		return;
+		return 0;
 	if(pc < (uintptr)ml->prog || pc - (uintptr)ml->prog >= ml->m->jitsize)
-		return;
+		return 0;
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
 	R.PC = (Inst*)(pc + 1);
 #else
 	R.PC = (Inst*)(pc + 4);
 #endif
+	return 1;
 }
 
 void
