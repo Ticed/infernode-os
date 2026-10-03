@@ -846,6 +846,15 @@ jobs:
           grep "^=== RUN" test-output.txt | tail -1 || true
         fi
 
+    - name: Run JIT fault and bounds tests (JIT and interpreter)
+      run: |
+        # Gating, unlike the suite above: faults raised from compiled
+        # code must be the interpreter's exceptions, caught by the
+        # handler around them. The arm64 JIT failed both while the
+        # suite's non-gating run hid it.
+        ROOT=. sh tests/host/jit_fault_test.sh
+        ROOT=. sh tests/host/jit_bounds_test.sh
+
     - name: Run wallet and secstore integration tests
       run: |
         echo "Running host-side integration tests..."
@@ -1411,6 +1420,15 @@ jobs:
       run: |
         chmod +x verify-port.sh
         ./verify-port.sh
+
+    - name: Run JIT fault and bounds tests (JIT and interpreter)
+      run: |
+        # Gating, unlike the suite above: faults raised from compiled
+        # code must be the interpreter's exceptions, caught by the
+        # handler around them. The arm64 JIT failed both while the
+        # suite's non-gating run hid it.
+        ROOT=. sh tests/host/jit_fault_test.sh
+        ROOT=. sh tests/host/jit_bounds_test.sh
 
     - name: Run wallet and secstore integration tests
       run: |

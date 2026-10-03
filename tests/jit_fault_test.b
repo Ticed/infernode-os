@@ -12,14 +12,19 @@ implement JitFaultTest;
 # picks the wrong handler, or none. Run under -c1 to test a JIT; under
 # -c0 it pins the interpreter's behaviour the JIT must match.
 #
-# The riscv64 JIT passes it. The amd64 and arm64 JITs do not yet: a
-# zero divide surfaces as "sys: fp" (amd64) or not at all (arm64), and
-# a nil list dereference is not caught either; the amd64 JIT does raise
-# and catch the bounds fault now (tests/jit_bounds_test.b covers that
-# on its own and runs everywhere). So on those two, where /env/cputype
-# says so, the whole module is skipped -- under -c0 as well, since a
-# module cannot ask which mode it runs in -- until their JITs are
-# fixed. riscv64, hosted or bare metal, runs it.
+# The riscv64 and arm64 JITs pass it. The arm64 JIT did not: a zero
+# divide gave 0 (SDIV does not trap), hd and tl of nil raised "array
+# bounds error", and its bounds and nil faults reached their macro by a
+# branch, not a call, so R.PC named the last call and no handler around
+# the fault matched. A nil ref load faults in hardware instead, and the
+# emulator's signal handler raised it with R.PC just as stale (NilRef).
+#
+# The amd64 JIT does not pass yet: a zero divide surfaces as "sys: fp"
+# and a nil list dereference is not caught; it does raise and catch the
+# bounds fault (tests/jit_bounds_test.b covers that on its own and runs
+# everywhere). So on amd64, where /env/cputype says so, the whole module
+# is skipped -- under -c0 as well, since a module cannot ask which mode
+# it runs in -- until its JIT is fixed.
 #
 
 include "sys.m";
@@ -63,6 +68,13 @@ run(name: string, testfn: ref fn(t: ref T))
 	else
 		failed++;
 }
+
+Rec: adt {
+	a: int;
+	b: int;
+};
+
+nilrec: ref Rec;
 
 # set at run time, so limbo cannot fold the division away
 zerov := -1;
@@ -124,6 +136,9 @@ fault(k: int): string
 		9 =>	x = hd l;
 		10 =>	x = len tl l;
 		11 =>	x = deep(50);
+		12 =>	x = nilrec.a;
+		13 =>	x = nilrec.b;
+		14 =>	nilrec.a = 1;
 		}
 	} exception e {
 	"*" =>
@@ -165,6 +180,14 @@ testNilList(t: ref T)
 {
 	t.assertseq(fault(9), "dereference of nil", "hd nil");
 	t.assertseq(fault(10), "dereference of nil", "tl nil");
+}
+
+# a load or store through a nil ref faults in hardware, not in a check
+testNilRef(t: ref T)
+{
+	t.assertseq(fault(12), "dereference of nil", "first field");
+	t.assertseq(fault(13), "dereference of nil", "second field");
+	t.assertseq(fault(14), "dereference of nil", "store");
 }
 
 # a fault in a callee is caught by the caller: R.FP must be the callee's frame
@@ -255,7 +278,7 @@ init(nil: ref Draw->Context, args: list of string)
 			testing->verbose(1);
 
 	case cputype() {
-	"amd64" or "arm64" =>
+	"amd64" =>
 		raise "skip:this architecture's JIT does not yet raise these faults (see the file's header)";
 	}
 
@@ -263,6 +286,7 @@ init(nil: ref Draw->Context, args: list of string)
 	run("DivValues", testDivValues);
 	run("Bounds", testBounds);
 	run("NilList", testNilList);
+	run("NilRef", testNilRef);
 	run("Unwind", testUnwind);
 	run("HandlerChoice", testHandlerChoice);
 
