@@ -1017,6 +1017,14 @@ SBEOF
 # a separate argument rather than part of $QEMUARGS because that string
 # is split on spaces and a command line has spaces in it.
 #
+# The optional fourth argument is a string that ends the boot as soon as
+# the console prints it; the seconds are then a ceiling, not a duration.
+# A check that needs output printed late in the boot should name the
+# line it is waiting for: a fixed number of seconds is a guess about how
+# fast the runner is, and a slow runner loses the guess (#760's run gave
+# the JIT-off kernel 12 s; its interpreter was twice as slow as usual and
+# the last two opcode classes had not printed yet).
+#
 # Two -serial arguments, everywhere a QEMU is started here. raspi3b
 # hands the first to the PL011 (uart0) and the second to the AUX
 # mini-UART (uart1) -- hw/arm/bcm2835_peripherals.c, serial_hd(0) and
@@ -1025,21 +1033,34 @@ SBEOF
 # (docs/BLUETOOTH.md); so the PL011 gets null and the console gets
 # stdio. A test that wants the PL011 -- /dev/eia0 -- replaces the null.
 boot_kernel() {
-    local img="$1" secs="${2:-10}" append="${3:-}"
-    python3 - "$QEMU" "$img" "$secs" "$QEMUARGS" "$append" "${SERIALARGS:--serial null -serial stdio}" <<'PYEOF'
-import subprocess, sys
+    local img="$1" secs="${2:-10}" append="${3:-}" until="${4:-}"
+    python3 - "$QEMU" "$img" "$secs" "$QEMUARGS" "$append" "${SERIALARGS:--serial null -serial stdio}" "$until" <<'PYEOF'
+import os, select, subprocess, sys, time
 qemu, img, secs, extra, append = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5]
+until = sys.argv[7].encode()
 # Which -serial is the console is the machine's business: raspi3b's is
 # its second (above), virt has one UART and it is the first.
 args = [qemu] + extra.split() + ["-kernel", img, "-display", "none"] + sys.argv[6].split()
 if append:
     args += ["-append", append]
 p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-try:
-    out, _ = p.communicate(timeout=secs)
-except subprocess.TimeoutExpired:
-    p.kill()
-    out, _ = p.communicate()
+out = b""
+deadline = time.monotonic() + secs
+fd = p.stdout.fileno()
+while True:
+    left = deadline - time.monotonic()
+    if left <= 0 or (until and until in out):
+        break
+    r, _, _ = select.select([fd], [], [], left)
+    if not r:
+        continue
+    chunk = os.read(fd, 65536)
+    if not chunk:
+        break
+    out += chunk
+p.kill()
+out += p.stdout.read()
+p.wait()
 sys.stdout.write(out.decode(errors="replace"))
 PYEOF
 }
@@ -2148,7 +2169,7 @@ OUT="$OUT_SAVED"
 # A JIT that is merely fast is a miscompilation waiting to be found.
 JITMS="$(grep -o 'bench: [0-9]* iterations in [0-9]* ms (acc=-*[0-9]*)' <<<"$OUT" | head -1)"
 if build_kernel "$BUILD/$PLAT-nojit.img" "" "-DCFLAG=0"; then
-    NOJITOUT="$(boot_kernel "$BUILD/$PLAT-nojit.img" 12)"
+    NOJITOUT="$(boot_kernel "$BUILD/$PLAT-nojit.img" 90 "" "jit: stress ends")"
     NOJITMS="$(grep -o 'bench: [0-9]* iterations in [0-9]* ms (acc=-*[0-9]*)' <<<"$NOJITOUT" | head -1)"
     info "JIT:    $JITMS"
     info "no JIT: $NOJITMS"
