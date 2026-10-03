@@ -4856,10 +4856,13 @@ vcheck "a default route is installed"              "etherusb: default route via 
 vcheck "the framebuffer is configured through fw_cfg" "fb:   ramfb 1280x720x32"
 vcheck "the keyboard and the tablet are found"     "(absolute pointer)"
 vcheck "keys typed on the virtio keyboard reach the shell" "Virtio-Keys"
-if grep -aq '^m *640 *180 ' <<<"$OUT"; then
+# The reading can share a line with a prompt: when the shell is behind --
+# the authenticated mount above can take seconds on a busy runner -- the
+# typed commands queue, and the next "; " lands before read's output.
+if grep -aqE '^(; )*m +640 +180 ' <<<"$OUT"; then
     pass "virt: the tablet's position is scaled to the screen (640,180)"
 else
-    fail "virt: tablet position -- $(grep -a '^m ' <<<"$OUT" | head -1)"
+    fail "virt: tablet position -- $(grep -aE '^(; )*m ' <<<"$OUT" | head -1)"
 fi
 scr="$(grep -a '^SCREEN' <<<"$OUT" | tail -1)"
 read -r _ sdim _ sbg _ sfg <<<"$scr"
