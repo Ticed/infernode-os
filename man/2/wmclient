@@ -81,14 +81,13 @@ the window has the standard frame: a line
 pixels wide, in the current theme's
 .B windowborder
 colour.
-A press on the frame belongs to the frame, as in
-.IR rio :
+The frame is drawn inside the window's edge, as in
+.IR rio (1),
+and a press on it is the window manager's
+(see
+.IR wm (1)):
 button 1 or 2 reshapes the window from the nearest edge or corner,
 and button 3 moves it.
-The
-.B Wmlib->Hotzone
-pixels just outside the window do the same; the window manager handles those.
-Closing a window is the application's own business.
 Of the other constants in
 .IR buts ,
 none now changes the window; they are accepted as before.

@@ -11,12 +11,11 @@ Wmlib: module
 	wmctl:	fn(w: ref Draw->Wmcontext, request: string): (string, ref Draw->Image, string);
 
 	# The window frame, the same for every window (tkclient and
-	# wmclient alike): a Border-wide line in the theme's windowborder.
-	# A press on it, or in the Hotzone pixels just outside the window,
-	# is the window manager's, rio's way: button 1 or 2 reshapes from
-	# the nearest edge or corner, button 3 moves.
-	Border:	con 2;
-	Hotzone:	con 8;
+	# wmclient alike), as rio's: a Border-wide line in the theme's
+	# windowborder, drawn inside the window's edge.  A press on it is
+	# the window manager's (wm/wm), rio's way: button 1 or 2 reshapes
+	# from the nearest edge or corner, button 3 moves.
+	Border:	con 4;
 	# Does the window manager frame and place this client's window
 	# itself (Lucifer's presentation zone, a Matrix pane)?  Then the
 	# client draws no frame.  A wm that does not know the request

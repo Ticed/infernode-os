@@ -14,8 +14,7 @@ connect:	fn(ctxt: ref Draw->Context): ref Draw->Wmcontext;
 startinput:	fn(w: ref Draw->Wmcontext, devs: list of string): string;
 wmctl:	fn(w: ref Draw->Wmcontext, request: string): (string, ref Draw->Image, string);
 
-Border:	con 2;
-Hotzone:	con 8;
+Border:	con 4;
 embedded:	fn(w: ref Draw->Wmcontext): int;
 snarfput:	fn(buf: string);
 snarfget:	fn(): string;
@@ -84,10 +83,10 @@ a line
 .B Border
 pixels wide in the current theme's
 .B windowborder
-colour.
-A press on the frame, or in the
-.B Hotzone
-pixels just outside the window, is the window manager's
+colour, inside the window's edge, as
+.IR rio (1)
+draws its windows.
+A press on the frame is the window manager's
 (see
 .IR wm (1));
 it never reaches the client.
