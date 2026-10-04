@@ -334,6 +334,11 @@ build_kernel() {
         "$LIMBO" -I"$ROOT/module" -o "$BUILD/iplocktest.dis" \
             "$ROOT/os/init/iplocktest.b" 2>>"$BUILD/cc.log" || return 1
 
+        # A nil dereference in JIT-compiled code: the program's
+        # exception, not the machine's panic.
+        "$LIMBO" -I"$ROOT/module" -o "$BUILD/niltest.dis" \
+            "$ROOT/os/init/niltest.b" 2>>"$BUILD/cc.log" || return 1
+
         rootmanifest=(
             "/osinit.dis=$BUILD/osinit.dis"
             "/dis/etherusb.dis=$BUILD/etherusb.dis"
@@ -345,6 +350,7 @@ build_kernel() {
             "/dis/tktest.dis=$BUILD/tktest.dis"
             "/dis/isotest.dis=$BUILD/isotest.dis"
             "/dis/iplocktest.dis=$BUILD/iplocktest.dis"
+            "/dis/niltest.dis=$BUILD/niltest.dis"
 
             # The FAT filesystem, as a program. Imported from upstream
             # Inferno (appl/cmd/dossrv.b) -- MIT, the same provenance as
@@ -1011,6 +1017,14 @@ SBEOF
 # a separate argument rather than part of $QEMUARGS because that string
 # is split on spaces and a command line has spaces in it.
 #
+# The optional fourth argument is a string that ends the boot as soon as
+# the console prints it; the seconds are then a ceiling, not a duration.
+# A check that needs output printed late in the boot should name the
+# line it is waiting for: a fixed number of seconds is a guess about how
+# fast the runner is, and a slow runner loses the guess (#760's run gave
+# the JIT-off kernel 12 s; its interpreter was twice as slow as usual and
+# the last two opcode classes had not printed yet).
+#
 # Two -serial arguments, everywhere a QEMU is started here. raspi3b
 # hands the first to the PL011 (uart0) and the second to the AUX
 # mini-UART (uart1) -- hw/arm/bcm2835_peripherals.c, serial_hd(0) and
@@ -1019,21 +1033,34 @@ SBEOF
 # (docs/BLUETOOTH.md); so the PL011 gets null and the console gets
 # stdio. A test that wants the PL011 -- /dev/eia0 -- replaces the null.
 boot_kernel() {
-    local img="$1" secs="${2:-10}" append="${3:-}"
-    python3 - "$QEMU" "$img" "$secs" "$QEMUARGS" "$append" "${SERIALARGS:--serial null -serial stdio}" <<'PYEOF'
-import subprocess, sys
+    local img="$1" secs="${2:-10}" append="${3:-}" until="${4:-}"
+    python3 - "$QEMU" "$img" "$secs" "$QEMUARGS" "$append" "${SERIALARGS:--serial null -serial stdio}" "$until" <<'PYEOF'
+import os, select, subprocess, sys, time
 qemu, img, secs, extra, append = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5]
+until = sys.argv[7].encode()
 # Which -serial is the console is the machine's business: raspi3b's is
 # its second (above), virt has one UART and it is the first.
 args = [qemu] + extra.split() + ["-kernel", img, "-display", "none"] + sys.argv[6].split()
 if append:
     args += ["-append", append]
 p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-try:
-    out, _ = p.communicate(timeout=secs)
-except subprocess.TimeoutExpired:
-    p.kill()
-    out, _ = p.communicate()
+out = b""
+deadline = time.monotonic() + secs
+fd = p.stdout.fileno()
+while True:
+    left = deadline - time.monotonic()
+    if left <= 0 or (until and until in out):
+        break
+    r, _, _ = select.select([fd], [], [], left)
+    if not r:
+        continue
+    chunk = os.read(fd, 65536)
+    if not chunk:
+        break
+    out += chunk
+p.kill()
+out += p.stdout.read()
+p.wait()
 sys.stdout.write(out.decode(errors="replace"))
 PYEOF
 }
@@ -1783,6 +1810,7 @@ SHOUT="$(shell_session "$BUILD/$PLAT-kernel.img" \
         'cat /net/iproute' \
         'cat /net/tcp/stats' \
         'iplocktest' \
+        'niltest' \
         'cd /dis; pwd; cd /' \
         'date' \
         'basename /a/b/see-me' \
@@ -1856,6 +1884,25 @@ if grep -q "iplocktest: PASS" <<<"$SHOUT"; then
     pass "os/ip: the interface lock is balanced after an unanswerable IPv6 datagram (#721)"
 else
     fail "os/ip: interface lock leaked by the ICMPv6 unreachable reply -- $(grep -a 'iplocktest:' <<<"$SHOUT" | tail -1)"
+fi
+
+# A nil dereference in JIT-compiled code is the program's exception.
+# os/init/niltest.b loads a field through a nil ref inside an exception
+# block. The JIT emits no nil checks and relies on the hardware fault
+# being turned into "dereference of nil"; the bare-metal trap handler
+# did not, so the load panicked the machine and nothing after it ran.
+if grep -q '^niltest: CAUGHT dereference of nil' <<<"$SHOUT" && grep -q '^niltest: STILL RUNNING' <<<"$SHOUT"; then
+    pass "a nil dereference in JIT code raises 'dereference of nil' in the program, not a kernel panic"
+else
+    fail "nil dereference in JIT code -- $(grep -a -E 'niltest:|unhandled exception|panic:' <<<"$SHOUT" | head -2 | tr '\n' ' ')"
+fi
+# The second field of a nil ref is address 7. With page zero mapped it
+# read the firmware's stub there, and a nil pointer in the kernel's own C
+# read the same bytes and used them (#727); unmapped, both fault (#735).
+if grep -q '^niltest: OFFSET CAUGHT dereference of nil' <<<"$SHOUT"; then
+    pass "page zero is not mapped: a nil ref's later field faults too (#735)"
+else
+    fail "page zero -- $(grep -a -E 'niltest: OFFSET|unhandled exception|panic:' <<<"$SHOUT" | head -2 | tr '\n' ' ')"
 fi
 
 # The exception handler's search, in the kernel's own interpreter: an
@@ -2122,7 +2169,7 @@ OUT="$OUT_SAVED"
 # A JIT that is merely fast is a miscompilation waiting to be found.
 JITMS="$(grep -o 'bench: [0-9]* iterations in [0-9]* ms (acc=-*[0-9]*)' <<<"$OUT" | head -1)"
 if build_kernel "$BUILD/$PLAT-nojit.img" "" "-DCFLAG=0"; then
-    NOJITOUT="$(boot_kernel "$BUILD/$PLAT-nojit.img" 12)"
+    NOJITOUT="$(boot_kernel "$BUILD/$PLAT-nojit.img" 90 "" "jit: stress ends")"
     NOJITMS="$(grep -o 'bench: [0-9]* iterations in [0-9]* ms (acc=-*[0-9]*)' <<<"$NOJITOUT" | head -1)"
     info "JIT:    $JITMS"
     info "no JIT: $NOJITMS"
@@ -4733,6 +4780,7 @@ try:
     typed("cat /net/ether0/addr; echo")
     typed("cat /net/ether0/ifstats")
     typed("iplocktest", 3)
+    typed("niltest", 2)
     typed("listen 'tcp!*!17030' export / &")
     typed("sleep 1; mount tcp!127.0.0.1!17030 /n/remote; echo AUTHMOUNT-$status; ls /n/remote/dis/sh.dis", 4)
     typed("cat /dev/sdctl")
@@ -4799,15 +4847,22 @@ vcheck "os/ip + keyring: an authenticated 9P mount works on the kernel (#725)" "
 # os/init/iplocktest.b, typed at the shell: the interface lock is balanced
 # after an ICMPv6 unreachable reply (#721; see the bcm2837 check for the story)
 vcheck "os/ip: the interface lock is balanced after an unanswerable IPv6 datagram (#721)" "iplocktest: PASS"
+# os/init/niltest.b: a nil dereference in JIT code is the program's
+# exception (the bcm2837 check tells the story)
+vcheck "a nil dereference in JIT code is the program's exception, not a panic" "niltest: STILL RUNNING"
+vcheck "page zero is not mapped: a nil ref's later field faults too (#735)" "niltest: OFFSET CAUGHT dereference of nil"
 vcheck "DHCP answers over virtio-net"              "etherusb: 10.0.2.15 mask"
 vcheck "a default route is installed"              "etherusb: default route via 10.0.2.2"
 vcheck "the framebuffer is configured through fw_cfg" "fb:   ramfb 1280x720x32"
 vcheck "the keyboard and the tablet are found"     "(absolute pointer)"
 vcheck "keys typed on the virtio keyboard reach the shell" "Virtio-Keys"
-if grep -aq '^m *640 *180 ' <<<"$OUT"; then
+# The reading can share a line with a prompt: when the shell is behind --
+# the authenticated mount above can take seconds on a busy runner -- the
+# typed commands queue, and the next "; " lands before read's output.
+if grep -aqE '^(; )*m +640 +180 ' <<<"$OUT"; then
     pass "virt: the tablet's position is scaled to the screen (640,180)"
 else
-    fail "virt: tablet position -- $(grep -a '^m ' <<<"$OUT" | head -1)"
+    fail "virt: tablet position -- $(grep -aE '^(; )*m ' <<<"$OUT" | head -1)"
 fi
 scr="$(grep -a '^SCREEN' <<<"$OUT" | tail -1)"
 read -r _ sdim _ sbg _ sfg <<<"$scr"
@@ -4901,8 +4956,24 @@ try:
     typed("dossrv -f /chan/usbdisk0 -m /n/usb0", 3)
     typed("cat /n/usb0/HELLO.TXT")
     typed("echo written-over-usb > /n/usb0/usb.txt; cat /n/usb0/usb.txt", 3)
-    # isochronous: two seconds of silence at the audio device, timed
-    typed("isotest 2", 5)
+    # isochronous: two seconds of silence at the audio device, timed.
+    # Up to three times, stopping at the first that is paced. A starved
+    # runner only ever makes the rate LOW -- the writer comes back late,
+    # the stream's lead runs out and it restarts -- and measured on a
+    # busy host that has read 49 bytes/ms (CI, 2026-10-03) and 94-172
+    # (two QEMUs' worth of load on a Mac). The faults this exists for
+    # do not come and go: a driver that takes the data and returns is
+    # fast every time, one that dribbles is slow every time.
+    for attempt in range(3):
+        n = buf.count(b"bytes/ms")
+        typed("isotest 2", 0)
+        end = time.time() + 20
+        while time.time() < end and buf.count(b"bytes/ms") <= n:
+            time.sleep(0.2)
+        time.sleep(0.5)
+        i = buf.rfind(b"bytes/ms")
+        if buf.count(b"bytes/ms") <= n or b": PACED," in buf[i:buf.find(b"\n", i)]:
+            break
     typed("cat /usb/usb/ctl")
     typed("echo dump > /usb/usb/ctl", 2.5)
     s.close()
@@ -4939,10 +5010,11 @@ fi
 # the controller's frame counter -- 192 bytes a millisecond of wall time
 # at 48 kHz stereo -- and not take the data and return, or dribble it.
 vcheck "xhci: an isochronous OUT endpoint is found on the audio device" "isotest: ep"
+isotries="$(grep -ac 'isotest: .*bytes/ms' <<<"$OUT")"
 if grep -aq "isotest: .*bytes/ms .*: PACED, 0 errors" <<<"$OUT"; then
-    pass "virt: xhci: isochronous writes are paced by the frame counter ($(grep -ao 'wrote [0-9]* bytes in [0-9]* ms = [0-9]* bytes/ms' <<<"$OUT" | tail -1))"
+    pass "virt: xhci: isochronous writes are paced by the frame counter ($(grep -ao 'wrote [0-9]* bytes in [0-9]* ms = [0-9]* bytes/ms' <<<"$OUT" | tail -1); attempt $isotries of 3)"
 else
-    fail "virt: xhci: isochronous pacing -- $(grep -a 'isotest:' <<<"$OUT" | tail -1)"
+    fail "virt: xhci: isochronous pacing, $isotries attempt(s) -- $(grep -a 'isotest:.*bytes/ms' <<<"$OUT" | grep -ao '[0-9]* bytes/ms' | tr '\n' ' ')$(grep -a 'isotest:' <<<"$OUT" | tail -1)"
 fi
 vcheck "xhci: ether0 has QEMU's address"               "etherusb: 10.0.2.15 mask"
 vcheck "xhci: the gateway answers a ping over it"      "ICMP echo reply from 10.0.2.2"

@@ -588,6 +588,36 @@ remap(i: ref RImagefile->Rawimage, d: ref Display, errdiff: int): (ref Image, st
 		return (im, "");
 	}
 
+	# An indexed or grey image with a transparent index (PNG tRNS,
+	# GIF): RGBA32, that index clear, rather than painted black.
+	if(i.transp && i.nchans == 1 && (i.chandesc == RImagefile->CRGB1 && i.cmap != nil || i.chandesc == RImagefile->CY)) {
+		im := d.newimage(i.r, Draw->RGBA32, 0, Draw->Transparent);
+		if(im == nil)
+			return (nil, "can't allocate RGBA32 image");
+		pic := i.chans[0];
+		cm := i.cmap;
+		buf := array[len pic * 4] of {* => byte 0};
+		for(j = 0; j < len pic; j++) {
+			v := int pic[j];
+			if(byte v == i.trindex)
+				continue;	# all zero: clear
+			r, g, b: byte;
+			if(i.chandesc == RImagefile->CY)
+				r = g = b = byte v;
+			else if(3*v + 2 < len cm) {
+				r = cm[3*v];
+				g = cm[3*v+1];
+				b = cm[3*v+2];
+			}
+			buf[j*4+0] = byte 255;
+			buf[j*4+1] = b;
+			buf[j*4+2] = g;
+			buf[j*4+3] = r;
+		}
+		im.writepixels(im.r, buf);
+		return (im, "");
+	}
+
 	im := d.newimage(i.r, Draw->CMAP8, 0, Draw->Black);
 	dx := i.r.max.x-i.r.min.x;
 	dy := i.r.max.y-i.r.min.y;

@@ -1,0 +1,1210 @@
+implement Page;
+
+#
+# A web page.  See module/web/page.m.
+#
+
+include "sys.m";
+	sys: Sys;
+include "draw.m";
+	draw: Draw;
+	Display, Image, Point, Rect: import draw;
+include "bufio.m";
+	bufio: Bufio;
+	Iobuf: import bufio;
+include "imagefile.m";
+	imageremap: Imageremap;
+include "encoding.m";
+	base64: Encoding;
+include "web/dom.m";
+	dom: Dom;
+	Doc: import dom;
+include "web/html.m";
+	html: Html;
+include "web/css.m";
+	css: Css;
+include "web/style.m";
+	style: Style;
+	Styles, Env: import style;
+include "outlinefont.m";
+include "web/fonts.m";
+include "web/layout.m";
+	layout: Layout;
+	Box: import layout;
+include "web/page.m";
+
+display: ref Display;
+
+init(d: ref Display): string
+{
+	sys = load Sys Sys->PATH;
+	draw = load Draw Draw->PATH;
+	bufio = load Bufio Bufio->PATH;
+	dom = load Dom Dom->PATH;
+	html = load Html Html->PATH;
+	css = load Css Css->PATH;
+	style = load Style Style->PATH;
+	layout = load Layout Layout->PATH;
+	imageremap = load Imageremap Imageremap->PATH;
+	base64 = load Encoding Encoding->BASE64PATH;
+	if(html == nil || css == nil || style == nil || layout == nil)
+		return sys->sprint("cannot load modules: %r");
+	display = d;
+	html->init();
+	css->init();
+	if((err := style->init()) != nil)
+		return err;
+	style->setmetrics(fontmetrics);
+	if((err = layout->init(d)) != nil)
+		return err;
+	if(imageremap != nil)
+		imageremap->init(d);
+	return nil;
+}
+
+open(url: string, width, height: int): (ref Pg, string)
+{
+	return request(url, "GET", nil, nil, width, height);
+}
+
+request(url, method, reqctype: string, body: array of byte, width, height: int): (ref Pg, string)
+{
+	data: array of byte;
+	ctype, err, final: string;
+	if(method == "POST")
+		(data, ctype, err, final) = webfs(url, method, reqctype, body);
+	else
+		(data, ctype, err, final) = fetchfinal(url);
+	if(err != nil && data == nil)
+		return (nil, err);
+	url = final;	# a redirected page's links are relative to where it is
+	charset := param(ctype, "charset");
+	p := ref Pg(url, nil, Styles.new(), nil, nil,
+		ref Env(width, height, 1.0, 0, 0, 0, 0, 0, 0), nil, width, height, nil, nil);
+	if(prefix(lower(ctype), "text/plain")) {
+		p.doc = html->parsestring("<pre>" + escape(string data) + "</pre>", url);
+	} else if(prefix(lower(ctype), "image/")) {
+		p.doc = html->parsestring("<body style='margin:0'><img src=\"" + url + "\">", url);
+	} else if(isxml(ctype))
+		p.doc = html->parsexml(data, charset, url);
+	else
+		p.doc = html->parse(data, charset, url);
+	d := p.doc;
+	# <base href>
+	if((b := d.find(1, Dom->Tbase)) != 0 && (h := d.attr(b, "href")) != nil) {
+		d.url = style->resolveurl(url, h);
+		p.url = d.url;
+	}
+	if((t := d.find(1, Dom->Ttitle)) != 0)
+		p.title = squash(d.textof(t));
+	loadsheets(p);
+	loadfonts(p);
+	p.computed = style->compute(d, p.styles, p.env);
+	findobjects(p);
+	layout->setobjects(p.objects);
+	p.root = layout->build(d, p.computed);
+	loadimages(p, p.root);
+	loadbgimages(p);
+	layout->lay(p.root, width, height);
+	inlinesvg(p, p.root);
+	return (p, nil);
+}
+
+Pg.relayout(p: self ref Pg, width, height: int)
+{
+	if(width == p.width && height == p.height)
+		return;
+	p.width = width;
+	p.height = height;
+	p.env.width = width;
+	p.env.height = height;
+	p.update();
+}
+
+Pg.target(p: self ref Pg, frag: string): int
+{
+	frag = pctdecode(frag);
+	d := p.doc;
+	n := 0;
+	for(i := 1; i < d.n && n == 0; i++) {
+		nd := d.nodes[i];
+		if(nd.kind != Dom->Element)
+			continue;
+		if(d.attr(i, "id") == frag || nd.tag == Dom->Ta && d.attr(i, "name") == frag)
+			n = i;
+	}
+	if(n == 0)
+		return 0;
+	if(p.env.target != n) {
+		p.env.target = n;
+		p.update();
+	}
+	for(l := layout->boxes(p.root, n); l != nil; l = tl l) {
+		y := 0;
+		for(b := hd l; b != nil; b = b.parent)
+			y += b.y;
+		return y;
+	}
+	return 0;
+}
+
+Pg.update(p: self ref Pg)
+{
+	p.computed = style->compute(p.doc, p.styles, p.env);
+	old := p.root;
+	layout->setobjects(p.objects);
+	p.root = layout->build(p.doc, p.computed);
+	carryimages(old, p.root);
+	layout->lay(p.root, p.width, p.height);
+	inlinesvg(p, p.root);
+}
+
+Pg.paint(p: self ref Pg, dst: ref Image, scroll: Point)
+{
+	layout->paint(p.root, dst, dst.r.min.sub(scroll), dst.r);
+}
+
+Pg.pageheight(p: self ref Pg): int
+{
+	return layout->height(p.root);
+}
+
+# <style> and <link rel=stylesheet>, in document order, then @imports.
+loadsheets(p: ref Pg)
+{
+	d := p.doc;
+	# the sheets in document order: (inline text, nil) or (nil, url)
+	sheets: list of (string, string);
+	for(n := 1; n < d.n; n++) {
+		nd := d.nodes[n];
+		if(nd.kind != Dom->Element || nd.ns != Dom->HTML)
+			continue;
+		case nd.tag {
+		Dom->Tstyle =>
+			if(!style->mediamatch(css->tokenize(d.attr(n, "media")), p.env))
+				continue;
+			sheets = (d.textof(n), nil) :: sheets;
+		Dom->Tlink =>
+			rel := " " + lower(d.attr(n, "rel")) + " ";
+			if(index(rel, " stylesheet ") < 0 || index(rel, " alternate ") >= 0)
+				continue;
+			if(d.hasattr(n, "disabled"))
+				continue;
+			if(!style->mediamatch(css->tokenize(d.attr(n, "media")), p.env))
+				continue;
+			href := d.attr(n, "href");
+			if(href == nil)
+				continue;
+			sheets = (nil, style->resolveurl(d.url, href)) :: sheets;
+		}
+	}
+	a := array[len sheets] of (string, string);
+	for(i := len a - 1; i >= 0; i--) {
+		a[i] = hd sheets;
+		sheets = tl sheets;
+	}
+	urls: list of string;
+	for(i = 0; i < len a; i++)
+		if(a[i].t1 != nil)
+			urls = a[i].t1 :: urls;
+	got := fetchall(urls);
+	for(i = 0; i < len a; i++) {
+		(text, u) := a[i];
+		if(u == nil) {
+			p.styles.add(css->parse(text), Style->Author, d.url);
+			continue;
+		}
+		(data, nil, err) := fetched(got, u);
+		if(err != nil) {
+			p.errors = u + ": " + err :: p.errors;
+			continue;
+		}
+		p.styles.add(css->parse(string data), Style->Author, u);
+	}
+	# @import, to a depth of 4
+	for(depth := 0; depth < 4; depth++) {
+		urls = p.styles.imports(p.env);
+		if(urls == nil)
+			break;
+		got = fetchall(urls);
+		for(; urls != nil; urls = tl urls) {
+			(data, nil, err) := fetched(got, hd urls);
+			if(err != nil) {
+				p.errors = hd urls + ": " + err :: p.errors;
+				data = nil;
+			}
+			style->addimport(hd urls, css->parse(string data));
+		}
+		p.styles.idx = nil;
+	}
+}
+
+# ex and ch, measured in the fonts layout sets text in
+fontsm: Fonts;
+Typeface: import fontsm;
+
+fontmetrics(family: list of string, weight, italic: int, size: real): (real, real)
+{
+	if(fontsm == nil)
+		fontsm = layout->fontmod();
+	f := fontsm->face(family, weight, italic, size);
+	if(f == nil)
+		return (size/2.0, size/2.0);
+	return (f.xheight(), f.width("0"));
+}
+
+# ---- @font-face ----
+
+Fontsrc: adt {
+	family:	string;
+	weight, italic:	int;
+	ranges:	array of int;
+	url:	string;
+};
+
+# Download the faces @font-face rules describe that this document's
+# text needs (by unicode-range), in formats we read, and register them
+# with the fonts layout uses.
+loadfonts(p: ref Pg)
+{
+	fm := layout->fontmod();
+	fm->clearfaces();
+	srcs: list of ref Fontsrc;
+	for(l := p.styles.sheets; l != nil; l = tl l) {
+		(sh, nil, base) := hd l;
+		srcs = fontrules(p, sh.rules, base, srcs);
+	}
+	if(srcs == nil)
+		return;
+	used := doctext(p.doc);
+	urls: list of string;
+	keep: list of ref Fontsrc;
+	for(s := srcs; s != nil; s = tl s)
+		if(needed((hd s).ranges, used)) {
+			urls = (hd s).url :: urls;
+			keep = hd s :: keep;
+		}
+	got := fetchall(urls);
+	for(; keep != nil; keep = tl keep) {
+		f := hd keep;
+		(data, nil, err) := fetched(got, f.url);
+		if(err == nil)
+			err = fm->addface(f.family, f.weight, f.italic, f.ranges, data);
+		if(err != nil)
+			p.errors = f.url + ": " + err :: p.errors;
+	}
+}
+
+fontrules(p: ref Pg, rs: array of ref Css->Rule, base: string, acc: list of ref Fontsrc): list of ref Fontsrc
+{
+	for(i := 0; i < len rs; i++)
+		pick r := rs[i] {
+		Fontface =>
+			if((f := fontface(r.decls, base)) != nil)
+				acc = f :: acc;
+		Media =>
+			if(style->mediamatch(r.cond, p.env))
+				acc = fontrules(p, r.rules, base, acc);
+		Supports =>
+			if(style->supports(r.cond))
+				acc = fontrules(p, r.rules, base, acc);
+		Layer =>
+			acc = fontrules(p, r.rules, base, acc);
+		}
+	return acc;
+}
+
+fontface(decls: array of ref Css->Decl, base: string): ref Fontsrc
+{
+	f := ref Fontsrc(nil, 400, 0, nil, nil);
+	for(i := 0; i < len decls; i++) {
+		d := decls[i];
+		v := d.val;
+		case d.name {
+		"font-family" =>
+			f.family = "";
+			for(j := 0; j < len v; j++)
+				case v[j].kind {
+				Css->Kstring =>
+					f.family = v[j].s;
+				Css->Kident =>
+					if(f.family != "")
+						f.family += " ";
+					f.family += v[j].s;
+				}
+			f.family = lower(f.family);
+		"font-weight" =>
+			for(j := 0; j < len v; j++)
+				if(v[j].kind == Css->Knumber) {
+					f.weight = int v[j].n;
+					break;
+				} else if(v[j].kind == Css->Kident) {
+					if(v[j].s == "bold")
+						f.weight = 700;
+					break;
+				}
+		"font-style" =>
+			if(len v > 0 && v[0].kind == Css->Kident && (v[0].s == "italic" || v[0].s == "oblique"))
+				f.italic = 1;
+		"unicode-range" =>
+			f.ranges = uranges(css->tostring(v));
+		"src" =>
+			f.url = fontsrc(v, base);
+		}
+	}
+	if(f.family == nil || f.family == "" || f.url == nil)
+		return nil;
+	return f;
+}
+
+# The first url() in src whose format we read; local() faces are not
+# looked for.
+fontsrc(v: array of ref Css->Tok, base: string): string
+{
+	u: string;
+	ok := 1;
+	for(j := 0; j <= len v; j++) {
+		if(j == len v || v[j].kind == Css->Kcomma) {
+			if(u != nil && ok)
+				return style->resolveurl(base, u);
+			u = nil;
+			ok = 1;
+			continue;
+		}
+		t := v[j];
+		case t.kind {
+		Css->Kurl =>
+			u = t.s;
+		Css->Kfunction =>
+			case t.s {
+			"url" =>
+				for(k := 0; k < len t.kids; k++)
+					if(t.kids[k].kind == Css->Kstring)
+						u = t.kids[k].s;
+			"format" =>
+				fmt := "";
+				for(k := 0; k < len t.kids; k++)
+					if(t.kids[k].kind == Css->Kstring || t.kids[k].kind == Css->Kident)
+						fmt = lower(t.kids[k].s);
+				case fmt {
+				"truetype" or "opentype" or "woff" or "woff2" or
+				"truetype-variations" or "opentype-variations" or "woff-variations" or "woff2-variations" =>
+					;
+				* =>
+					ok = 0;	# embedded-opentype, svg, collection
+				}
+			"tech" =>
+				ok = 0;
+			}
+		}
+	}
+	return nil;
+}
+
+# "u+0460-052f, u+20b4, u+4??" as pairs; nil (everything) if unreadable
+uranges(s: string): array of int
+{
+	(nil, l) := sys->tokenize(lower(s), ", \t\n");
+	r: list of int;
+	for(; l != nil; l = tl l) {
+		t := hd l;
+		if(len t < 3 || t[0:2] != "u+")
+			return nil;
+		t = t[2:];
+		lo := 0;
+		hi := 0;
+		dash := 0;
+		for(i := 0; i < len t; i++) {
+			c := t[i];
+			d := -1;
+			if(c >= '0' && c <= '9')
+				d = c - '0';
+			else if(c >= 'a' && c <= 'f')
+				d = c - 'a' + 10;
+			if(c == '-' && !dash) {
+				dash = 1;
+				hi = 0;
+				continue;
+			}
+			if(c == '?') {
+				lo = lo*16;
+				hi = hi*16 + 15;
+				continue;
+			}
+			if(d < 0)
+				return nil;
+			if(dash)
+				hi = hi*16 + d;
+			else {
+				lo = lo*16 + d;
+				hi = hi*16 + d;
+			}
+		}
+		r = hi :: lo :: r;
+	}
+	a := array[len r] of int;
+	for(i := len a - 1; i >= 0; i--) {
+		a[i] = hd r;
+		r = tl r;
+	}
+	return a;
+}
+
+# the code points the document's text uses, as a bitmap of the BMP
+doctext(d: ref Dom->Doc): array of byte
+{
+	b := array[65536/8] of {* => byte 0};
+	for(n := 1; n < d.n; n++) {
+		nd := d.nodes[n];
+		if(nd.kind != Dom->Text)
+			continue;
+		s := nd.text;
+		for(i := 0; i < len s; i++)
+			if(s[i] < 65536)
+				b[s[i]>>3] |= byte (1 << (s[i]&7));
+	}
+	# what generated content and form controls may show
+	for(c := 16r20; c < 16r7F; c++)
+		b[c>>3] |= byte (1 << (c&7));
+	return b;
+}
+
+needed(ranges: array of int, used: array of byte): int
+{
+	if(ranges == nil)
+		return 1;
+	for(i := 0; i + 1 < len ranges; i += 2)
+		for(c := ranges[i]; c <= ranges[i+1] && c < 65536; c++)
+			if(int used[c>>3] & (1 << (c&7)))
+				return 1;
+	return 0;
+}
+
+# <object data=...>: fetch each, and keep those whose data is an image
+# (or a document, shown as an empty frame until there are nested
+# documents).  The rest fall back to their contents: data that fails to
+# load, or is of a type we cannot show (HTML 4.01 §13.3.1; Acid2).
+findobjects(p: ref Pg)
+{
+	d := p.doc;
+	urls: list of (int, string);
+	for(n := 1; n < d.n; n++) {
+		nd := d.nodes[n];
+		if(nd.kind != Dom->Element || nd.tag != Dom->Tobject || nd.ns != Dom->HTML)
+			continue;
+		if((data := d.attr(n, "data")) == nil)
+			continue;
+		urls = (n, style->resolveurl(d.url, data)) :: urls;
+	}
+	if(urls == nil)
+		return;
+	ul: list of string;
+	for(l := urls; l != nil; l = tl l)
+		ul = (hd l).t1 :: ul;
+	got := fetchall(ul);
+	r: list of (int, int, string);
+	for(l = urls; l != nil; l = tl l) {
+		(n, u) := hd l;
+		(data, ctype, err) := fetched(got, u);
+		if(err != nil)
+			continue;
+		ct := lower(ctype);
+		if(decodeimage(data, ctype, u) != nil)
+			r = (n, Layout->Oimage, u) :: r;
+		else if(prefix(ct, "text/html") || prefix(ct, "application/xhtml") || prefix(ct, "text/plain"))
+			r = (n, Layout->Odoc, u) :: r;
+	}
+	p.objects = r;
+}
+
+# Background and list-style images the computed styles ask for.
+loadbgimages(p: ref Pg)
+{
+	layout->clearbgimages();
+	urls: list of string;
+	c := p.computed;
+	for(i := 0; i < len c.st; i++) {
+		if(c.st[i] != nil && c.st[i].display != Style->Dnone)
+			for(l := layout->bgurls(c.st[i]); l != nil; l = tl l)
+				urls = hd l :: urls;
+		if(c.before != nil && c.before[i] != nil)
+			for(lb := layout->bgurls(c.before[i]); lb != nil; lb = tl lb)
+				urls = hd lb :: urls;
+		if(c.after != nil && c.after[i] != nil)
+			for(la := layout->bgurls(c.after[i]); la != nil; la = tl la)
+				urls = hd la :: urls;
+	}
+	if(urls == nil)
+		return;
+	got := fetchall(urls);
+	for(; got != nil; got = tl got) {
+		g := hd got;
+		if(g.err != nil) {
+			p.errors = g.url + ": " + g.err :: p.errors;
+			continue;
+		}
+		if((img := decodeimage(g.data, g.ctype, g.url)) != nil)
+			layout->setbgimage(g.url, img);
+	}
+}
+
+# Images for replaced boxes, fetched once per URL.
+loadimages(p: ref Pg, root: ref Box)
+{
+	cache: list of (string, ref Image);
+	boxes := replacedboxes(root, nil);
+	urls: list of string;
+	for(l := boxes; l != nil; l = tl l)
+		urls = (hd l).url :: urls;
+	got := fetchall(urls);
+	for(l = boxes; l != nil; l = tl l) {
+		b := hd l;
+		img: ref Image;
+		found := 0;
+		for(c := cache; c != nil; c = tl c)
+			if((hd c).t0 == b.url) {
+				img = (hd c).t1;
+				found = 1;
+			}
+		if(!found) {
+			(data, ctype, err) := fetched(got, b.url);
+			if(err == nil)
+				img = decodeimage(data, ctype, b.url);
+			if(img != nil && (prefix(lower(ctype), "image/svg") || looksvg(data)))
+				svgsrc = (b.url, data) :: svgsrc;
+			else
+				p.errors = b.url + ": " + err :: p.errors;
+			cache = (b.url, img) :: cache;
+		}
+		if(img != nil) {
+			b.img = img;
+			b.iw = img.r.dx();
+			b.ih = img.r.dy();
+			b.text = nil;
+		}
+	}
+}
+
+# Inline <svg>: the subtree as markup, rendered at the box's size.
+# SVG images' source, by URL, to draw again at another size
+svgsrc: list of (string, array of byte);
+
+# The SVG with its root element's size set to w by h: the content is
+# then drawn to fit, through a viewBox (one made from the old size if it
+# had none).
+svgresize(data: array of byte, w, h: int): array of byte
+{
+	s := string data;
+	i := 0;
+	for(;;) {
+		i = strindex(s, "<svg", i);
+		if(i < 0 || i + 4 >= len s)
+			return data;
+		c := s[i+4];
+		if(c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '>' || c == '/')
+			break;
+		i += 4;
+	}
+	e := strindex(s, ">", i);
+	if(e < 0)
+		return data;
+	tag := s[i+4:e];
+	ow, oh: string;
+	(tag, ow) = dropattr(tag, "width");
+	(tag, oh) = dropattr(tag, "height");
+	vb := "";
+	if(strindex(tag, "viewBox", 0) < 0 && strindex(tag, "viewbox", 0) < 0) {
+		# "65px" converts as 65; a percentage gives no box to fit
+		if(ow != nil && oh != nil && ow[len ow-1] != '%' && oh[len oh-1] != '%')
+			vb = sys->sprint(" viewBox=\"0 0 %g %g\"", real ow, real oh);
+	}
+	n := s[0:i] + sys->sprint("<svg width=\"%d\" height=\"%d\"%s", w, h, vb) + tag + s[e:];
+	return array of byte n;
+}
+
+# remove attribute nm="..." from a tag's text; its value
+dropattr(tag, nm: string): (string, string)
+{
+	for(i := 0; (i = strindex(tag, nm, i)) >= 0; i += len nm) {
+		if(i > 0 && tag[i-1] != ' ' && tag[i-1] != '\t' && tag[i-1] != '\n' && tag[i-1] != '\r')
+			continue;
+		j := i + len nm;
+		while(j < len tag && (tag[j] == ' ' || tag[j] == '\t'))
+			j++;
+		if(j >= len tag || tag[j] != '=')
+			continue;
+		j++;
+		while(j < len tag && (tag[j] == ' ' || tag[j] == '\t'))
+			j++;
+		if(j >= len tag)
+			return (tag, nil);
+		q := tag[j];
+		v0, v1, end: int;
+		if(q == '"' || q == '\'') {
+			v0 = j + 1;
+			for(v1 = v0; v1 < len tag && tag[v1] != q; v1++)
+				;
+			end = v1 + 1;
+		} else {
+			v0 = j;
+			for(v1 = v0; v1 < len tag && tag[v1] != ' ' && tag[v1] != '>' && tag[v1] != '/'; v1++)
+				;
+			end = v1;
+		}
+		if(end > len tag)
+			end = len tag;
+		return (tag[0:i] + tag[end:], tag[v0:v1]);
+	}
+	return (tag, nil);
+}
+
+strindex(s, t: string, from: int): int
+{
+	for(i := from; i + len t <= len s; i++)
+		if(s[i:i+len t] == t)
+			return i;
+	return -1;
+}
+
+inlinesvg(p: ref Pg, b: ref Box)
+{
+	if(b.kind == Layout->Kreplaced && b.url == nil && b.node != 0) {
+		nd := p.doc.nodes[b.node];
+		if(nd.ns == Dom->SVG && nd.name == "svg") {
+			w := b.w - b.bl - b.br - b.pl - b.pr;
+			h := b.h - b.bt - b.bb - b.pt - b.pb;
+			if(w > 0 && h > 0 && (b.img == nil || b.img.r.dx() != w || b.img.r.dy() != h))
+				b.img = decodeimage(array of byte svgmarkup(p.doc, b.node, w, h), "image/svg+xml", nil);
+		}
+	} else if(b.kind == Layout->Kreplaced && b.url != nil && b.img != nil) {
+		# an SVG image: drawn at the size it is shown, not scaled
+		w := b.w - b.bl - b.br - b.pl - b.pr;
+		h := b.h - b.bt - b.bb - b.pt - b.pb;
+		if(w > 0 && h > 0 && (b.img.r.dx() != w || b.img.r.dy() != h))
+			for(sl := svgsrc; sl != nil; sl = tl sl)
+				if((hd sl).t0 == b.url) {
+					if((img := decodeimage(svgresize((hd sl).t1, w, h), "image/svg+xml", nil)) != nil)
+						b.img = img;
+					break;
+				}
+	}
+	for(i := 0; i < len b.kids; i++)
+		inlinesvg(p, b.kids[i]);
+	for(l := b.pos; l != nil; l = tl l)
+		inlinesvg(p, hd l);
+	for(i = 0; i < len b.lines; i++) {
+		ln := b.lines[i];
+		for(j := 0; j < len ln.frags; j++)
+			if(ln.frags[j].kind == Layout->Fatomic)
+				inlinesvg(p, ln.frags[j].box);
+	}
+}
+
+svgmarkup(d: ref Doc, n, w, h: int): string
+{
+	s := "<svg xmlns=\"http://www.w3.org/2000/svg\"";
+	s += sys->sprint(" width=\"%d\" height=\"%d\"", w, h);
+	vb := 0;
+	for(a := d.nodes[n].attrs; a != nil; a = tl a) {
+		(k, v) := hd a;
+		case k {
+		"width" or "height" or "xmlns" =>
+			continue;
+		"viewBox" =>
+			vb = 1;
+		}
+		s += " " + k + "=\"" + xmlesc(v) + "\"";
+	}
+	if(!vb) {
+		# without a viewBox the drawing keeps its own units
+		ow := d.attr(n, "width");
+		oh := d.attr(n, "height");
+		if(ow != nil && oh != nil)
+			s += " viewBox=\"0 0 " + xmlesc(num(ow)) + " " + xmlesc(num(oh)) + "\"";
+	}
+	s += ">";
+	for(c := d.nodes[n].first; c != 0; c = d.nodes[c].next)
+		s += xmlnode(d, c);
+	return s + "</svg>";
+}
+
+num(s: string): string
+{
+	i := 0;
+	while(i < len s && (s[i] >= '0' && s[i] <= '9' || s[i] == '.'))
+		i++;
+	return s[0:i];
+}
+
+xmlnode(d: ref Doc, n: int): string
+{
+	nd := d.nodes[n];
+	case nd.kind {
+	Dom->Text =>
+		return xmlesc(nd.text);
+	Dom->Element =>
+		s := "<" + nd.name;
+		for(a := nd.attrs; a != nil; a = tl a)
+			s += " " + (hd a).t0 + "=\"" + xmlesc((hd a).t1) + "\"";
+		if(nd.first == 0)
+			return s + "/>";
+		s += ">";
+		for(c := nd.first; c != 0; c = d.nodes[c].next)
+			s += xmlnode(d, c);
+		return s + "</" + nd.name + ">";
+	}
+	return "";
+}
+
+xmlesc(s: string): string
+{
+	r := "";
+	for(i := 0; i < len s; i++)
+		case s[i] {
+		'<' => r += "&lt;";
+		'>' => r += "&gt;";
+		'&' => r += "&amp;";
+		'"' => r += "&quot;";
+		* => r[len r] = s[i];
+		}
+	return r;
+}
+
+replacedboxes(b: ref Box, acc: list of ref Box): list of ref Box
+{
+	if(b.kind == Layout->Kreplaced && b.url != nil)
+		acc = b :: acc;
+	for(i := 0; i < len b.kids; i++)
+		acc = replacedboxes(b.kids[i], acc);
+	return acc;
+}
+
+carryimages(old, new: ref Box)
+{
+	imgs: list of (string, ref Image);
+	for(l := replacedboxes(old, nil); l != nil; l = tl l)
+		if((hd l).img != nil)
+			imgs = ((hd l).url, (hd l).img) :: imgs;
+	for(l = replacedboxes(new, nil); l != nil; l = tl l)
+		for(i := imgs; i != nil; i = tl i)
+			if((hd i).t0 == (hd l).url) {
+				b := hd l;
+				b.img = (hd i).t1;
+				b.iw = b.img.r.dx();
+				b.ih = b.img.r.dy();
+				b.text = nil;
+				break;
+			}
+}
+
+decodeimage(data: array of byte, ctype, url: string): ref Image
+{
+	if(imageremap == nil || len data < 4)
+		return nil;
+	path := "";
+	ct := lower(ctype);
+	if(len data >= 8 && data[0] == byte 16r89 && data[1] == byte 'P' && data[2] == byte 'N' && data[3] == byte 'G')
+		path = RImagefile->READPNGPATH;
+	else if(data[0] == byte 16rFF && data[1] == byte 16rD8)
+		path = RImagefile->READJPGPATH;
+	else if(data[0] == byte 'G' && data[1] == byte 'I' && data[2] == byte 'F')
+		path = RImagefile->READGIFPATH;
+	else if(len data >= 12 && string data[0:4] == "RIFF" && string data[8:12] == "WEBP")
+		path = RImagefile->READWEBPPATH;
+	else if(len data >= 12 && string data[4:8] == "ftyp")
+		path = RImagefile->READAVIFPATH;
+	else if(prefix(ct, "image/svg") || suffix(lower(url), ".svg") || looksvg(data))
+		path = RImagefile->READSVGPATH;
+	if(path == "")
+		return nil;
+	rd := load RImagefile path;
+	if(rd == nil)
+		return nil;
+	rd->init(bufio);
+	(raw, err) := rd->read(bufio->aopen(data));
+	if(raw == nil || err != nil)
+		return nil;
+	(img, nil) := imageremap->remap(raw, display, 0);
+	return img;
+}
+
+looksvg(data: array of byte): int
+{
+	n := len data;
+	if(n > 512)
+		n = 512;
+	return index(string data[0:n], "<svg") >= 0;
+}
+
+# ---- fetching ----
+
+NFETCH: con 6;	# fetches at once, as browsers do per host
+
+Got: adt {
+	url:	string;
+	data:	array of byte;
+	ctype:	string;
+	err:	string;
+};
+
+# Fetch urls concurrently, each distinct URL once.
+fetchall(urls: list of string): list of ref Got
+{
+	todo: list of string;
+	n := 0;
+	for(; urls != nil; urls = tl urls) {
+		u := hd urls;
+		if(u == nil)
+			continue;
+		for(t := todo; t != nil; t = tl t)
+			if(hd t == u)
+				break;
+		if(t == nil) {
+			todo = u :: todo;
+			n++;
+		}
+	}
+	if(n == 0)
+		return nil;
+	work := chan[n] of string;
+	for(; todo != nil; todo = tl todo)
+		work <-= hd todo;
+	res := chan of ref Got;
+	nw := NFETCH;
+	if(nw > n)
+		nw = n;
+	for(i := 0; i < nw; i++)
+		spawn fetcher(work, res);
+	got: list of ref Got;
+	for(i = 0; i < n; i++)
+		got = <-res :: got;
+	return got;
+}
+
+fetcher(work: chan of string, res: chan of ref Got)
+{
+	for(;;) alt {
+	u := <-work =>
+		(data, ctype, err) := fetch(u);
+		res <-= ref Got(u, data, ctype, err);
+	* =>
+		return;
+	}
+}
+
+fetched(got: list of ref Got, url: string): (array of byte, string, string)
+{
+	for(; got != nil; got = tl got)
+		if((hd got).url == url)
+			return ((hd got).data, (hd got).ctype, (hd got).err);
+	return (nil, nil, "not fetched");
+}
+
+fetch(url: string): (array of byte, string, string)
+{
+	(data, ctype, err, nil) := fetchfinal(url);
+	return (data, ctype, err);
+}
+
+# fetch, and the URL the resource came from in the end
+fetchfinal(url: string): (array of byte, string, string, string)
+{
+	(scheme, rest) := splitscheme(url);
+	case scheme {
+	"file" =>
+		path := rest;
+		if(prefix(path, "//")) {
+			path = path[2:];
+			i := 0;
+			while(i < len path && path[i] != '/')
+				i++;
+			path = path[i:];	# file://host/path: the host is ignored
+		}
+		path = pctdecode(cutquery(cutfrag(path)));
+		(d, c, e) := readfile(path);
+		return (d, c, e, url);
+	"data" =>
+		(d, c, e) := dataurl(rest);
+		return (d, c, e, url);
+	"http" or "https" =>
+		return webfs(url, "GET", nil, nil);
+	"" =>
+		(d, c, e) := readfile(url);
+		return (d, c, e, url);
+	}
+	return (nil, nil, "unsupported scheme: " + scheme, url);
+}
+
+splitscheme(u: string): (string, string)
+{
+	for(i := 0; i < len u; i++) {
+		c := u[i];
+		if(c == ':')
+			return (lower(u[0:i]), u[i+1:]);
+		if(!(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '+' || c == '-' || c == '.'))
+			break;
+	}
+	return ("", u);
+}
+
+cutquery(s: string): string
+{
+	for(i := 0; i < len s; i++)
+		if(s[i] == '?')
+			return s[0:i];
+	return s;
+}
+
+cutfrag(s: string): string
+{
+	for(i := 0; i < len s; i++)
+		if(s[i] == '#' || s[i] == '?')
+			return s[0:i];
+	return s;
+}
+
+readfile(path: string): (array of byte, string, string)
+{
+	fd := sys->open(path, Sys->OREAD);
+	if(fd == nil)
+		return (nil, nil, sys->sprint("%r"));
+	data := readall(fd);
+	return (data, mimetype(path, data), nil);
+}
+
+readall(fd: ref Sys->FD): array of byte
+{
+	buf := array[8192] of byte;
+	n := 0;
+	for(;;) {
+		if(n == len buf) {
+			nb := array[2*len buf] of byte;
+			nb[0:] = buf;
+			buf = nb;
+		}
+		k := sys->read(fd, buf[n:], len buf - n);
+		if(k <= 0)
+			break;
+		n += k;
+	}
+	return buf[0:n];
+}
+
+# an XML document type, parsed as XML (image/svg+xml is an image)
+isxml(ctype: string): int
+{
+	t := lower(ctype);
+	for(i := 0; i < len t; i++)
+		if(t[i] == ';' || t[i] == ' ') {
+			t = t[0:i];
+			break;
+		}
+	return t == "application/xhtml+xml" || t == "application/xml" || t == "text/xml";
+}
+
+mimetype(path: string, data: array of byte): string
+{
+	p := lower(path);
+	if(suffix(p, ".html") || suffix(p, ".htm"))
+		return "text/html";
+	if(suffix(p, ".xht") || suffix(p, ".xhtml"))
+		return "application/xhtml+xml";
+	if(suffix(p, ".xml"))
+		return "application/xml";
+	if(suffix(p, ".css"))
+		return "text/css";
+	if(suffix(p, ".txt") || suffix(p, ".b") || suffix(p, ".m"))
+		return "text/plain";
+	if(suffix(p, ".svg"))
+		return "image/svg+xml";
+	if(suffix(p, ".png") || suffix(p, ".jpg") || suffix(p, ".jpeg") || suffix(p, ".gif") || suffix(p, ".webp"))
+		return "image/" + p[len p - 3:];
+	return "text/html";
+}
+
+# data:[<mediatype>][;base64],<data>
+dataurl(s: string): (array of byte, string, string)
+{
+	c := 0;
+	while(c < len s && s[c] != ',')
+		c++;
+	if(c == len s)
+		return (nil, nil, "malformed data: URL");
+	meta := s[0:c];
+	payload := s[c+1:];
+	isb64 := 0;
+	ctype := meta;
+	if(suffix(lower(meta), ";base64")) {
+		isb64 = 1;
+		ctype = meta[0:len meta - 7];
+	}
+	if(ctype == "")
+		ctype = "text/plain;charset=US-ASCII";
+	if(isb64) {
+		if(base64 == nil)
+			return (nil, nil, "no base64 decoder");
+		clean := "";
+		for(i := 0; i < len payload; i++)
+			if(payload[i] != ' ' && payload[i] != '\n' && payload[i] != '\t' && payload[i] != '\r')
+				clean[len clean] = payload[i];
+		return (base64->dec(pctdecode(clean)), ctype, nil);
+	}
+	return (array of byte pctdecode(payload), ctype, nil);
+}
+
+pctdecode(s: string): string
+{
+	for(i := 0; i < len s; i++)
+		if(s[i] == '%')
+			break;
+	if(i == len s)
+		return s;
+	# decode to bytes, then to UTF-8
+	b := array[len s * 3] of byte;
+	n := 0;
+	for(i = 0; i < len s; i++) {
+		if(s[i] == '%' && i+2 < len s && hexv(s[i+1]) >= 0 && hexv(s[i+2]) >= 0) {
+			b[n++] = byte (hexv(s[i+1])*16 + hexv(s[i+2]));
+			i += 2;
+		} else {
+			u := array of byte s[i:i+1];
+			b[n:] = u;
+			n += len u;
+		}
+	}
+	return string b[0:n];
+}
+
+hexv(c: int): int
+{
+	if(c >= '0' && c <= '9')
+		return c - '0';
+	if(c >= 'a' && c <= 'f')
+		return c - 'a' + 10;
+	if(c >= 'A' && c <= 'F')
+		return c - 'A' + 10;
+	return -1;
+}
+
+# http and https through webfs (see webfs(4)): clone a connection,
+# write its URL, read its body.
+webfs(url, method, reqctype: string, body: array of byte): (array of byte, string, string, string)
+{
+	cfd := sys->open(WEBFS + "/clone", Sys->OREAD);
+	if(cfd == nil)
+		return (nil, nil, "no webfs at " + WEBFS + ": " + sys->sprint("%r"), url);
+	buf := array[32] of byte;
+	n := sys->read(cfd, buf, len buf);
+	if(n <= 0)
+		return (nil, nil, sys->sprint("webfs clone: %r"), url);
+	id := squash(string buf[0:n]);
+	dir := WEBFS + "/" + id;
+	ctl := sys->open(dir + "/ctl", Sys->OWRITE);
+	if(ctl == nil || sys->fprint(ctl, "url %s", url) < 0)
+		return (nil, nil, sys->sprint("webfs: %r"), url);
+	if(method != "GET") {
+		if(sys->fprint(ctl, "method %s", method) < 0 ||
+		   reqctype != nil && sys->fprint(ctl, "header Content-Type: %s", reqctype) < 0)
+			return (nil, nil, sys->sprint("webfs: %r"), url);
+		pfd := sys->open(dir + "/postbody", Sys->OWRITE);
+		if(pfd == nil || sys->write(pfd, body, len body) != len body)
+			return (nil, nil, sys->sprint("webfs postbody: %r"), url);
+	}
+	bfd := sys->open(dir + "/body", Sys->OREAD);
+	if(bfd == nil)
+		return (nil, nil, sys->sprint("%s: %r", url), url);
+	data := readall(bfd);
+	final := readstr(dir + "/url");
+	if(final == "")
+		final = url;	# an older webfs
+	ctype := readstr(dir + "/contenttype");
+	# an error's body comes too: a page shows a 404's, nothing else does
+	status := readstr(dir + "/status");
+	if(status != "" && !prefix(status, "2"))
+		return (data, ctype, status, final);
+	return (data, ctype, nil, final);
+}
+
+readstr(path: string): string
+{
+	fd := sys->open(path, Sys->OREAD);
+	if(fd == nil)
+		return "";
+	return squash(string readall(fd));
+}
+
+# ---- small things ----
+
+param(ctype, name: string): string
+{
+	(nil, l) := sys->tokenize(ctype, ";");
+	for(; l != nil; l = tl l) {
+		s := squash(hd l);
+		if(prefix(lower(s), name + "=")) {
+			v := s[len name + 1:];
+			if(len v >= 2 && v[0] == '"')
+				v = v[1:len v - 1];
+			return v;
+		}
+	}
+	return nil;
+}
+
+escape(s: string): string
+{
+	r := "";
+	for(i := 0; i < len s; i++)
+		case s[i] {
+		'<' => r += "&lt;";
+		'&' => r += "&amp;";
+		* => r[len r] = s[i];
+		}
+	return r;
+}
+
+squash(s: string): string
+{
+	r := "";
+	sp := 1;
+	for(i := 0; i < len s; i++) {
+		c := s[i];
+		if(c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+			if(!sp)
+				r[len r] = ' ';
+			sp = 1;
+		} else {
+			r[len r] = c;
+			sp = 0;
+		}
+	}
+	if(len r > 0 && r[len r - 1] == ' ')
+		r = r[0:len r - 1];
+	return r;
+}
+
+lower(s: string): string
+{
+	r := s;
+	for(i := 0; i < len r; i++)
+		if(r[i] >= 'A' && r[i] <= 'Z')
+			r[i] += 'a' - 'A';
+	return r;
+}
+
+prefix(s, p: string): int
+{
+	return len s >= len p && s[0:len p] == p;
+}
+
+suffix(s, t: string): int
+{
+	return len s >= len t && s[len s - len t:] == t;
+}
+
+index(s, t: string): int
+{
+	for(i := 0; i+len t <= len s; i++)
+		if(s[i:i+len t] == t)
+			return i;
+	return -1;
+}
