@@ -238,7 +238,13 @@ drawlogo()
 	lh := logoimg.r.dy();
 	ox := fx + (fr.dx() - lw) / 2;
 	oy := fy + (fr.dy() - lh) / 2;
-	top.image.draw(Rect((ox, oy), (ox + lw, oy + lh)), logoimg, nil, logoimg.r.min);
+	# Tk does not clip this: keep it inside the window's frame, which a
+	# window shrunk below the picture's size would otherwise lose
+	dr := Rect((ox, oy), (ox + lw, oy + lh));
+	(cr, ok) := dr.clip(top.image.r.inset(int tk->cmd(top, ". cget -borderwidth")));
+	if(!ok)
+		return;
+	top.image.draw(cr, logoimg, nil, logoimg.r.min.add(cr.min.sub(dr.min)));
 	top.image.flush(Draw->Flushnow);
 }
 
