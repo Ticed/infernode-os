@@ -142,6 +142,15 @@ init(ctxt: ref Draw->Context, argv: list of string)
 		if(c == "exit")
 			for(z := wmsrv->top(); z != nil; z = z.znext)
 				z.ctl <-= "exit";
+		if(c == "retheme"){
+			# a live theme switch (Lucifer sends it to the apps it
+			# hosts, wm/wm among them): pass it on to every window
+			# here, hidden ones too, so their frames follow
+			for(z := wmsrv->top(); z != nil; z = z.znext)
+				spawn tellctl(z.ctl, c);
+			for(hl := hidden; hl != nil; hl = tl hl)
+				spawn tellctl((hd hl).ctl, c);
+		}
 
 		wmclient->win.wmctl(c);
 		if(win.image != screen.image)
@@ -1081,6 +1090,11 @@ sweepout(ptr: chan of ref Pointer): Rect
 tellexit(c: ref Client)
 {
 	c.ctl <-= "exit";
+}
+
+tellctl(ctl: chan of string, s: string)
+{
+	ctl <-= s;
 }
 
 # rio's Hide: off the screen, out of the stacking order, on the menu.
