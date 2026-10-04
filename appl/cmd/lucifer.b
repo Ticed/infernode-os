@@ -1553,6 +1553,16 @@ preswmloop(scr: ref Screen, zoner: Rect,
 			# Remove the tab immediately rather than waiting for the async fd close.
 			if(s == "embedded-exit")
 				cleanupappslot(c);
+			# "!move"/"!size": a frame press asks to move or reshape.  The
+			# zone places its windows itself, so the answer is the window
+			# as it is -- but an answer: the client waits for an image
+			# after any "!" request.
+			if((len s >= 5 && s[0:5] == "!move" || len s >= 5 && s[0:5] == "!size") &&
+			   (existimg := c.image("app")) != nil)
+				c.setimage("app", existimg);
+			# "embedded" (wmlib->embedded): yes, the zone frames and places
+			# its windows, so the client draws no frame of its own.  The OK
+			# below is the answer.
 			# All other req messages ("start ptr", "start kbd", "raise", etc.) — reply OK
 			alt { rc <-= (n, err) => ; * => ; }
 		}

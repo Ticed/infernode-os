@@ -2263,6 +2263,14 @@ appwmloop(join: chan of (ref Wmsrv->Client, chan of string),
 		}
 		if(s == "embedded-exit")
 			dropapprec(c);
+		# "!move"/"!size" (a frame press): the pane places the window, so
+		# the answer is the window as it is -- but an answer, since the
+		# client waits for an image after any "!" request.
+		if((len s >= 5 && s[0:5] == "!move" || len s >= 5 && s[0:5] == "!size") &&
+		   (mcur := c.image("app")) != nil)
+			c.setimage("app", mcur);
+		# "embedded" (wmlib->embedded): yes, a pane frames its app; the OK
+		# below is the answer.
 		alt {
 		rc <-= (nlen, err) =>
 			;
