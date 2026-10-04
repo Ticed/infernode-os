@@ -564,7 +564,8 @@ hclose(m: int)
 	ctxt.texts = ctxt.texts[:len ctxt.texts - 1];
 	ctxt.menus[m].text = nil;
 	ctxt.which = nil;
-	samtk->focus(hd ctxt.cmd.flayers);
+	# the command window takes over, and the menu loses the file's window
+	samtk->newcur(ctxt.cmd, hd ctxt.cmd.flayers);
 }
 
 close(win, tag: int)
@@ -586,8 +587,9 @@ close(win, tag: int)
 	t.flayers = nfls;
 	samtk->chandel(win);
 	fl.t = nil;
-	samtk->settitle(t, ctxt.menus[m].name);
 	ctxt.which = nil;
+	samtk->newcur(ctxt.cmd, hd ctxt.cmd.flayers);
+	samtk->settitle(t, ctxt.menus[m].name);
 }
 
 hdelname(m: int)

@@ -63,8 +63,7 @@ init(context: ref draw->Context, argv: list of string)
 		nil,		# buttonsel
 		nil,		# menu2sel
 		nil,		# menu3sel
-		nil,		# titlesel
-		nil,		# tags
+		nil,		# flayers
 
 		nil,		# menus
 		nil,		# texts
@@ -73,7 +72,13 @@ init(context: ref draw->Context, argv: list of string)
 		nil,		# which
 		nil,		# work
 		pgrp,		# pgrp
-		logfd		# logging file descriptor
+		logfd,		# logging file descriptor
+
+		nil,		# top
+		nil,		# wmctl
+		nil,		# sweepc
+		0,		# nextid
+		(0, 0)		# size
 	);
 
 	samtk = load Samtk Samtk->PATH;
@@ -102,33 +107,26 @@ init(context: ref draw->Context, argv: list of string)
 	samstub->setlock();
 
 	for(;;) if (ctxt.lock == 0) alt {
-	(win, menu) := <-ctxt.titlesel =>
-		samstub->cleanout();
-		fl := ctxt.flayers[win];
-		tag := fl.tag;
-		if ((i := samtk->whichtext(tag)) < 0)
-			samtk->panic("samterm: whichtext");
-		t := ctxt.texts[i];
-		samtk->newcur(t, fl);
+	menu := <-ctxt.wmctl =>
 		case menu {
 		"exit" =>
-			if (ctxt.flayers[win].tag == 0) {
-				samstub->outT0(samstub->Texit);
-				f := sprint("#p/%d/ctl", pgrp);
-				if ((fd := sys->open(f, sys->OWRITE)) != nil)
-					sys->write(fd, array of byte "killgrp\n", 8);
-				return;
-			}
-			samstub->close(win, tag);
+			samstub->outT0(samstub->Texit);
+			f := sprint("#p/%d/ctl", pgrp);
+			if ((fd := sys->open(f, sys->OWRITE)) != nil)
+				sys->write(fd, array of byte "killgrp\n", 8);
+			return;
 		"resize" =>
-			samtk->resize(fl);
-			samstub->scrollto(fl, fl.scope.first);
+			# the window changed size; its layers scale with it
+			if (samtk->reshapeall()) {
+				samstub->cleanout();
+				for (i := 0; i < len ctxt.flayers; i++)
+					samstub->scrollto(ctxt.flayers[i], ctxt.flayers[i].scope.first);
+			}
 		"task" =>
-			spawn samtk->titlectl(win, menu);
+			spawn samtk->titlectl(menu);
 		* =>
-			samtk->titlectl(win, menu);
+			samtk->titlectl(menu);
 		}
-
 
 	(win, m1) := <-ctxt.buttonsel =>
 		samstub->cleanout();
@@ -179,33 +177,37 @@ init(context: ref draw->Context, argv: list of string)
 			samstub->startnewfile();
 		"zerox" =>
 			samstub->zerox(t);
+		"resize" =>
+			samtk->reshape(fl);
+			samstub->scrollto(fl, fl.scope.first);
 		"close" =>
-			if (win != 0) {
+			# the command window stays
+			if (t != ctxt.cmd)
 				samstub->close(win, tag);
-			}
 		"write" =>
 			samstub->outTs(samstub->Twrite, tag);
 			samstub->setlock();
 		* =>
-			for (i = 0; i < len ctxt.menus; i++) {
-				if (samtk->menulabel(ctxt.menus[i].name) == m3) {
-					break;
-				}
+			# "file <tag>": a file in the menu
+			(nil, f) := sys->tokenize(m3, " ");
+			if (len f != 2 || hd f != "file" || (i = samtk->whichmenu(int hd tl f)) < 0) {
+				# deleted since the menu was posted
+				fprint(ctxt.logfd, "menu3: no file %s\n", m3);
+				continue;
 			}
-			if (i == len ctxt.menus)
-				samtk->panic("init: can't find m3");
 			t = ctxt.menus[i].text;
 			if (t == nil) {
-				# in the menu but with no window: open one
+				# in the menu but with no window: sweep one
 				n := samstub->startfile(ctxt.menus[i].tag);
 				t = ctxt.texts[n];
 				ctxt.menus[i].text = t;
 				samtk->settitle(t, ctxt.menus[i].name);
 			} else {
-				t.flayers = samtk->append(tl t.flayers, hd t.flayers);
+				# its front layer, or the next if that is current
+				if (len t.flayers > 1 && ctxt.which == hd t.flayers)
+					t.flayers = samtk->append(tl t.flayers, hd t.flayers);
 				samtk->newcur(t, hd t.flayers);
 			}
-			
 		}
 	(win, c) := <-ctxt.keysel =>
 		if (ctxt.which != ctxt.flayers[win]) {

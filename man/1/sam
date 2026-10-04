@@ -21,8 +21,19 @@ holds the files and runs the command language.
 The terminal loads the host as a module and spawns it; no host
 operating system binary is involved.
 .PP
-Each file named on the command line is read into the file menu and the
-first is opened in a window.
+As on Plan 9, sam is a single window.
+The command window runs across its top fifth; every window on a file is
+a layer inside sam's window, and layers overlap.
+The current layer is drawn on top with a heavy border; button 1 in
+another layer makes that one current.
+Whenever a new layer is needed the cursor changes and the user sweeps
+out its rectangle with button 3.
+A click instead of a sweep takes the whole window less the command
+window, on the side of the command window clicked.
+When sam's window is resized every layer is scaled with it.
+.PP
+Each file named on the command line is read into the file menu, and a
+layer is swept for the first.
 The command window, listed in the menu as
 .BR ~~sam~~ ,
 takes commands typed at its end; a command runs when its line is ended
@@ -47,10 +58,26 @@ Button 3 offers
 (an unnamed file),
 .B zerox
 (another window on the same file),
+.B resize
+(sweep a new rectangle for the layer),
 .B close
 and
 .BR write ,
 followed by the file names.
+As in sam, each name is preceded by
+.B \'
+if the file is modified, by
+.BR - ,
+.B +
+or
+.B *
+for no, one or several windows, and by
+.B .
+if it is the current file.
+Choosing a file with no window sweeps one; choosing one with windows
+brings its front layer up, or the next if that one is current.
+Button 3 on the background, outside every layer, offers the command
+window's menu.
 A double click selects a word, a line, or the text between matching
 brackets or quotes.
 The snarf buffer is
@@ -279,6 +306,8 @@ Rob Pike,
 and
 ``Structural Regular Expressions''.
 .SH BUGS
-Pointer-driven window sweeping and the
+The
 .B exch
-menu item are not implemented; windows are placed by the window manager.
+menu item is not implemented.
+A sweep cannot be abandoned; one too small for a window takes the default
+rectangle.

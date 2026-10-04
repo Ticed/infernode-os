@@ -12,8 +12,10 @@ Samtk: module
 	NMENU2: con iota;
 	Search: con Send;
 
+	# button 3, as in Plan 9 sam; the file names follow these
 	New,
 	Zerox,
+	Resize,
 	Close,
 	Write,
 	NMENU3: con iota;
@@ -46,12 +48,14 @@ Samtk: module
 	newcur:		fn(t: ref Text, fl: ref Flayer);
 	newflayer:	fn(tag, tp: int): ref Flayer;
 	panic:		fn(s: string);
+	reshape:	fn(fl: ref Flayer);
+	reshapeall:	fn(): int;
 	resize:		fn(fl: ref Flayer);
 	scroll:		fn(fl: ref Flayer, s: string): (int, int);
 	setdot:		fn(fl: ref Flayer, l1, l2: int);
 	setscrollbar:	fn(t: ref Text, fl: ref Flayer);
 	settitle:	fn(t: ref Text, s: string);
-	titlectl:	fn(win: int, menu: string);
+	titlectl:	fn(menu: string);
 	whichmenu:	fn(tag: int): int;
 	whichtext:	fn(tag: int): int;
 };
