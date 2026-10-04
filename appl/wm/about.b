@@ -280,13 +280,15 @@ loadlogo(display: ref Display): int
 	return logoimg != nil;
 }
 
-# The logo file, theme-specific if one exists.
+# The about picture: the theme's own (about-screen-<theme>.png, the
+# same artwork in its colours -- Halo's shows Paradise where
+# Brimstone's shows Hell) if it has one, else Brimstone's.
 logopath(): string
 {
 	path := "/lib/lucifer/about-screen.png";
 	name := rf("/lib/lucifer/theme/current");
 	if(name != nil && name != "brimstone" && name != ""){
-		tpath := "/lib/lucifer/logo-" + name + ".png";
+		tpath := "/lib/lucifer/about-screen-" + name + ".png";
 		if((fd := sys->open(tpath, Sys->OREAD)) != nil){
 			fd = nil;
 			path = tpath;
