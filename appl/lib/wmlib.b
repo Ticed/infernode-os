@@ -246,6 +246,13 @@ connect(ctxt: ref Context): ref Wmcontext
 	return wm;
 }
 
+embedded(wm: ref Wmcontext): int
+{
+	if(wm == nil || wm.connfd == nil)
+		return 0;
+	return sys->fprint(wm.connfd, "embedded") >= 0;
+}
+
 startinput(wm: ref Wmcontext, devs: list of string): string
 {
 	for(; devs != nil; devs = tl devs)
