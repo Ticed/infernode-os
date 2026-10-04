@@ -252,6 +252,9 @@ trapUSR1(int signo)
 
 	USED(signo);
 
+	if(up == nil)		/* pexit has already forgotten the proc */
+		return;
+
 	intwait = up->intwait;
 	up->intwait = 0;	/* clear it to let proc continue in osleave */
 
