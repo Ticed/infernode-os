@@ -71,10 +71,11 @@ makedrawcontext(): ref Draw->Context
 }
 		
 blankwin: Window;
-window(ctxt: ref Draw->Context, nil: string, buts: int): ref Window
+window(ctxt: ref Draw->Context, title: string, buts: int): ref Window
 {
 	w := ref blankwin;
 	w.ctxt = wmlib->connect(ctxt);
+	wmlib->setlabel(w.ctxt, title);
 	w.display = ctxt.display;
 	w.ctl = chan[2] of string;
 	readscreenrect(w);
@@ -321,8 +322,9 @@ recvimage(w: ref Window)
 	putimage(w, i);
 }
 
-Window.settitle(nil: self ref Window, nil: string): string
+Window.settitle(w: self ref Window, name: string): string
 {
+	wmlib->setlabel(w.ctxt, name);
 	return nil;
 }
 

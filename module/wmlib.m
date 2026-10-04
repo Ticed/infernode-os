@@ -21,6 +21,10 @@ Wmlib: module
 	# client draws no frame.  A wm that does not know the request
 	# (wm/wm) leaves framing to the client.
 	embedded:	fn(w: ref Draw->Wmcontext): int;
+	# Tell the window manager the window's label (its title), as rio's
+	# /dev/label: wm/wm shows it in its menu of hidden windows.  A
+	# window manager that does not want it may refuse; that is ignored.
+	setlabel:	fn(w: ref Draw->Wmcontext, label: string);
 #	wmtoken:	fn(w: ref Draw->Wmcontext): string;
 	snarfput:	fn(buf: string);
 	snarfget:	fn(): string;

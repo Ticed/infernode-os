@@ -58,7 +58,9 @@ Choose a window with button 3: its program is told to exit.
 .TP
 .B Hide
 Choose a window with button 3: it is taken off the screen,
-and its name added to the menu; choosing the name puts it back.
+and its label (its title; see the
+.B label
+request below) added to the menu; choosing it puts the window back.
 .PD
 .PP
 Where an operation waits for a window or a rectangle, the cursor shows which,
@@ -151,6 +153,9 @@ give the location of the pointer when the drag was initiated.
 .TP
 .B !size \fItag\fP \fIreqid\fP
 Interactively resize window \fItag\fP.
+.TP
+.B label \fItext\fP
+Set the window's label, its title, as shown in the menu of hidden windows.
 .TP
 .B embedded
 Refused:

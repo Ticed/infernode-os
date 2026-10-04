@@ -234,6 +234,7 @@ init(ctxt: ref Draw->Context, argv: list of string)
 		if(rc == nil){
 			c.remove();
 			forgethidden(c);
+			setclientlabel(c, nil);
 			if(c == ptrfocus)
 				ptrfocus = nil;
 			if(c == kbdfocus)
@@ -397,6 +398,12 @@ handlerequest(win: ref Wmclient->Window, wmctxt: ref Wmcontext, c: ref Client, r
 		}
 	"fixedorigin" =>
 		c.flags |= Fixedorigin;
+	"label" =>
+		# label text: the window's title, as rio's /dev/label; shown in
+		# the menu of hidden windows
+		if(n != 2)
+			return "bad arg count";
+		setclientlabel(c, hd tl args);
 	"embedded" =>
 		# no: wm/wm places windows and leaves the drawing of their
 		# frames to the clients (wmlib->embedded).  A client that asks
@@ -976,7 +983,7 @@ button3menu(wmctxt: ref Wmcontext, clientctxt: ref Draw->Context, p: ref Pointer
 	items[0:] = menu3;
 	i := len menu3;
 	for(hl := hidden; hl != nil; hl = tl hl)
-		items[i++] = "window " + string (hd hl).id;
+		items[i++] = clientlabel(hd hl);
 	mc := ref Mousectl(wmctxt.ptr, p.buttons, p.xy, p.msec);
 	n := menuhit->menuhit(3, mc, ref Menu(items, nil, 0), nil);
 	# a click that never moved chooses nothing: the menu opens under
@@ -1153,6 +1160,28 @@ unhide(c: ref Client)
 	}
 	c.top();
 	setkbdfocus(c);
+}
+
+# Window labels (rio's /dev/label), from the clients' "label" requests.
+labels: list of (ref Client, string);
+
+setclientlabel(c: ref Client, l: string)
+{
+	nl: list of (ref Client, string);
+	for(ll := labels; ll != nil; ll = tl ll)
+		if((hd ll).t0 != c)
+			nl = hd ll :: nl;
+	if(l != nil)
+		nl = (c, l) :: nl;
+	labels = nl;
+}
+
+clientlabel(c: ref Client): string
+{
+	for(ll := labels; ll != nil; ll = tl ll)
+		if((hd ll).t0 == c)
+			return (hd ll).t1;
+	return "window " + string c.id;
 }
 
 # A gone client is no longer hidden.
