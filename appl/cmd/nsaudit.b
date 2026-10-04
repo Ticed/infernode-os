@@ -598,7 +598,8 @@ tmpVeltroInternalGrant(p: string): int
 
 appIpcControlGrant(p: string): int
 {
-	return p == "/tmp/veltro/browser" || prefix(p, "/tmp/veltro/browser/") ||
+	return p == "/mnt/charon" || prefix(p, "/mnt/charon/") ||
+		p == "/tmp/veltro/browser" || prefix(p, "/tmp/veltro/browser/") ||
 		p == "/tmp/veltro/editor" || prefix(p, "/tmp/veltro/editor/") ||
 		p == "/tmp/veltro/shell" || prefix(p, "/tmp/veltro/shell/") ||
 		p == "/tmp/veltro/fractal" || prefix(p, "/tmp/veltro/fractal/") ||

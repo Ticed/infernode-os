@@ -24,6 +24,12 @@ include "string.m";
 include "webclient.m";
 include "publicnet.m";
 	publicnet: Publicnet;
+include "brotli.m";
+	brotli: Brotli;
+include "filter.m";
+	inflate: Filter;
+include "daytime.m";
+	daytime: Daytime;
 
 MAXREDIRECTS: con 10;
 
@@ -157,25 +163,103 @@ tlswritepump(conn: ref Conn, fd: ref Sys->FD)
 
 request(method, requrl: string, hdrs: list of Header, body: array of byte): (ref Response, string)
 {
-	return request0(method, requrl, hdrs, body, 0);
+	return request0(method, requrl, hdrs, body, 0, nil);
 }
 
 requestpublic(method, requrl: string, hdrs: list of Header, body: array of byte): (ref Response, string)
 {
-	return request0(method, requrl, hdrs, body, 1);
+	return request0(method, requrl, hdrs, body, 1, nil);
+}
+
+requestjar(method, requrl: string, hdrs: list of Header, body: array of byte, jar: ref Jar): (ref Response, string)
+{
+	(resp, err) := request0(method, requrl, hdrs, body, 0, jar);
+	if(resp != nil && resp.body != nil) {
+		ce := str->tolower(resp.hdrval("Content-Encoding"));
+		case ce {
+		"gzip" or "x-gzip" =>
+			if((b := decompress(resp.body, "h")) != nil)
+				resp.body = b;
+		"deflate" =>
+			# servers send both zlib-wrapped and raw deflate
+			if((b := decompress(resp.body, "z")) != nil)
+				resp.body = b;
+			else if((b = decompress(resp.body, "")) != nil)
+				resp.body = b;
+		"br" =>
+			if(brotli == nil)
+				brotli = load Brotli Brotli->PATH;
+			if(brotli != nil) {
+				(b, nil) := brotli->decompress(resp.body, -1);
+				if(b != nil)
+					resp.body = b;
+			}
+		}
+	}
+	return (resp, err);
+}
+
+# Inflate data: param "h" for a gzip stream, "z" for zlib, "" for raw.
+decompress(data: array of byte, param: string): array of byte
+{
+	if(inflate == nil) {
+		inflate = load Filter Filter->INFLATEPATH;
+		if(inflate == nil)
+			return nil;
+		inflate->init();
+	}
+	rq := inflate->start(param);
+	out: list of array of byte;
+	total := 0;
+	in := 0;
+	for(;;) {
+		pick m := <-rq {
+		Start =>
+			;
+		Fill =>
+			n := len data - in;
+			if(n > len m.buf)
+				n = len m.buf;
+			m.buf[0:] = data[in:in+n];
+			in += n;
+			m.reply <-= n;
+		Result =>
+			b := array[len m.buf] of byte;
+			b[0:] = m.buf;
+			out = b :: out;
+			total += len b;
+			m.reply <-= 0;
+			if(total > MAXBODY)
+				return nil;
+		Info =>
+			;
+		Finished =>
+			return concatchunks(out, total);
+		Error =>
+			return nil;
+		}
+	}
 }
 
 # Revalidates every redirect target. Public mode resolves first and dials the
 # exact validated address, preventing redirect and DNS-rebinding SSRF.
-request0(method, requrl: string, hdrs: list of Header, body: array of byte, public: int): (ref Response, string)
+request0(method, requrl: string, hdrs: list of Header, body: array of byte, public: int, jar: ref Jar): (ref Response, string)
 {
 	for(redir := 0; redir < MAXREDIRECTS; redir++) {
-		verr := validrequesttext(method, requrl, hdrs);
+		rh := hdrs;
+		if(jar != nil && (c := jar.header(requrl)) != nil)
+			rh = Header("Cookie", c) :: rh;
+		verr := validrequesttext(method, requrl, rh);
 		if(verr != nil)
 			return (nil, verr);
-		(resp, err) := dorequest(method, requrl, hdrs, body, public);
+		(resp, err) := dorequest(method, requrl, rh, body, public);
 		if(err != nil)
 			return (nil, err);
+		resp.url = requrl;
+		if(jar != nil)
+			for(h := resp.headers; h != nil; h = tl h)
+				if(str->tolower((hd h).name) == "set-cookie")
+					jar.set(requrl, (hd h).value);
 
 		# Handle redirects
 		case resp.statuscode {
@@ -184,17 +268,13 @@ request0(method, requrl: string, hdrs: list of Header, body: array of byte, publ
 			if(loc == nil)
 				return (resp, nil);
 			oldorigin := schemehost(requrl);
-			# Resolve relative URL
-			if(len loc > 0 && loc[0] == '/')
-				requrl = schemehost(requrl) + loc;
-			else
-				requrl = loc;
+			requrl = resolve(requrl, loc);
 			# Credentials are scoped to the origin selected by the caller. Never
 			# forward them when a redirect changes scheme, host, or port.
 			if(schemehost(requrl) != oldorigin)
 				hdrs = redirectheaders(hdrs);
-			# 303 always changes to GET
-			if(resp.statuscode == 303) {
+			# 303, and 301/302 after a POST, change to GET (as browsers do)
+			if(resp.statuscode == 303 || (resp.statuscode == 301 || resp.statuscode == 302) && method == "POST") {
 				method = "GET";
 				body = nil;
 			}
@@ -203,6 +283,42 @@ request0(method, requrl: string, hdrs: list of Header, body: array of byte, publ
 		}
 	}
 	return (nil, "too many redirects");
+}
+
+# Resolve a reference against a base URL (RFC 3986 §5.2).
+resolve(base, rel: string): string
+{
+	for(i := 0; i < len rel; i++) {
+		c := rel[i];
+		if(c == ':')
+			return rel;
+		if(!(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '+' || c == '-' || c == '.'))
+			break;
+	}
+	sh := schemehost(base);
+	scheme := "";
+	for(i = 0; i < len base; i++)
+		if(base[i] == ':') {
+			scheme = base[0:i];
+			break;
+		}
+	if(len rel >= 2 && rel[0:2] == "//")
+		return scheme + ":" + rel;
+	if(len rel > 0 && rel[0] == '/')
+		return sh + rel;
+	# relative to the base's directory
+	path := base[len sh:];
+	for(i = 0; i < len path; i++)
+		if(path[i] == '?' || path[i] == '#') {
+			path = path[0:i];
+			break;
+		}
+	if(len rel > 0 && rel[0] == '?')
+		return sh + path + rel;
+	for(i = len path - 1; i >= 0; i--)
+		if(path[i] == '/')
+			break;
+	return sh + path[0:i+1] + rel;
 }
 
 validrequesttext(method, requrl: string, hdrs: list of Header): string
@@ -409,13 +525,18 @@ buildrequest(method: string, u: ref ParsedUrl, host: string,
 	req := method + " " + path + " HTTP/1.1\r\n";
 	req += "Host: " + host + "\r\n";
 	req += "Connection: close\r\n";
-	req += "User-Agent: Infernode/1.0\r\n";
+	ua := "Infernode/1.0";
+	for(h := hdrs; h != nil; h = tl h)
+		if(str->tolower((hd h).name) == "user-agent")
+			ua = nil;	# the caller's
+	if(ua != nil)
+		req += "User-Agent: " + ua + "\r\n";
 
 	if(body != nil && len body > 0)
 		req += "Content-Length: " + string len body + "\r\n";
 
 	# Add user headers
-	for(h := hdrs; h != nil; h = tl h) {
+	for(h = hdrs; h != nil; h = tl h) {
 		hdr := hd h;
 		req += hdr.name + ": " + hdr.value + "\r\n";
 	}
@@ -614,7 +735,7 @@ parseresponse(hdrstr: string): (ref Response, int, string)
 	}
 	bodystart += 2;	# past final \r\n
 
-	resp := ref Response(code, status, headers, nil);
+	resp := ref Response(code, status, headers, nil, nil);
 	return (resp, bodystart, nil);
 }
 
@@ -789,4 +910,287 @@ concatchunks(chunks: list of array of byte, total: int): array of byte
 		off += len chunk;
 	}
 	return result;
+}
+
+# ---- cookies (RFC 6265 §5) ----
+
+Jar.new(): ref Jar
+{
+	return ref Jar(nil, chan[1] of int);
+}
+
+now(): int
+{
+	if(daytime == nil)
+		daytime = load Daytime Daytime->PATH;
+	if(daytime == nil)
+		return 0;
+	return daytime->now();
+}
+
+# (scheme, host, path) of a URL, host lower case
+urlparts(u: string): (string, string, string)
+{
+	pu := url->makeurl(u);
+	if(pu == nil)
+		return (nil, nil, nil);
+	path := pu.pstart + pu.path;
+	if(path == "")
+		path = "/";
+	return (url->schemes[pu.scheme], str->tolower(pu.host), path);
+}
+
+domainmatch(host, domain: string): int
+{
+	if(host == domain)
+		return 1;
+	n := len host - len domain;
+	return n > 0 && host[n:] == domain && host[n-1] == '.' && !isip(host);
+}
+
+isip(h: string): int
+{
+	for(i := 0; i < len h; i++)
+		if(!(h[i] >= '0' && h[i] <= '9' || h[i] == '.' || h[i] == ':'))
+			return 0;
+	return 1;
+}
+
+pathmatch(rpath, cpath: string): int
+{
+	if(rpath == cpath)
+		return 1;
+	if(len rpath > len cpath && rpath[0:len cpath] == cpath)
+		return cpath[len cpath - 1] == '/' || rpath[len cpath] == '/';
+	return 0;
+}
+
+# the default path: the request path up to its last '/'
+defaultpath(p: string): string
+{
+	if(p == "" || p[0] != '/')
+		return "/";
+	for(i := len p - 1; i > 0; i--)
+		if(p[i] == '/')
+			return p[0:i];
+	return "/";
+}
+
+Jar.header(j: self ref Jar, u: string): string
+{
+	j.lk <-= 1;
+	r := jarheader(j, u);
+	<-j.lk;
+	return r;
+}
+
+jarheader(j: ref Jar, u: string): string
+{
+	(scheme, host, path) := urlparts(u);
+	if(host == nil)
+		return nil;
+	t := now();
+	r := "";
+	keep: list of ref Cookie;
+	for(l := j.cookies; l != nil; l = tl l) {
+		c := hd l;
+		if(c.expires != 0 && c.expires <= t)
+			continue;	# expired: dropped
+		keep = c :: keep;
+		if(c.hostonly && host != c.domain || !c.hostonly && !domainmatch(host, c.domain))
+			continue;
+		if(!pathmatch(path, c.path))
+			continue;
+		if(c.secure && scheme != "https")
+			continue;
+		if(r != "")
+			r += "; ";
+		r += c.name + "=" + c.value;
+	}
+	j.cookies = nil;
+	for(; keep != nil; keep = tl keep)
+		j.cookies = hd keep :: j.cookies;
+	if(r == "")
+		return nil;
+	return r;
+}
+
+Jar.set(j: self ref Jar, u, sc: string)
+{
+	j.lk <-= 1;
+	jarset(j, u, sc);
+	<-j.lk;
+}
+
+jarset(j: ref Jar, u, sc: string)
+{
+	(scheme, host, path) := urlparts(u);
+	if(host == nil)
+		return;
+	(nil, parts) := sys->tokenize(sc, ";");
+	if(parts == nil)
+		return;
+	nv := trimsp(hd parts);
+	eq := -1;
+	for(i := 0; i < len nv; i++)
+		if(nv[i] == '=') {
+			eq = i;
+			break;
+		}
+	if(eq <= 0)
+		return;
+	c := ref Cookie(trimsp(nv[0:eq]), trimsp(nv[eq+1:]), host, defaultpath(path), 1, 0, 0, 0);
+	maxage := -1;
+	hasmaxage := 0;
+	for(parts = tl parts; parts != nil; parts = tl parts) {
+		a := trimsp(hd parts);
+		k := a;
+		v := "";
+		for(i = 0; i < len a; i++)
+			if(a[i] == '=') {
+				k = trimsp(a[0:i]);
+				v = trimsp(a[i+1:]);
+				break;
+			}
+		case str->tolower(k) {
+		"domain" =>
+			d := str->tolower(v);
+			if(len d > 0 && d[0] == '.')
+				d = d[1:];
+			if(d == "")
+				break;
+			if(!domainmatch(host, d))
+				return;	# a cookie for some other site
+			c.domain = d;
+			c.hostonly = 0;
+		"path" =>
+			if(len v > 0 && v[0] == '/')
+				c.path = v;
+		"max-age" =>
+			hasmaxage = 1;
+			maxage = int v;
+		"expires" =>
+			if(!hasmaxage && now() != 0) {
+				tm := daytime->string2tm(v);
+				if(tm != nil)
+					c.expires = daytime->tm2epoch(tm);
+			}
+		"secure" =>
+			c.secure = 1;
+		"httponly" =>
+			c.httponly = 1;
+		}
+	}
+	if(hasmaxage) {
+		if(maxage <= 0)
+			c.expires = 1;	# in the past: delete
+		else
+			c.expires = now() + maxage;
+	}
+	if(c.secure && scheme != "https")
+		return;
+	# replace any cookie with the same name, domain and path
+	keep: list of ref Cookie;
+	for(l := j.cookies; l != nil; l = tl l) {
+		o := hd l;
+		if(o.name == c.name && o.domain == c.domain && o.path == c.path)
+			continue;
+		keep = o :: keep;
+	}
+	if(c.expires == 0 || c.expires > now())
+		keep = c :: keep;
+	j.cookies = nil;
+	for(; keep != nil; keep = tl keep)
+		j.cookies = hd keep :: j.cookies;
+}
+
+Jar.text(j: self ref Jar): string
+{
+	j.lk <-= 1;
+	r := jartext(j);
+	<-j.lk;
+	return r;
+}
+
+jartext(j: ref Jar): string
+{
+	s := "";
+	for(l := j.cookies; l != nil; l = tl l) {
+		c := hd l;
+		s += sys->sprint("%s %s %s=%s %d %d %d %d\n", c.domain, c.path, c.name, c.value,
+			c.expires, c.secure, c.httponly, c.hostonly);
+	}
+	return s;
+}
+
+Jar.add(j: self ref Jar, line: string): string
+{
+	j.lk <-= 1;
+	r := jaradd(j, line);
+	<-j.lk;
+	return r;
+}
+
+jaradd(j: ref Jar, line: string): string
+{
+	(n, f) := sys->tokenize(line, " \t");
+	if(n < 3)
+		return "bad cookie line: want domain path name=value [expires secure httponly hostonly]";
+	dom := str->tolower(hd f);
+	path := hd tl f;
+	nv := hd tl tl f;
+	f = tl tl tl f;
+	for(i := 0; i < len nv; i++)
+		if(nv[i] == '=')
+			break;
+	if(i == 0 || i == len nv)
+		return "bad cookie: want name=value";
+	c := ref Cookie(nv[0:i], nv[i+1:], dom, path, 0, 0, 0, 0);
+	if(f != nil) {
+		c.expires = int hd f;
+		f = tl f;
+	}
+	if(f != nil) {
+		c.secure = int hd f;
+		f = tl f;
+	}
+	if(f != nil) {
+		c.httponly = int hd f;
+		f = tl f;
+	}
+	if(f != nil)
+		c.hostonly = int hd f;
+	keep: list of ref Cookie;
+	for(l := j.cookies; l != nil; l = tl l) {
+		o := hd l;
+		if(!(o.name == c.name && o.domain == c.domain && o.path == c.path))
+			keep = o :: keep;
+	}
+	j.cookies = c :: nil;
+	for(; keep != nil; keep = tl keep)
+		j.cookies = hd keep :: j.cookies;
+	return nil;
+}
+
+Jar.clear(j: self ref Jar)
+{
+	j.lk <-= 1;
+	jarclear(j);
+	<-j.lk;
+}
+
+jarclear(j: ref Jar)
+{
+	j.cookies = nil;
+}
+
+trimsp(s: string): string
+{
+	i := 0;
+	while(i < len s && (s[i] == ' ' || s[i] == '\t'))
+		i++;
+	e := len s;
+	while(e > i && (s[e-1] == ' ' || s[e-1] == '\t'))
+		e--;
+	return s[i:e];
 }

@@ -1604,6 +1604,7 @@ setconfig(argl: list of string)
 	config.nocache = 0;
 	config.maxstale = 0;
 	config.headless = 0;
+	config.rendercrop = 1;
 	config.imagelvl = ImgFull;
 	config.imagecachenum = 120;
 	config.imagecachemem = 100000000;	# 100Meg, will get lowered later
@@ -1783,6 +1784,10 @@ setopt(key: string, val: string) : int
 		config.doacme = v;
 	"render" =>
 		config.dorender = v;
+	"renderout" =>
+		config.renderout = val;
+	"rendercrop" =>
+		config.rendercrop = v;
 	"headless" =>
 		config.headless = v;
 	"doscripts" =>

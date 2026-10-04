@@ -87,6 +87,10 @@ render(data: array of byte, hint: string,
 
 	if(width <= 0)
 		width = 800;
+	# Charon's render canvas is exactly defaultwidth x defaultheight;
+	# keep capturing at least a screenful, as before it was sized explicitly.
+	if(height < display.image.r.dy())
+		height = display.image.r.dy();
 
 	# Write HTML to temp file
 	fd := sys->create(RENDERHTML, Sys->OWRITE, 8r600);
@@ -112,6 +116,7 @@ render(data: array of byte, hint: string,
 		:: "-render" :: "1"
 		:: "-doacme" :: "1"
 		:: "-defaultwidth" :: string width
+		:: "-defaultheight" :: string height
 		:: "-doscripts" :: "0"
 		:: "-imagelvl" :: "0"
 		:: "file://" + RENDERHTML

@@ -1145,7 +1145,8 @@ appipccontrolpath(path: string): int
 {
 	# App IPC roots are controlled through their fixed-function tools. A raw
 	# path grant would let generic filesystem/shell tools drive the app protocol.
-	return path == "/tmp/veltro/browser" || prefix(path, "/tmp/veltro/browser/") ||
+	return path == "/mnt/charon" || prefix(path, "/mnt/charon/") ||
+		path == "/tmp/veltro/browser" || prefix(path, "/tmp/veltro/browser/") ||
 		path == "/tmp/veltro/editor" || prefix(path, "/tmp/veltro/editor/") ||
 		path == "/tmp/veltro/shell" || prefix(path, "/tmp/veltro/shell/") ||
 		path == "/tmp/veltro/fractal" || prefix(path, "/tmp/veltro/fractal/") ||
@@ -1157,7 +1158,7 @@ appipctoolpath(path: string, tools: list of string): int
 	# These are not user-delegatable filesystem grants. tools9p derives them
 	# only for the matching fixed-function tool invocation, so generic tools in
 	# the same server cannot reuse them.
-	if((path == "/tmp/veltro/browser" || prefix(path, "/tmp/veltro/browser/")) &&
+	if((path == "/mnt/charon" || prefix(path, "/mnt/charon/")) &&
 	   inlist("charon", tools))
 		return 1;
 	if((path == "/tmp/veltro/editor" || prefix(path, "/tmp/veltro/editor/")) &&

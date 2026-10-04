@@ -18,6 +18,8 @@
 #include "io.h"
 #include "ureg.h"
 #include "fns.h"
+#include "interp.h"
+#include "raise.h"
 
 /* kernel image bounds, from the linker script */
 extern char _start[], end[];
@@ -338,6 +340,48 @@ trap(Ureg *u)
 		probefault[m->machno] = 1;
 		u->pc += 4;
 		return;
+	}
+
+	/*
+	 * A nil dereference in JIT-compiled Dis code is the program's fault,
+	 * not the kernel's: it raises "dereference of nil" in that program,
+	 * as the hosted emulator's SIGSEGV handler does (emu/Linux/os.c,
+	 * trapmemref). The JIT emits no nil checks of its own; it relies on
+	 * exactly this. Without it, since the JIT was first run on bare
+	 * metal (ba9f31cfb), any nil load in compiled code panicked the
+	 * machine -- found when a remote session ran wm/wm with no display.
+	 *
+	 * Only when all three hold, so nothing else changes:
+	 *  - the process is a Dis process (Interp), the kind disfault serves;
+	 *  - the faulting instruction is JIT code: above the kernel image,
+	 *    in the heap. A fault in the kernel's own C code may hold locks,
+	 *    and unwinding past one would hang the machine later, so those
+	 *    still panic;
+	 *  - the address is a nil reference: -1 (Dis H) or below 512, the
+	 *    same rule as the hosted emulator's isnilref.
+	 *
+	 * The frame is on the faulting process's own kernel stack, so the
+	 * error() inside disfault unwinds to the Dis scheduler's label above
+	 * it, like any error raised in that process. Exception entry masked
+	 * interrupts; the interrupted code's mask (SPSR bits 9:6, the same
+	 * positions as DAIF) is restored first, so the program carries on
+	 * with the interrupt state it faulted in.
+	 */
+	if(ec == 0x25 && up != nil && up->type == Interp && u->pc >= (uintptr)end
+	&& (u->far == ~(u64int)0 || u->far < 512)){
+		splx((int)(u->psr & 0x3C0));
+		/*
+		 * Compiled code does not keep R.PC current instruction by
+		 * instruction; the handler search (os/port/exception.c) maps
+		 * R.PC back to a Dis instruction, and a stale one is outside
+		 * the exception block, so nothing caught it and the program
+		 * died "Broken". The search takes R.PC as a return address and
+		 * looks one byte back, so it is set just past the faulting
+		 * instruction, inside the same Dis instruction (as the hosted
+		 * emulator's jitfault does).
+		 */
+		R.PC = (Inst*)(u->pc + 4);
+		disfault(u, exNilref);
 	}
 
 	uartputstr("\n*** unhandled exception ***");
