@@ -61,6 +61,7 @@ toplevel(ctxt: ref Draw->Context, topconfig: string, title: string, buts: int): 
 	readscreenrect(top);
 	c := titlebar->new(top, buts);
 	titlebar->settitle(top, title);
+	wmlib->setlabel(wm, title);
 	# A press on the frame is the window manager's (wm/wm's framehit):
 	# it alone knows where the window really is on the screen.
 	return (top, c);
@@ -218,6 +219,7 @@ recvimage(top: ref Tk->Toplevel, name, reqid: string)
 
 settitle(top: ref Tk->Toplevel, name: string): string
 {
+	wmlib->setlabel(top.ctxt, name);
 	return titlebar->settitle(top, name);
 }
 

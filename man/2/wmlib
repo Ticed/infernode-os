@@ -16,6 +16,7 @@ wmctl:	fn(w: ref Draw->Wmcontext, request: string): (string, ref Draw->Image, st
 
 Border:	con 4;
 embedded:	fn(w: ref Draw->Wmcontext): int;
+setlabel:	fn(w: ref Draw->Wmcontext, label: string);
 snarfput:	fn(buf: string);
 snarfget:	fn(): string;
 
@@ -99,6 +100,18 @@ if so, the window has no frame of its own.
 A window manager that does not know the request, such as
 .IR wm (1),
 leaves the frame to the window.
+.PP
+.B Setlabel
+tells the window manager the window's label, its title, as
+.IR rio (1)'s
+.B /dev/label
+does;
+.IR wm (1)
+names hidden windows by it.
+.IR Tkclient (2)
+and
+.IR wmclient (2)
+send it when a window is made and whenever its title is set.
 .SH FILES
 .TF /chan/snarf
 .TP

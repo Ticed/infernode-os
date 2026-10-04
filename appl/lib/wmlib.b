@@ -253,6 +253,12 @@ embedded(wm: ref Wmcontext): int
 	return sys->fprint(wm.connfd, "embedded") >= 0;
 }
 
+setlabel(wm: ref Wmcontext, label: string)
+{
+	if(wm != nil && wm.connfd != nil && label != nil)
+		sys->fprint(wm.connfd, "label %q", label);
+}
+
 startinput(wm: ref Wmcontext, devs: list of string): string
 {
 	for(; devs != nil; devs = tl devs)
