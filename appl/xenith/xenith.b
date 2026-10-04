@@ -452,7 +452,8 @@ xenithexit(err: string)
 		# Signal preswmloop via wmsrv so it immediately removes the tab — without
 		# this, the ghost tab persists until GC collects the gui module (which holds
 		# the wmclient fd open while xenith's background goroutines are still alive).
-		# Do NOT call gui->killwins() — it halts emu via /dev/sysctl.
+		# (gui->killwins() exits too, but it is for a xenith with a
+		# window of its own.)
 		gui->signalclose();
 		exit;
 	}
