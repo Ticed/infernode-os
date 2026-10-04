@@ -122,6 +122,7 @@ init(ctxt: ref Draw->Context, argv: list of string)
 	}
 	wmsize := startwmsize();
 	fakekbd = chan of string;
+	exitc := chan of int;
 
 	# UI test driver: synthetic input via /chan/uitest, so interaction
 	# is scriptable and CI-testable (tests/host).  Writes, one command
@@ -139,9 +140,17 @@ init(ctxt: ref Draw->Context, argv: list of string)
 		# XXX could implement "pleaseexit" in order that
 		# applications can raise a warning message before
 		# they're unceremoniously dumped.
-		if(c == "exit")
+		if(c == "exit"){
+			# tell every window, hidden ones too, and go once they
+			# have: exiting at once killed the minders still holding
+			# their "exit", leaving the windows' programs running
 			for(z := wmsrv->top(); z != nil; z = z.znext)
 				z.ctl <-= "exit";
+			for(hl := hidden; hl != nil; hl = tl hl)
+				(hd hl).ctl <-= "exit";
+			spawn exitwhenempty(exitc);
+			continue;
+		}
 		if(c == "retheme"){
 			# a live theme switch (Lucifer sends it to the apps it
 			# hosts, wm/wm among them): pass it on to every window
@@ -155,6 +164,8 @@ init(ctxt: ref Draw->Context, argv: list of string)
 		wmclient->win.wmctl(c);
 		if(win.image != screen.image)
 			reshaped(win);
+	<-exitc =>
+		wmclient->win.wmctl("exit");
 	c := <-wmctxt.kbd or
 	c = int <-fakekbd =>
 		if(kbdfocus != nil)
@@ -1090,6 +1101,15 @@ sweepout(ptr: chan of ref Pointer): Rect
 tellexit(c: ref Client)
 {
 	c.ctl <-= "exit";
+}
+
+# exitwhenempty: tell the main loop to exit once every window has gone
+# (their disconnections are handled there), or after two seconds.
+exitwhenempty(exitc: chan of int)
+{
+	for(t := 0; t < 20 && (wmsrv->top() != nil || hidden != nil); t++)
+		sys->sleep(100);
+	exitc <-= 1;
 }
 
 tellctl(ctl: chan of string, s: string)
