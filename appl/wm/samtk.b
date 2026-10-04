@@ -1,5 +1,26 @@
 implement Samtk;
 
+#
+# The terminal's window: samterm's flayer.c, menu.c and scroll.c, and
+# the mouse half of main.c, over Tk.  Plan 9's sources are the
+# reference; the functions here carry their names.
+#
+# sam is a single window.  Each window on a file is a layer (flayer)
+# inside it; layers overlap, and the list of them front to back is
+# ctxt.order (sam's llist).  The window is a Tk toplevel holding one
+# canvas, .c; each layer is a frame, .c.f<id>, embedded in the canvas
+# as a window item tagged f<id>, laid out as flrect does: a margin of
+# FLMARGIN (its outer pixel, or all of it on the current layer, in the
+# border colour), the scroll bar, a gap, and the text.
+#
+# The pointer belongs to samterm, not to Tk.  pump() sees every event
+# first: it makes a layer current, works the current layer's scroll
+# bar and posts the menus as samterm's main loop does, and hands Tk
+# only button 1 in the current layer's text (to select) and the menus
+# once posted.  While the main loop sweeps a rectangle or waits for a
+# layer to be picked (ctxt.mode == Grab), every event goes to it.
+#
+
 include "sys.m";
 sys: Sys;
 sprint, FD: import sys;
@@ -9,7 +30,7 @@ draw:	Draw;
 Point, Rect, Font: import draw;
 
 include "samterm.m";
-Context, Flayer, Text, Section: import Samterm;
+Context, Flayer, Text, Section, Menu: import Samterm;
 
 include "tkclient.m";
 
@@ -22,13 +43,13 @@ ctxt: ref Context;
 tk:	Tk;
 tkclient:	Tkclient;
 
-# sam is a single window, as in Plan 9.  The command window takes the
-# top fifth; every other window on a file is a layer the user sweeps out
-# with button 3 (a click instead of a sweep takes the space below the
-# command window).  Layers overlap and the current one is drawn on top
-# with a heavy border.  Here the window is a Tk toplevel holding one
-# canvas, .c, and each layer is a frame, .c.f<id>, embedded in it as a
-# canvas window item tagged f<id>.
+# samterm/flayer.h
+FLMARGIN:	con 4;
+FLSCROLLWID:	con 12;
+FLGAP:		con 4;
+
+# libdraw's getrect: the width of the rubber band
+Borderwidth:	con 4;
 
 tktop := array[] of {
 	"canvas .c -borderwidth 0 -width 640 -height 480",
@@ -37,19 +58,22 @@ tktop := array[] of {
 	"pack propagate . 0",
 	# Tk delivers <Configure> to pack slaves, not to the toplevel
 	"bind .c <Configure> {send wmctl resize}",
+	"menu .m2",
+	"menu .m2c",
+	"menu .m3",
 	"update",
 };
 
-BORDER:	con 2;		# a layer's frame; coloured to show the current one
-MINDX:	con 100;	# smallest layer a sweep may make, as in sam
-MINDY:	con 40;
-
-# colours from the Lucifer theme ("" keeps Tk's defaults)
-textcolours := "";
-canvasbg := "";
-curborder := "#000000ff";	# the current layer
-border := "#808080ff";		# every other layer
-sweepcolour := "#ff0000ff";
+# Colours.  samterm's flstart gives file layers (maincols) and the
+# command window (cmdcols) each a background, a border (also the scroll
+# bar) and a highlight; these come from the Lucifer theme, the halo
+# theme's editbg and codebg being exactly sam's.
+NCOL:	con 4;
+BACK, BORD, HIGH, TEXT: con iota;
+maincols := array[NCOL] of {"#ffffeaff", "#99994cff", "#eeee9eff", "#000000ff"};
+cmdcols := array[NCOL] of {"#eaffeaff", "#8888ccff", "#9eeeeeff", "#000000ff"};
+screenbg := "#ffffffff";
+red := "#ff0000ff";
 
 col(rgba: int): string
 {
@@ -69,15 +93,11 @@ init(c: ref Context)
 	lucitheme := load Lucitheme Lucitheme->PATH;
 	if (lucitheme != nil) {
 		th := lucitheme->gettheme();
-		textcolours = sprint(" -background %s -foreground %s -selectbackground %s -selectforeground %s",
-			col(th.editbg), col(th.edittext), col(th.accent), col(th.editbg));
-		canvasbg = col(th.bg);
-		curborder = col(th.accent);
-		border = col(th.border);
-		sweepcolour = col(th.accent);
+		maincols = array[] of {col(th.editbg), col(th.accent), col(th.accent), col(th.edittext)};
+		cmdcols = array[] of {col(th.codebg), col(th.diagborder), col(th.diagborder), col(th.edittext)};
+		screenbg = col(th.bg);
+		red = col(th.red);
 	}
-
-	scrollpos = scrolllines = 0;
 
 	# both loaders of Samtk call init; the window is made once
 	if (ctxt.top == nil)
@@ -90,12 +110,14 @@ mktop()
 	(t, wmctl) := tkclient->toplevel(ctxt.ctxt, nil, "Sam", Tkclient->Appl);
 	ctxt.top = t;
 	ctxt.wmctl = wmctl;
-	ctxt.sweepc = chan[16] of string;
+	ctxt.mousec = chan[64] of string;
+	ctxt.menu2c = chan[4] of string;
+	ctxt.menu3c = chan[4] of string;
 	tk->namechan(t, ctxt.wmctl, "wmctl");
-	tk->namechan(t, ctxt.sweepc, "sweep");
+	tk->namechan(t, ctxt.menu2c, "menu2");
+	tk->namechan(t, ctxt.menu3c, "menu3");
 	tkcmds(t, tktop);
-	if (canvasbg != "")
-		tk->cmd(t, ".c configure -background " + canvasbg);
+	tk->cmd(t, ".c configure -background " + screenbg);
 
 	# Appl-mode toplevels are created hidden; reveal it and wire up
 	# keyboard/mouse, or the window never appears and takes no input.
@@ -113,6 +135,11 @@ canvassize(): Point
 		int tk->cmd(ctxt.top, ".c cget -actheight"));
 }
 
+screenr(): Rect
+{
+	return ((0, 0), canvassize());
+}
+
 # issue a batch of Tk commands to one toplevel; formerly tkclient->tkcmds
 tkcmds(t: ref Tk->Toplevel, cmds: array of string)
 {
@@ -123,43 +150,49 @@ tkcmds(t: ref Tk->Toplevel, cmds: array of string)
 	}
 }
 
-# A new layer.  tp is set for the command window, which gets its own
-# button 2 menu; the first one made is placed at the top of the window,
-# any other is swept out by the user, as in sam.
-newflayer(tag, tp: int): ref Flayer
+cols(fl: ref Flayer): array of string
+{
+	if (ctxt.cmd == nil || fl.tag == ctxt.cmd.tag)
+		return cmdcols;
+	return maincols;
+}
+
+# flnew and flinit: a layer at r, in front of the others, not current.
+# tp is set for the command window, which has its own colours.
+newflayer(tag, tp: int, r: Rect): ref Flayer
 {
 	t := ctxt.top;
-	r: Rect;
-	if (tp && ctxt.cmd == nil)
-		r = cmdrect();
-	else
-		r = getrect();
-
 	id := ctxt.nextid++;
-	w := ".c.f" + string id;
+	o := ".c.f" + string id;
+	w := o + ".i";
 	n := chanadd();
-	tk->namechan(t, ctxt.menu3sel[n], "menu3_" + string id);
-	tk->namechan(t, ctxt.menu2sel[n], "menu2_" + string id);
 	tk->namechan(t, ctxt.buttonsel[n], "button1_" + string id);
 	tk->namechan(t, ctxt.keysel[n], "keys_" + string id);
-	tk->namechan(t, ctxt.scrollsel[n], "scroll_" + string id);
 
-	tkcmds(t, array[] of {
-		"frame " + w + " -borderwidth " + string BORDER + " -relief flat -background " + border,
-		"scrollbar " + w + ".s -command {send scroll_" + string id + "}",
-		"text " + w + ".t -borderwidth 0" + textcolours,
-		"pack " + w + ".s -side left -fill y",
-		"pack " + w + ".t -fill both -expand 1",
-		sprint(".c create window %d %d -window %s -anchor nw -tags f%d", r.min.x, r.min.y, w, id),
-	});
+	c := maincols;
 	if (tp)
-		mkmenu2c(w, id);
-	else
-		mkmenu2(w, id);
-	mkmenu3(w, id);
-	bindlayer(w, id, 0);
-	if (tp && ctxt.cmd == nil)	# button 3 on the bare canvas
-		tk->cmd(t, "bind .c <ButtonPress-3> {" + w + ".m3 post %X %Y; grab set " + w + ".m3}");
+		c = cmdcols;
+	tkcmds(t, array[] of {
+		# the outer pixel of the margin is always the border colour;
+		# flborder colours the rest of it on the current layer
+		"frame " + o + " -borderwidth 1 -relief flat -background " + c[BORD],
+		"frame " + w + " -borderwidth " + string (FLMARGIN-1) + " -relief flat -background " + c[BACK],
+		"canvas " + w + ".s -borderwidth 0 -width " + string FLSCROLLWID + " -height 1 -background " + c[BORD],
+		"frame " + w + ".g -borderwidth 0 -width " + string FLGAP + " -height 1 -background " + c[BACK],
+		"text " + w + ".t -borderwidth 0 -width 1 -height 1 -background " + c[BACK] + " -foreground " + c[TEXT]
+			+ " -selectbackground " + c[HIGH] + " -selectforeground " + c[TEXT],
+		"pack " + w + " -fill both -expand 1",
+		"pack " + w + ".s -side left -fill y",
+		"pack " + w + ".g -side left -fill y",
+		"pack " + w + ".t -side left -fill both -expand 1",
+		sprint(".c create window %d %d -window %s -anchor nw -tags f%d", r.min.x, r.min.y, o, id),
+		"bind " + w + ".t <Key> {send keys_" + string id + " {%A}}",
+		"bind " + w + ".t <Key-\b> {send keys_" + string id + " {%A}}",
+		"bind " + w + ".t <ButtonPress-1> +{send button1_" + string id + " %s %b %x %y}",
+		"bind " + w + ".t <ButtonRelease-1> +{send button1_" + string id + " %s %b %x %y}",
+		"bind " + w + ".t <Double-ButtonPress-1> {send button1_" + string id + " 2 %b %x %y}",
+		"bind " + w + ".t <Double-ButtonRelease-1> {send button1_" + string id + " 3 %b %x %y}",
+	});
 
 	f := ref Flayer(
 		tag,		# tag
@@ -176,48 +209,13 @@ newflayer(tag, tp: int): ref Flayer
 		w,		# w
 		r		# r
 	);
-	place(f, r);
 	ctxt.flayers[n] = f;
+	ctxt.order = f :: ctxt.order;	# llinsert
+	flrect(f, r);
+	flborder(f, 0);
 	sys->fprint(ctxt.logfd, "newflayer: %s at %d %d %d %d, %d lines\n",
-		w, r.min.x, r.min.y, r.max.x, r.max.y, f.lines);
+		w, f.r.min.x, f.r.min.y, f.r.max.x, f.r.max.y, f.lines);
 	return f;
-}
-
-# the bindings of a layer's text and scrollbar
-bindlayer(w: string, id: int, sweeping: int)
-{
-	t := ctxt.top;
-	sid := string id;
-	tkcmds(t, array[] of {
-		"bind " + w + ".t <Key> {send keys_" + sid + " {%A}}",
-		"bind " + w + ".t <Key-\b> {send keys_" + sid + " {%A}}",
-		"bind " + w + ".s <ButtonRelease-1> +{send scroll_" + sid + " %s %b %y}",
-		"bind " + w + ".t <ButtonPress-1> +{send button1_" + sid + " %s %b %x %y}",
-		"bind " + w + ".t <ButtonRelease-1> +{send button1_" + sid + " %s %b %x %y}",
-		"bind " + w + ".t <Double-ButtonPress-1> {send button1_" + sid + " 2 %b %x %y}",
-		"bind " + w + ".t <Double-ButtonRelease-1> {send button1_" + sid + " 3 %b %x %y}",
-		"bind " + w + ".t <ButtonPress-2> {" + w + ".m2 post %X %Y; grab set " + w + ".m2}",
-	});
-	sweepbind(w + ".t", w + ".m3", sweeping);
-	sweepbind(w + ".s", w + ".m3", sweeping);
-	sweepbind(w, w + ".m3", sweeping);
-}
-
-# Button 3 on w posts menu m, or, while a layer is being swept out,
-# reports to getrect.  Neither text nor scrollbar uses button 3 itself,
-# so these bindings can be replaced and restored freely.
-sweepbind(w, m: string, sweeping: int)
-{
-	t := ctxt.top;
-	if (sweeping) {
-		tk->cmd(t, "bind " + w + " <ButtonPress-3> {send sweep p %X %Y}");
-		tk->cmd(t, "bind " + w + " <Motion-Button-3> {send sweep m %X %Y}");
-		tk->cmd(t, "bind " + w + " <ButtonRelease-3> {send sweep r %X %Y}");
-	} else {
-		tk->cmd(t, "bind " + w + " <ButtonPress-3> {" + m + " post %X %Y; grab set " + m + "}");
-		tk->cmd(t, "bind " + w + " <Motion-Button-3> {}");
-		tk->cmd(t, "bind " + w + " <ButtonRelease-3> {}");
-	}
 }
 
 # the height of a line of text in layer w
@@ -235,171 +233,287 @@ lineheight(w: string): int
 	return h;
 }
 
-# put layer fl at r (canvas coordinates) and size its text to fit
-place(fl: ref Flayer, r: Rect)
+# flrect: put layer fl at r, clipped to the window, and size its text
+flrect(fl: ref Flayer, r: Rect)
 {
+	(r, nil) = r.clip(screenr());
 	fl.r = r;
 	tkcmds(ctxt.top, array[] of {
 		sprint(".c coords f%d %d %d", fl.id, r.min.x, r.min.y),
-		sprint(".c itemconfigure f%d -width %d -height %d", fl.id,
-			r.dx() - 2*BORDER, r.dy() - 2*BORDER),
+		sprint(".c itemconfigure f%d -width %d -height %d", fl.id, r.dx() - 2, r.dy() - 2),
 		"update",
 	});
 	resize(fl);
 }
 
-# The command window's place when sam starts: the top fifth.
-cmdrect(): Rect
+# flclose: the layer goes; the caller sees to which and work
+flclose(fl: ref Flayer)
 {
-	sz := canvassize();
-	ctxt.size = sz;
-	return ((0, 0), (sz.x, sz.y/5));
+	ctxt.order = dellist(ctxt.order, fl);
+	for (i := 0; i < len ctxt.flayers; i++)
+		if (ctxt.flayers[i] == fl) {
+			chandel(i);
+			break;
+		}
+	tkcmds(ctxt.top, array[] of {
+		sprint(".c delete f%d", fl.id),
+		"destroy .c.f" + string fl.id,
+		"update",
+	});
+	fl.t = nil;
 }
 
-# Have the user sweep out a rectangle for a new layer with button 3,
-# as sam's getr does.  A click rather than a sweep takes the whole
-# window less the command window, on the side of it clicked.  Anything
-# too small for a window gets that too: here a layer cannot fail to be
-# made.
-getrect(): Rect
+# flborder: the current layer's margin is all border colour
+flborder(fl: ref Flayer, wide: int)
 {
-	t := ctxt.top;
-	# stale reports from an earlier sweep
+	if (fl == nil || fl.t == nil)
+		return;
+	c := cols(fl);
+	bg := c[BACK];
+	if (wide)
+		bg = c[BORD];
+	tk->cmd(ctxt.top, fl.w + " configure -background " + bg + "; update");
+}
+
+# flwhich: the frontmost layer containing p; the origin means the front one
+flwhich(p: Point): ref Flayer
+{
+	if (p.x == 0 && p.y == 0) {
+		if (ctxt.order != nil)
+			return hd ctxt.order;
+		return nil;
+	}
+	for (l := ctxt.order; l != nil; l = tl l)
+		if (p.in((hd l).r))
+			return hd l;
+	return nil;
+}
+
+# flupfront: bring fl to the front
+flupfront(fl: ref Flayer)
+{
+	ctxt.order = fl :: dellist(ctxt.order, fl);
+	tk->cmd(ctxt.top, sprint(".c raise f%d; update", fl.id));
+}
+
+# main.c's current: nw (or nothing) becomes the layer typing goes to
+current(nw: ref Flayer)
+{
+	if (ctxt.which != nil)
+		flborder(ctxt.which, 0);
+	if (nw != nil) {
+		flupfront(nw);
+		flborder(nw, 1);
+		if ((i := whichtext(nw.tag)) >= 0) {
+			t := ctxt.texts[i];
+			t.flayers = nw :: dellist(t.flayers, nw);	# t->front
+			if (t != ctxt.cmd)
+				ctxt.work = nw;
+		}
+		tk->cmd(ctxt.top, "focus " + nw.w + ".t; update");
+	}
+	ctxt.which = nw;
+}
+
+# flresize: the window changed size; scale every layer with it.
+# Returns 0 if nothing changed.
+flresize(): int
+{
+	dr := screenr();
+	old := ctxt.size;
+	if (dr.dx() <= 0 || dr.dy() <= 0 || dr.max.eq(old))
+		return 0;
+	ctxt.size = dr.max;
+	for (l := ctxt.order; l != nil; l = tl l) {
+		fl := hd l;
+		r := fl.r;
+		if (old.x > 0 && old.y > 0)
+			r = Rect((r.min.x*dr.dx()/old.x, r.min.y*dr.dy()/old.y),
+				(r.max.x*dr.dx()/old.x, r.max.y*dr.dy()/old.y));
+		(r, nil) = r.clip(dr);
+		if (r.dx() < 100)
+			r.min.x = dr.min.x;
+		if (r.dx() < 100)
+			r.max.x = dr.max.x;
+		if (r.dy() < 2*FLMARGIN + fl.lineheigth)
+			r.min.y = dr.min.y;
+		if (r.dy() < 2*FLMARGIN + fl.lineheigth)
+			r.max.y = dr.max.y;
+		flrect(fl, r);
+	}
+	return 1;
+}
+
+# ---- the pointer, while the main loop holds it ----
+
+mbuttons := 0;		# buttons, as of the last event readmouse saw
+
+readmouse(): (int, Point)
+{
+	(n, l) := sys->tokenize(<-ctxt.mousec, " ");
+	if (n != 3)
+		return (mbuttons, (0, 0));
+	mbuttons = int hd l;
+	return (mbuttons, (int hd tl l, int hd tl tl l));
+}
+
+grab()
+{
+	# drop anything left from before
 	drain: for (;;) alt {
-	<-ctxt.sweepc =>
+	<-ctxt.mousec =>
 		;
 	* =>
 		break drain;
 	}
-	sweeping(1);
-	tk->cmd(t, "cursor -bitmap cursor.win; update");
+	mbuttons = ctxt.mbuttons;
+	ctxt.mode = Samterm->Grab;
+}
 
-	p0, p1: Point;
-	down := 0;
-	for (;;) {
-		(n, l) := sys->tokenize(<-ctxt.sweepc, " ");
-		if (n != 3)
-			continue;
-		p := Point(int tk->cmd(t, ".c canvasx " + hd tl l),
-			int tk->cmd(t, ".c canvasy " + hd tl tl l));
-		case hd l {
-		"p" =>
-			p0 = p1 = p;
-			down = 1;
-			tk->cmd(t, sprint(".c create rectangle %d %d %d %d -outline %s -width 2 -tags sweep",
-				p.x, p.y, p.x, p.y, sweepcolour));
-			tk->cmd(t, ".c raise sweep; update");
-			continue;
-		"m" =>
-			if (down) {
-				p1 = p;
-				tk->cmd(t, sprint(".c coords sweep %d %d %d %d; update",
-					p0.x, p0.y, p1.x, p1.y));
-			}
-			continue;
-		"r" =>
-			if (!down)
-				continue;
-			p1 = p;
-		* =>
-			continue;
-		}
-		break;
-	}
-	tk->cmd(t, ".c delete sweep");
-	sweeping(0);
-	if (ctxt.lock)
-		tk->cmd(t, "cursor -bitmap cursor.wait; update");
+ungrab()
+{
+	ctxt.mode = Samterm->Normal;
+}
+
+setcursor(name: string)
+{
+	if (name == "")
+		tk->cmd(ctxt.top, "cursor -default; update");
 	else
-		tk->cmd(t, "cursor -default; update");
-	return sweptrect(Rect(p0, p1).canon());
+		tk->cmd(ctxt.top, "cursor -bitmap " + name + "; update");
 }
 
-sweeping(on: int)
+# samterm's cursor variable: the lock arrow while the host has the lock
+lockcursor()
 {
-	# the bare canvas posts the command window's menu
-	m := ".c.f0.m3";
-	if (ctxt.cmd != nil && ctxt.cmd.flayers != nil)
-		m = (hd ctxt.cmd.flayers).w + ".m3";
-	sweepbind(".c", m, on);
-	for (i := 0; i < len ctxt.flayers; i++) {
-		fl := ctxt.flayers[i];
-		if (fl == nil)
-			continue;
-		sweepbind(fl.w + ".t", fl.w + ".m3", on);
-		sweepbind(fl.w + ".s", fl.w + ".m3", on);
-		sweepbind(fl.w, fl.w + ".m3", on);
-	}
+	if (ctxt.lock)
+		setcursor("cursor.lockarrow");
+	else
+		setcursor("");
 }
 
-# sam's getr: what a sweep from r means
-sweptrect(r: Rect): Rect
+# libdraw's getrect, with button 3: sweep a rectangle.  Any other
+# button abandons it, giving a zero rectangle.
+getrect(): Rect
 {
-	sz := canvassize();
-	screen := Rect((0, 0), sz);
-	if (r.dx() <= 5 && r.dy() <= 5) {
-		p := r.min;
-		r = screen;
-		if (ctxt.cmd != nil && len ctxt.cmd.flayers == 1) {
-			c := (hd ctxt.cmd.flayers).r;
-			if (p.y <= c.min.y)
-				r.max.y = c.min.y;
-			else if (p.y >= c.max.y)
-				r.min.y = c.max.y;
-			if (p.x <= c.min.x)
-				r.max.x = c.min.x;
-			else if (p.x >= c.max.x)
-				r.min.x = c.max.x;
+	t := ctxt.top;
+	but := 4;
+	r, rc: Rect;
+	p: Point;
+	b: int;
+
+	grab();
+	setcursor("cursor.sweep");
+	while (mbuttons)
+		(b, p) = readmouse();
+	cancel := 0;
+	for (;;) {
+		(b, p) = readmouse();
+		if (b & but)
+			break;
+		if (b & (7^but)) {
+			cancel = 1;
+			break;
 		}
 	}
-	(r, nil) = r.clip(screen);
-	if (r.dx() > MINDX && r.dy() > MINDY)
-		return r;
-	# too small: below the command window, or all of it
-	r = screen;
-	if (ctxt.cmd != nil && ctxt.cmd.flayers != nil)
-		r.min.y = (hd ctxt.cmd.flayers).r.max.y;
-	if (r.dx() > MINDX && r.dy() > MINDY)
-		return r;
-	return screen;
-}
-
-# button 3 "resize": sweep a new place for a layer
-reshape(fl: ref Flayer)
-{
-	place(fl, getrect());
-	tk->cmd(ctxt.top, sprint(".c raise f%d; update", fl.id));
-}
-
-# The window changed size: scale every layer with it, as sam does.
-# Returns 0 if nothing moved.
-reshapeall(): int
-{
-	sz := canvassize();
-	old := ctxt.size;
-	if (sz.x <= 0 || sz.y <= 0 || sz.eq(old))
-		return 0;
-	ctxt.size = sz;
-	for (i := 0; i < len ctxt.flayers; i++) {
-		fl := ctxt.flayers[i];
-		if (fl == nil)
-			continue;
-		r := fl.r;
-		if (old.x > 0 && old.y > 0)
-			r = Rect((r.min.x*sz.x/old.x, r.min.y*sz.y/old.y),
-				(r.max.x*sz.x/old.x, r.max.y*sz.y/old.y));
-		place(fl, r);
+	if (!cancel) {
+		r.min = r.max = p;
+		do {
+			rc = r.canon();
+			drawgetrect(rc, 1);
+			(b, p) = readmouse();
+			r.max = p;
+		} while (b == but);
+		drawgetrect(rc, 0);
 	}
-	return 1;
+	setcursor("");
+	if (b & (7^but)) {
+		rc = ((0, 0), (0, 0));
+		while (b)
+			(b, p) = readmouse();
+	}
+	ungrab();
+	tk->cmd(t, "update");
+	return rc;
 }
+
+# the rubber band: Borderwidth pixels inside rc, in red
+drawgetrect(rc: Rect, up: int)
+{
+	t := ctxt.top;
+	if (!up) {
+		tk->cmd(t, ".c delete sweep; update");
+		return;
+	}
+	if (rc.dx() < 2*Borderwidth)
+		rc.max.x = rc.min.x + 2*Borderwidth;
+	if (rc.dy() < 2*Borderwidth)
+		rc.max.y = rc.min.y + 2*Borderwidth;
+	h := Borderwidth/2;
+	if (tk->cmd(t, ".c find withtag sweep") == "")
+		tk->cmd(t, sprint(".c create rectangle 0 0 0 0 -outline %s -width %d -tags sweep", red, Borderwidth));
+	tk->cmd(t, sprint(".c coords sweep %d %d %d %d; .c raise sweep; update",
+		rc.min.x + h, rc.min.y + h, rc.max.x - h, rc.max.y - h));
+}
+
+# main.c's getr: sweep a rectangle for a new layer.  A click takes the
+# whole window or, while the command window has one layer, the part of
+# it on the clicked side of the command window.  Fails if the result is
+# no bigger than 100 by 40.
+getr(): (int, Rect)
+{
+	rp := getrect();
+	scr := screenr();
+	if (rp.max.x && rp.max.x-rp.min.x <= 5 && rp.max.y-rp.min.y <= 5) {
+		p := rp.min;
+		rp = scr;
+		if (ctxt.cmd != nil && len ctxt.cmd.flayers == 1) {
+			r := (hd ctxt.cmd.flayers).r;
+			if (p.y <= r.min.y)
+				rp.max.y = r.min.y;
+			else if (p.y >= r.max.y)
+				rp.min.y = r.max.y;
+			if (p.x <= r.min.x)
+				rp.max.x = r.min.x;
+			else if (p.x >= r.max.x)
+				rp.min.x = r.max.x;
+		}
+	}
+	ok: int;
+	(rp, ok) = rp.clip(scr);
+	return (ok && rp.max.x-rp.min.x > 100 && rp.max.y-rp.min.y > 40, rp);
+}
+
+# menu3hit's choice of layer: the bullseye, then buttons(Down).  The
+# caller acts on the buttons and the point, then calls buttonsup.
+getpick(): (int, Point)
+{
+	grab();
+	setcursor("cursor.bullseye");
+	b: int;
+	p: Point;
+	do
+		(b, p) = readmouse();
+	while (b == 0);
+	return (b, p);
+}
+
+# buttons(Up), and the pointer goes back to Tk
+buttonsup()
+{
+	while (ctxt.mode == Samterm->Grab && mbuttons)
+		readmouse();
+	ungrab();
+	lockcursor();
+}
+
+# ---- menus: menu.c's genmenu2, genmenu2c and genmenu3 ----
 
 menu2str := array [] of {
 	"cut",
 	"paste",
 	"snarf",
 	"look",
-#	"exch",
-	"send",		# storage for last pattern
 };
 
 menu3str := array [] of {
@@ -410,140 +524,151 @@ menu3str := array [] of {
 	"write",
 };
 
-# button 2 in the command window
-mkmenu2c(w: string, id: int)
+paren(s: string): string
 {
-	menus := array [NMENU2+1] of string;
-
-	menus[0] = "menu " + w + ".m2";
-	for (i := 0; i < NMENU2; i++)
-		menus[i+1] = addmenuitem(w + ".m2", "menu2_" + string id, menu2str[i], menu2str[i]);
-	tkcmds(ctxt.top, menus);
+	return "(" + s + ")";
 }
 
-# button 2 in a file: the last entry searches for the last pattern
-mkmenu2(w: string, id: int)
+# rebuild the menus, as samterm generates them each time they are shown
+menus()
 {
-	menus := array [NMENU2+1] of string;
+	t := ctxt.top;
+	locked := ctxt.lock != 0;
+	if (ctxt.which != nil && (j := whichtext(ctxt.which.tag)) >= 0 && ctxt.texts[j].lock)
+		locked = 1;
 
-	menus[0] = "menu " + w + ".m2";
-	for (i := 0; i < NMENU2-1; i++)
-		menus[i+1] = addmenuitem(w + ".m2", "menu2_" + string id, menu2str[i], menu2str[i]);
-	menus[NMENU2] = addmenuitem(w + ".m2", "menu2_" + string id, "/" + lastpat, "search");
-	tkcmds(ctxt.top, menus);
-}
+	m2 := array[NMENU2+1] of string;
+	m2[0] = ".m2 delete 0 end";
+	n := 1;
+	for (i := 0; i < NMENU2; i++) {
+		p: string;
+		if (i == Search) {
+			if (ctxt.pat == nil)
+				break;
+			p = "/" + ctxt.pat;
+		} else
+			p = menu2str[i];
+		if (locked && i != Search && i != Look)
+			p = paren(p);
+		m2[n++] = additem(".m2", "menu2", i, p, menu2cmd(i));
+	}
+	tkcmds(t, m2[0:n]);
 
-# button 3: the commands, then every file
-mkmenu3(w: string, id: int)
-{
-	menus := array [NMENU3+len ctxt.menus+1] of string;
+	m2c := array[NMENU2+1] of string;
+	m2c[0] = ".m2c delete 0 end";
+	for (i = 0; i < NMENU2; i++) {
+		p: string;
+		if (i == Send)
+			p = "send";
+		else
+			p = menu2str[i];
+		if (locked)
+			p = paren(p);
+		m2c[i+1] = additem(".m2c", "menu2", i, p, menu2cmd(i));
+	}
+	tkcmds(t, m2c);
 
-	menus[0] = "menu " + w + ".m3";
-	for (i := 0; i < NMENU3; i++)
-		menus[i+1] = addmenuitem(w + ".m3", "menu3_" + string id, menu3str[i], menu3str[i]);
+	m3 := array[1+NMENU3+len ctxt.menus] of string;
+	m3[0] = ".m3 delete 0 end";
+	for (i = 0; i < NMENU3; i++) {
+		p := menu3str[i];
+		if (ctxt.lock)
+			p = paren(p);
+		m3[i+1] = additem(".m3", "menu3", i, p, menu3str[i]);
+	}
 	for (i = 0; i < len ctxt.menus; i++)
-		menus[i+NMENU3+1] = addmenuitem(w + ".m3", "menu3_" + string id,
-			filelabel(i), "file " + string ctxt.menus[i].tag);
-	tkcmds(ctxt.top, menus);
+		m3[1+NMENU3+i] = additem(".m3", "menu3", NMENU3+i, genmenu3(i),
+			"file " + string ctxt.menus[i].tag);
+	tkcmds(t, m3);
 }
 
-addmenuitem(m, c, label, cmd: string): string
+menu2cmd(i: int): string
 {
-	return sprint("%s add command -text %s -command {send %s %s}",
-		m, tk->quote(label), c, cmd);
+	case i {
+	Cut =>	return "cut";
+	Paste =>	return "paste";
+	Snarf =>	return "snarf";
+	Look =>	return "look";
+	}
+	return "search";	# Search, or Send in the command window
 }
 
-# the name of a file; an unnamed file still needs a label
-menulabel(s: string): string
+additem(m, c: string, i: int, label, cmd: string): string
 {
-	if (s == "")
-		return Unnamed;
-	return s;
+	return sprint("%s add command -text %s -command {send %s %d %s}",
+		m, tk->quote(label), c, i, cmd);
 }
 
-# A file's entry in the button 3 menu, as sam shows it: ' if modified,
-# - with no window, + with one, * with several, and . if current.
-filelabel(i: int): string
+NBUF:	con 64;
+
+# a file's entry: ' modified, - + * for no, one or several windows,
+# . current, then its name, padded to the widest
+genmenu3(n: int): string
 {
-	m := ctxt.menus[i];
+	m := ctxt.menus[n];
+	if (n == 0)	# unless we've been fooled, this is cmd
+		return m.name;
+	mw := 7;	# len "~~sam~~"
+	for (i := 1; i < len ctxt.menus; i++)
+		if ((w := len ctxt.menus[i].name + 4) > mw)
+			mw = w;
+	if (mw > NBUF)
+		mw = NBUF;
 	t := m.text;
-	if (ctxt.cmd != nil && t == ctxt.cmd)
-		return menulabel(m.name);
-	mod := ' ';
-	win := '-';
-	cur := ' ';
+	buf := "    ";
+	buf[0] = m.mod;
+	buf[1] = '-';
 	if (t != nil) {
-		if (t.state & (Samterm->Dirty|Samterm->LDirty))
-			mod = '\'';
 		if (len t.flayers == 1)
-			win = '+';
+			buf[1] = '+';
 		else if (len t.flayers > 1)
-			win = '*';
-		if (ctxt.work != nil && ctxt.work.t != nil && ctxt.work.tag == t.tag)
-			cur = '.';
+			buf[1] = '*';
+		wk := ctxt.work;
+		if (wk != nil && wk.t != nil && wk.tag == t.tag) {
+			buf[2] = '.';
+			if (t.state & Samterm->LDirty)
+				buf[0] = '\'';
+		}
 	}
-	s := "   ";
-	s[0] = mod;
-	s[1] = win;
-	s[2] = cur;
-	return s + " " + menulabel(m.name);
+	name := m.name;
+	if (len name > NBUF-4-2)
+		name = name[0:NBUF/2-4] + "..." + name[len name - (NBUF/2-4):];
+	buf += name;
+	while (len buf < mw)
+		buf[len buf] = ' ';
+	return buf;
 }
-
-# bring every layer's button 3 file list up to date
-relabel()
-{
-	for (j := 0; j < len ctxt.flayers; j++) {
-		fl := ctxt.flayers[j];
-		if (fl == nil)
-			continue;
-		for (i := 0; i < len ctxt.menus; i++)
-			tk->cmd(ctxt.top, sprint("%s.m3 entryconfigure %d -text %s",
-				fl.w, i + NMENU3, tk->quote(filelabel(i))));
-	}
-}
-
-menuins(pos: int, nil: string)
-{
-	for (i := 0; i < len ctxt.flayers; i++) {
-		fl := ctxt.flayers[i];
-		tk->cmd(ctxt.top, sprint("%s.m3 insert %d command -text %s -command {send menu3_%d file %d}",
-			fl.w, pos + NMENU3, tk->quote(filelabel(pos)), fl.id, ctxt.menus[pos].tag));
-	}
-}
-
-menudel(pos: int)
-{
-	for (i := 0; i < len ctxt.flayers; i++)
-		tk->cmd(ctxt.top, sprint("%s.m3 delete %d", ctxt.flayers[i].w, pos + NMENU3));
-}
-
-lastpat := "";
 
 hsetpat(s: string)
 {
-	lastpat = s;
-	for (i := 0; i < len ctxt.flayers; i++) {
-		fl := ctxt.flayers[i];
-		if (fl.tag != ctxt.cmd.tag)
-			tk->cmd(ctxt.top, fl.w + ".m2 entryconfigure " + string Search
-				+ " -text " + tk->quote("/" + s));
-	}
+	if (len s > 15)
+		s = s[0:15];
+	ctxt.pat = s;
+}
+
+# libdraw's menuhit puts the menu's last choice under the pointer,
+# centred on it
+postmenu(m: string, hit: int, xy: Point)
+{
+	t := ctxt.top;
+	menus();
+	nitem := int tk->cmd(t, m + " index end") + 1;
+	if (hit < 0 || hit >= nitem)
+		hit = 0;
+	y0 := int tk->cmd(t, m + " yposition " + string hit);
+	ih := lineheight(".m2");
+	if (nitem > 1)
+		ih = int tk->cmd(t, m + " yposition 1") - int tk->cmd(t, m + " yposition 0");
+	wid := int tk->cmd(t, m + " cget -actwidth");
+	if (wid <= 0)
+		wid = int tk->cmd(t, m + " cget -width");
+	tk->cmd(t, sprint("%s activate %d; %s post %d %d; grab set %s",
+		m, hit, m, xy.x - wid/2, xy.y - y0 - ih/2, m));
 }
 
 titlectl(menu: string)
 {
 	tkclient->wmctl(ctxt.top, menu);
-}
-
-# make fl the layer on top, with the heavy border and the keyboard
-flraise(t: ref Text, fl: ref Flayer)
-{
-	t.flayers = fl :: dellist(t.flayers, fl);
-	top := ctxt.top;
-	if (ctxt.which != nil && ctxt.which != fl && ctxt.which.t != nil)
-		tk->cmd(top, ctxt.which.w + " configure -background " + border);
-	tk->cmd(top, fl.w + " configure -background " + curborder);
-	tk->cmd(top, sprint(".c raise f%d; focus %s.t; update", fl.id, fl.w));
 }
 
 dellist(fls: list of ref Flayer, fl: ref Flayer): list of ref Flayer
@@ -559,33 +684,11 @@ append(fls: list of ref Flayer, fl: ref Flayer): list of ref Flayer
 	return hd fls :: append(tl fls, fl);
 }
 
-focus(fl: ref Flayer)
-{
-	tk->cmd(ctxt.top, "focus " + fl.w + ".t; update");
-}
-
-newcur(t: ref Text, fl: ref Flayer)
-{
-	if (ctxt.which == fl) return;
-	flraise(t, fl);
-	ctxt.which = fl;
-	if (t != ctxt.cmd)
-		ctxt.work = fl;
-	relabel();
-}
-
-# A file's name or state changed.  Layers have no titles; the button 3
-# menu shows the state, as in sam.  The window is titled with the file
-# being worked on.
+# a file's name changed
 settitle(t: ref Text, s: string)
 {
 	for (fls := t.flayers; fls != nil; fls = tl fls)
 		(hd fls).tkwin = s;
-	relabel();
-	title := "Sam";
-	if (ctxt.work != nil && ctxt.work.t != nil && ctxt.work.tkwin != "")
-		title += " " + ctxt.work.tkwin;
-	tkclient->settitle(ctxt.top, title);
 }
 
 resize(fl: ref Flayer)
@@ -594,11 +697,6 @@ resize(fl: ref Flayer)
 	fl.lines = int tk->cmd(ctxt.top, fl.w + ".t cget -actheight") / fl.lineheigth;
 	if (fl.lines < 1)
 		fl.lines = 1;
-}
-
-allflayers(s: string)
-{
-	tk->cmd(ctxt.top, s);
 }
 
 setdot(fl: ref Flayer, l1, l2: int)
@@ -648,20 +746,6 @@ whichtext(tag: int): int
 	return -1;
 }
 
-setscrollbar(t: ref Text, fl: ref Flayer)
-{
-	ll := real t.nrunes;
-	f1 := 0.0; f2 := 1.0;
-	if (ll != 0.0) {
-		f1 = real fl.scope.first / ll;
-		if (fl.scope.last > t.nrunes)
-			f2 = 1.0;
-		else
-			f2 = real fl.scope.last / ll;
-	}
-	fl.scrollbar = fl.scope;
-	tk->cmd(fl.t, fl.w + sprint(".s set %f %f; update", f1, f2));
-}
 
 buttonselect(fl: ref Flayer, s: string): int
 {
@@ -673,14 +757,12 @@ buttonselect(fl: ref Flayer, s: string): int
 	if (n != 4) panic("buttonselect");
 
 	# ignore mouse down -- wait for mouse up
-	if (hd l == "1" || hd l == "3") return 0;
+	if (hd l == "1" || hd l == "3") return -1;
 
 	if (ctxt.which != fl) {
-		if (t != ctxt.cmd)
-			ctxt.work = fl;
-		newcur(t, fl);
-#		setdot(fl, fl.dot.first, fl.dot.first);
-		return 0;
+		# the pointer goes to Tk only in the current layer
+		current(fl);
+		return -1;
 	}
 
 	if (hd l == "2") {
@@ -754,73 +836,6 @@ coord2pos(t: ref Text, fl: ref Flayer, s: string): int
 	return(-1);
 }
 
-scrollpos, scrolllines: int;
-
-scroll(fl: ref Flayer, s: string): (int, int)
-{
-	tag := fl.tag;
-	if ((i := whichtext(tag)) < 0) panic("scroll: whichtext");
-	t := ctxt.texts[i];
-	(n, l) := sys->tokenize(s, " ");
-	height := fl.scrollbar.last - fl.scrollbar.first;
-	length := t.nrunes;
-	case (hd l) {
-	"0" =>
-		if (n != 3) panic("scroll: format");
-		return (scrollpos, scrolllines);
-	"moveto" =>
-		if (n != 2) panic("scroll: format");
-		f := real hd tl l;
-		if (f < 0.0) f = 0.0;
-		if (f > 1.0) f = 1.0;
-		scrollpos = int (f * real length) - height/2;
-		scrolllines = 1;
-	"scroll" =>
-		if (n != 3) panic("scroll: format");
-		l = tl l;
-		n = int hd l;
-		case(hd tl l) {
-		"page" =>
-			if (n < 0) {
-				scrollpos = fl.scrollbar.first;
-				scrolllines = fl.lines;
-				break;
-			}
-			scrollpos = fl.scrollbar.last;
-			scrolllines = 0;
-		"unit" =>
-			if (n < 0) {
-				scrollpos = fl.scrollbar.first - 1;
-				scrolllines = 1;
-				break;
-			}
-			(p, q) := rasplines(t.sects, fl.scrollbar.first, 1);
-			if (p > 0) {
-				scrollpos = p;
-				scrolllines = 0;
-			} else {
-				scrollpos = fl.scrollbar.first;
-				scrolllines = 0;
-			}
-		}
-	* =>
-		panic("scroll: input");
-	}
-	if (scrollpos > length)
-		scrollpos = length;
-	if (scrollpos < 0) {
-		scrollpos = 0;
-		scrolllines = 0;
-	}
-	if (length != 0)
-		tk->cmd(fl.t, fl.w + sprint(".s set %f %f",
-			real scrollpos / real length,
-			real (scrollpos + height) / real length));
-	else
-		tk->cmd(fl.t, fl.w + ".s set 0.0 1.0");
-	tk->cmd(fl.t, "update");
-	return (-1, -1);
-}
 
 flclear(fl: ref Flayer)
 {
@@ -873,72 +888,220 @@ fldelete(fl: ref Flayer, l1, l2: int)
 	tk->cmd(fl.t, "update");
 }
 
-# Calculate position forward or backward nlines lines from pos.
-# If lines > 0 count forward, if lines < 0 count backward.\
-# Returns a pair, (position, nlines).  Nlines is the remaining
-# number of lines to be found.  If non-zero, beginning or end of
-# rasp was encountered while still counting, or a hole was
-# encountered.  In the former case, position will be 0 or nrunes,
-# in the latter case, position will be set to -1.
-# To search to the beginning of the current line, set nlines to -1;
 
-rasplines(scts: list of ref Section, pos, nlines: int): (int, int)
+# ---- the scroll bar: scroll.c ----
+
+# where the scroll bar of fl is, in canvas coordinates (flrect's l->scroll)
+scrollrect(fl: ref Flayer): Rect
 {
-	p, i: int;
-	if (nlines < 0) {
-		if (scts != nil) {
-			sct := hd scts; scts = tl scts;
-			if (pos > sct.nrunes) {
-				(p, nlines) =
-				    rasplines(scts, pos - sct.nrunes, nlines);
-				if (p < 0) return (p, nlines);
-				pos = p + sct.nrunes;
-				if (nlines == 0) return (pos, 0);
-			}
-			if (pos > len sct.text) return (-1, nlines);
-			for (p = pos-1; p >= 0; p--) {
-				if (sct.text[p] == '\n') nlines++;
-				if (nlines == 0) return (p+1, 0);
-			}
-		}
-		return (0, nlines);
-	} else {
-		p = 0;
-		while (scts != nil) {
-			sct := hd scts; scts = tl scts;
-			if (pos < sct.nrunes) {
-				for (i = pos; i < len sct.text; i++) {
-					if (sct.text[i] == '\n') nlines--;
-					if (nlines == 0) return (p+i+1, 0);
-				}
-				if (i < sct.nrunes) return (-1, nlines);
-			}
-			pos -= sct.nrunes;
-			if (pos < 0) pos = 0;
-			p += sct.nrunes;
-		}
-		return (p, nlines);
-	}
+	s := fl.r.inset(FLMARGIN);
+	s.max.x = fl.r.min.x + FLMARGIN + FLSCROLLWID + (FLGAP - FLMARGIN);
+	return s;
 }
 
+scrpos(r: Rect, p0, p1, tot: int): Rect
+{
+	q := r;
+	h := q.max.y - q.min.y;
+	if (tot == 0)
+		return q;
+	if (tot > 1024*1024) {
+		tot >>= 10;
+		p0 >>= 10;
+		p1 >>= 10;
+	}
+	if (p0 > 0)
+		q.min.y += h*p0/tot;
+	if (p1 < tot)
+		q.max.y -= h*(tot-p1)/tot;
+	if (q.max.y < q.min.y+2) {
+		if (q.min.y+2 <= r.max.y)
+			q.max.y = q.min.y+2;
+		else
+			q.min.y = q.max.y-2;
+	}
+	return q;
+}
 
-# Feed the window's keyboard, mouse and window-manager traffic to Tk.
-# Tk turns them into the bindings' sends (keys_<id>, button1_<id>,
-# sweep ...), which samterm's main loop and getrect read.  A separate
-# process, so input keeps reaching Tk while the main loop waits for the
-# host or for a sweep; Tk's send never blocks (it queues), so this
-# cannot deadlock against the main loop's tk->cmd calls.
+# scrdraw: the bar is the border colour; the part of the file in the
+# layer is the background colour, less the bar's last column
+setscrollbar(t: ref Text, fl: ref Flayer)
+{
+	if (fl.t == nil)
+		return;
+	h := int tk->cmd(fl.t, fl.w + ".s cget -actheight");
+	r1 := Rect((0, 0), (FLSCROLLWID, h));
+	r2 := scrpos(r1, fl.scope.first, fl.scope.last, t.nrunes);
+	fl.scrollbar = fl.scope;
+	c := cols(fl);
+	tk->cmd(fl.t, sprint("%s.s delete all; %s.s create rectangle %d %d %d %d -fill %s -outline %s -width 0; update",
+		fl.w, fl.w, r2.min.x, r2.min.y, r2.max.x - 2, r2.max.y - 1, c[BACK], c[BACK]));
+}
+
+# scroll.c's scroll: where a release of but at canvas height y goes.
+# Button 1: lines to move back; 2: the place in the file; 3: the
+# character starting the line at y.
+scrollp0(t: ref Text, fl: ref Flayer, but, y: int): int
+{
+	s := scrollrect(fl);
+	h := s.dy();
+	tot := t.nrunes;
+	my := y;
+	if (my < s.min.y)
+		my = s.min.y;
+	if (my >= s.max.y)
+		my = s.max.y;
+	case but {
+	1 =>
+		return (my - s.min.y)/fl.lineheigth + 1;
+	2 =>
+		if (my > s.max.y-2)
+			my = s.max.y-2;
+		if (h <= 0)
+			return 0;
+		if (tot > 1024*1024)
+			return int (((big (tot>>10))*big (my-s.min.y)/big h)<<10);
+		return int (big tot*big (my-s.min.y)/big h);
+	}
+	p0 := charofy(t, fl, my);
+	if (p0 > tot)
+		p0 = tot;
+	return p0;
+}
+
+# frcharofpt at the left of the line at canvas height y
+charofy(t: ref Text, fl: ref Flayer, y: int): int
+{
+	ty := y - (fl.r.min.y + FLMARGIN);
+	if (ty < 0)
+		ty = 0;
+	s := tk->cmd(fl.t, fl.w + ".t index @0," + string ty);
+	if (s == nil || s[0] == '!')
+		return fl.scope.first;
+	return coord2pos(t, fl, s);
+}
+
+# ---- the pointer: samterm's main loop, the part that reads the mouse ----
+
+# Every pointer event comes here first.  As samterm's main loop does,
+# on a press: button 1 in a layer that is not current makes it current;
+# any button in the current layer's scroll bar scrolls it; button 1
+# elsewhere in the current layer selects (Tk does that); button 2
+# shows menu 2 for the current layer and button 3 shows menu 3.  What
+# sam acts on goes to the main loop on ctxt.mousec.
 pump(t: ref Tk->Toplevel)
 {
+	ob := 0;		# buttons before this event
+	swallow := 0;		# sam took the press: Tk sees nothing till all are up
+	scrbut := 0;		# the button working a scroll bar
+	scrfl: ref Flayer;
 	for(;;) alt {
 	c := <-t.ctxt.kbd =>
 		tk->keyboard(t, c);
 	p := <-t.ctxt.ptr =>
+		b := p.buttons & 7;
+		pb := ob;
+		ob = b;
+		ctxt.mbuttons = b;
+		if (ctxt.mode == Samterm->Grab) {
+			q := canvaspt(t, p.xy);
+			alt {
+			ctxt.mousec <-= sprint("%d %d %d", b, q.x, q.y) =>
+				;
+			* =>
+				;
+			}
+			swallow = b != 0;
+			continue;
+		}
+		if (scrbut) {
+			if ((b & scrbut) == 0) {
+				q := canvaspt(t, p.xy);
+				s := scrollrect(scrfl);
+				in := q.x >= s.min.x && q.x < s.max.x;
+				sendmouse(sprint("scroll %d %d %d %d", scrfl.id, butno(scrbut), q.y, in));
+				scrbut = 0;
+				swallow = b != 0;
+			}
+			continue;
+		}
+		if (swallow) {
+			if (b == 0)
+				swallow = 0;
+			continue;
+		}
+		if (pb == 0 && b != 0) {
+			q := canvaspt(t, p.xy);
+			nw := flwhich(q);
+			w := ctxt.which;
+			scr := w != nil && w.t != nil && q.in(scrollrect(w));
+			if (b & 1) {
+				if (nw != nil && nw != w) {
+					sendmouse("current " + string nw.id);
+					swallow = 1;
+					continue;
+				}
+				if (scr) {
+					(scrbut, scrfl) = (1, w);
+					continue;
+				}
+				if (nw == nil) {
+					swallow = 1;
+					continue;
+				}
+			} else if (b & 2) {
+				if (w == nil || w.t == nil) {
+					swallow = 1;
+					continue;
+				}
+				if (scr) {
+					(scrbut, scrfl) = (2, w);
+					continue;
+				}
+				if (ctxt.cmd != nil && w.tag == ctxt.cmd.tag)
+					postmenu(".m2c", ctxt.hit2c, p.xy);
+				else
+					postmenu(".m2", ctxt.hit2, p.xy);
+				continue;	# the menu takes the drag and release
+			} else if (b & 4) {
+				if (scr) {
+					(scrbut, scrfl) = (4, w);
+					continue;
+				}
+				postmenu(".m3", ctxt.hit3, p.xy);
+				continue;
+			}
+		}
 		tk->pointer(t, *p);
 	c := <-t.ctxt.ctl or
 	c = <-t.wreq =>
 		tkclient->wmctl(t, c);
 	}
+}
+
+butno(b: int): int
+{
+	case b {
+	1 =>	return 1;
+	2 =>	return 2;
+	}
+	return 3;
+}
+
+sendmouse(s: string)
+{
+	alt {
+	ctxt.mousec <-= s =>
+		;
+	* =>
+		sys->fprint(ctxt.logfd, "pump: dropped %s\n", s);
+	}
+}
+
+canvaspt(t: ref Tk->Toplevel, p: Point): Point
+{
+	return (int tk->cmd(t, ".c canvasx " + string p.x),
+		int tk->cmd(t, ".c canvasy " + string p.y));
 }
 
 # a slot for a new layer in ctxt.flayers and its channel arrays
@@ -950,22 +1113,10 @@ chanadd(): int
 	keysel[0:] = ctxt.keysel;
 	keysel[l] = chan of string;
 	ctxt.keysel = keysel;
-	scrollsel := array [l+1] of chan of string;
-	scrollsel[0:] = ctxt.scrollsel;
-	scrollsel[l] = chan of string;
-	ctxt.scrollsel = scrollsel;
 	buttonsel := array [l+1] of chan of string;
 	buttonsel[0:] = ctxt.buttonsel;
 	buttonsel[l] = chan of string;
 	ctxt.buttonsel = buttonsel;
-	menu2sel := array [l+1] of chan of string;
-	menu2sel[0:] = ctxt.menu2sel;
-	menu2sel[l] = chan of string;
-	ctxt.menu2sel = menu2sel;
-	menu3sel := array [l+1] of chan of string;
-	menu3sel[0:] = ctxt.menu3sel;
-	menu3sel[l] = chan of string;
-	ctxt.menu3sel = menu3sel;
 	flayers := array [l+1] of ref Flayer;
 	flayers[0:] = ctxt.flayers;
 	flayers[l] = nil;
@@ -973,42 +1124,20 @@ chanadd(): int
 	return l;
 }
 
-# remove layer n: its widgets, and its slot
 chandel(n: int)
 {
 	l := len ctxt.flayers;
 	if (n >= l)
 		panic("chandel");
 
-	fl := ctxt.flayers[n];
-	if (fl != nil) {
-		tkcmds(ctxt.top, array[] of {
-			sprint(".c delete f%d", fl.id),
-			"destroy " + fl.w + ".m2 " + fl.w + ".m3 " + fl.w,
-			"update",
-		});
-	}
-
 	keysel := array [l-1] of chan of string;
 	keysel[0:] = ctxt.keysel[0:n];
 	keysel[n:] = ctxt.keysel[n+1:];
 	ctxt.keysel = keysel;
-	scrollsel := array [l-1] of chan of string;
-	scrollsel[0:] = ctxt.scrollsel[0:n];
-	scrollsel[n:] = ctxt.scrollsel[n+1:];
-	ctxt.scrollsel = scrollsel;
 	buttonsel := array [l-1] of chan of string;
 	buttonsel[0:] = ctxt.buttonsel[0:n];
 	buttonsel[n:] = ctxt.buttonsel[n+1:];
 	ctxt.buttonsel = buttonsel;
-	menu2sel := array [l-1] of chan of string;
-	menu2sel[0:] = ctxt.menu2sel[0:n];
-	menu2sel[n:] = ctxt.menu2sel[n+1:];
-	ctxt.menu2sel = menu2sel;
-	menu3sel := array [l-1] of chan of string;
-	menu3sel[0:] = ctxt.menu3sel[0:n];
-	menu3sel[n:] = ctxt.menu3sel[n+1:];
-	ctxt.menu3sel = menu3sel;
 	flayers := array [l-1] of ref Flayer;
 	flayers[0:] = ctxt.flayers[0:n];
 	flayers[n:] = ctxt.flayers[n+1:];
