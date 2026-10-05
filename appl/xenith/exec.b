@@ -22,6 +22,7 @@ asyncio: Asyncio;
 
 Dir, OREAD, OWRITE : import Sys;
 formatmod : Format;
+framem : Framem;
 EVENTSIZE, QWaddr, QWdata, QWevent, Astring, CHAPPEND : import dat;
 Lock, Reffont, Ref, seltext, seq, row : import dat;
 warning, error, skipbl, findbl, stralloc, strfree, strncmp, exec : import utils;
@@ -52,6 +53,7 @@ init(mods : ref Dat->Mods)
 	scrl = mods.scroll;
 	filem = mods.filem;
 	rowm = mods.rowm;
+	framem = mods.framem;
 	windowm = mods.windowm;
 	columnm = mods.columnm;
 	fsys = mods.fsys;
@@ -69,7 +71,7 @@ Exectab : adt {
 	flag2 : int;
 };
 
-F_ALPHABET, F_CUT, F_DEL, F_DELCOL, F_DUMP, F_EDIT, F_EXITX, F_FONTX, F_GET, F_ID, F_INCL, F_INDENT, F_KILL, F_LIMBO, F_LINENO, F_LOCAL, F_LOOK, F_NEW, F_NEWCOL, F_PASTE, F_PUT, F_PUTALL, F_RENDER, F_UNDO, F_SEND, F_SORT, F_TAB, F_ZEROX : con iota;
+F_ALPHABET, F_CUT, F_DEL, F_DELCOL, F_DUMP, F_EDIT, F_EXITX, F_FONTX, F_GET, F_ID, F_INCL, F_INDENT, F_KILL, F_LIMBO, F_LINENO, F_LOCAL, F_LOOK, F_NEW, F_NEWCOL, F_PASTE, F_PUT, F_PUTALL, F_RENDER, F_UNDO, F_SEND, F_SORT, F_TAB, F_ZEROX, F_THEME : con iota;
 
 exectab := array[] of {
 	Exectab ( "Alphabet",	F_ALPHABET,	FALSE,	XXX,		XXX		),
@@ -102,6 +104,7 @@ exectab := array[] of {
 	Exectab ( "Snarf",		F_CUT,		FALSE,	TRUE,	FALSE	),
 	Exectab ( "Sort",		F_SORT,		FALSE,	XXX,		XXX		),
 	Exectab ( "Tab",		F_TAB,		FALSE,	XXX,		XXX		),
+	Exectab ( "Theme",		F_THEME,		FALSE,	XXX,		XXX		),
 	Exectab ( "Undo",		F_UNDO,		FALSE,	TRUE,	XXX		),
 	Exectab ( "Zerox",		F_ZEROX,		FALSE,	XXX,		XXX		),
 	Exectab ( nil, 			0,			0,		0,		0		),
@@ -118,6 +121,7 @@ runfun(fun : int, et, t, argt : ref Text, flag1, flag2 : int, arg : string, narg
 		F_EDIT		=> edit(et, argt, arg, narg);
 		F_EXITX		=> exitx();
 		F_FONTX		=> fontx(et, t, argt, arg, narg);
+		F_THEME		=> themex(argt, arg, narg);
 		F_GET 		=> get(et, t, argt, flag1, arg, narg);
 		F_ID 		=> id(et);
 		F_INCL 		=> incl(et, argt, arg, narg);
@@ -1240,6 +1244,7 @@ fontx(et : ref Text, t : ref Text, argt : ref Text, arg : string, narg : int)
 		t.reffont.close();
 		t.reffont = newfont;
 		t.frame.font = newfont.f;
+		framem->frinittick(t.frame);	# the tick is the font's height
 		if(t.w.isdir){
 			t.all.min.x++;	# force recolumnation; disgusting! 
 			for(i=0; i<t.w.ndl; i++){
@@ -1254,6 +1259,18 @@ fontx(et : ref Text, t : ref Text, argt : ref Text, arg : string, narg : int)
 	}
 	file = nil;
 	flag = nil;
+}
+
+# Theme [name]: that theme, or the next one (xenith->themecmd)
+themex(argt : ref Text, arg : string, narg : int)
+{
+	name : string;
+	(a, na) := findbl(arg, narg);
+	if(a != arg)
+		name = arg[0:narg-na];
+	else
+		(nil, name, nil) = getarg(argt, FALSE, TRUE);
+	xenith->themecmd(name);
 }
 
 incl(et : ref Text, argt : ref Text, arg : string, narg : int)
