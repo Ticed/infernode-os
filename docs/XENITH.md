@@ -10,7 +10,7 @@ Xenith maintains Acme's elegant text-based philosophy while adding capabilities 
 - **Namespace Security** - Capability-based access control for AI containment
 - **Observable Operations** - All agent activity visible to humans
 - **Multimodal Support** - Text and images in the same environment
-- **Dark Mode** - Modern theming with Catppuccin and custom colors
+- **Dark Mode** - Plan 9's colours (`glenda`) for light, a measured dark theme (`xenith`), or any system theme
 
 ## Why Xenith for AI?
 
@@ -71,23 +71,87 @@ Xenith windows are shared workspaces:
 
 ## Features
 
-### Dark Mode and Theming
+### Themes
 
-Xenith includes a modern dark theme (Catppuccin Mocha) and full color customization:
+Xenith takes its colours from the system theme (`/lib/lucifer/theme`,
+the same files every InferNode program uses) and follows it live: write
+a theme's name to `/lib/lucifer/theme/current`, or pick one in Settings,
+and Xenith recolours within a second, on the desktop or off it.
 
-```bash
-# Use dark theme
-xenith -t catppuccin
+The `Theme` command (type it in a tag and middle-click, like `Font`)
+switches: `Theme halo` to a named theme, `Theme` alone to the next one
+installed.
 
-# Traditional Acme colors
-xenith -t plan9
+`-t name` pins a session to one theme instead, which the system's
+switches then leave alone; `Theme` in a pinned session changes that
+session only. `tools/xen` starts Xenith pinned to `xenith`, the dark
+theme: Xenith's original Catppuccin Mocha, corrected against the reading
+research (dark grey behind off-white, every colour read as text at 7:1
+or better, selections bright enough to see with the text on them still
+at body contrast; [THEME-RESEARCH.md](THEME-RESEARCH.md) gives the
+evidence, the numbers and the sources).
+`glenda` is Plan 9's own colours, acme's to the pixel, and the light
+theme to prefer; `-t plan9` and `-t acme` name it too.
 
-# Custom colors via environment
-export xenith_bg_text_0=#1E1E2E
-export xenith_fg_text=#CDD6F4
+```sh
+xenith               # follow the system theme
+xenith -t xenith     # this session: the xenith theme
+xenith -t glenda     # this session: Plan 9's acme, exactly
 ```
 
-20+ color variables for complete UI customization.
+A theme maps onto Xenith by role: body from the theme's `edit*` colours,
+tags from `header` and `text`, selections from `menuhilit`, frame borders
+from `accent` and `border`, and the button 2, button 3 and modified
+colours from `red`, `green` and `yellow`. Any colour can still be set
+directly with environment variables, which win over the theme, as
+`acme-*` do in acme:
+
+```sh
+xenith-bg-text-0='#1E1E2E'	# body background
+xenith-fg-text-0='#CDD6F4'	# body text
+```
+
+### Fonts
+
+Xenith reads in Go and Go Mono, the faces Bigelow & Holmes (Lucida's
+designers) drew for the Go project: a humanist sans and a slab-serif
+monospace with the same x-height, so `Font` switches between them
+without the text changing size, and with the characters code confuses
+(`Il1|`, `0O`, `5S`, `8B`) drawn apart. Noto Serif, chosen for an
+x-height that matches theirs, is the serif.
+
+They are set at 14 pixels to the em, which puts the x-height at about
+0.17 degrees on a laptop at 50 cm: above the critical print size, below
+which reading slows, of readers into their late sixties, with a margin
+for light text on dark. Larger buys no speed, only fewer lines on the
+screen. 16 and 18 are for a monitor further away, or older eyes.
+[THEME-RESEARCH.md](THEME-RESEARCH.md) has the evidence for the faces
+and the size.
+
+| Font file | Face |
+|---|---|
+| `/fonts/combined/go.14.font` | Go: the default |
+| `/fonts/combined/gomono.14.font` | Go Mono: the fixed-width font, `Font` toggles to it |
+| `/fonts/combined/serif.14.font` | Noto Serif |
+
+Each is also built at 16 and 18 (`go.16.font`, `serif.18.font`, ...).
+`Font` with a file name sets a window's font (`Font
+/fonts/combined/serif.14.font`), and `-f` and `-F` (or the `xenith-font`
+and `xenith-Font` environment variables) set the two defaults:
+
+```sh
+xenith -f /fonts/combined/serif.14.font		# serif by default
+xenith -f /fonts/combined/go.16.font -F /fonts/combined/gomono.16.font	# larger
+```
+
+Characters the faces lack fall back to DejaVu. `tools/gen-text-fonts.py`
+regenerates the bitmaps from the TrueType sources (Go's are in
+`fonts/go`; the script says where to fetch Noto Serif's).
+
+### Opening host files
+
+`tools/xen file ...` runs Xenith by itself, dark and filling the emu
+window, on files from the host; Exit ends the instance. See [XEN.md](XEN.md).
 
 ### Image Display
 
@@ -199,11 +263,11 @@ echo 'replaceall oldvar	newvar' > /edit/1/ctl    # tab-separated
 # From InferNode
 xenith
 
-# With dark theme
-xenith -t catppuccin
+# With the dark theme
+xenith -t xenith
 
-# With specific font
-xenith -f /fonts/pelm/unicode.9.font
+# With a specific font
+xenith -f /fonts/combined/serif.14.font
 ```
 
 ### Agent Interaction Example
