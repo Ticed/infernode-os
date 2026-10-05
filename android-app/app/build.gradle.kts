@@ -126,6 +126,10 @@ android {
         debug {
             // Debug APKs are signed with the Android debug keystore by
             // default. Sufficient for adb install on dev devices.
+            // The suffix lets a debug build install alongside the Play
+            // build: same id + different signer would otherwise force an
+            // uninstall, which wipes the Play install's data.
+            applicationIdSuffix = ".debug"
         }
     }
 }
