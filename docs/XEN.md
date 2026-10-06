@@ -37,12 +37,21 @@ On Windows use `tools\xen.ps1` (`-Sam`, `-Wait` in place of `-s`, `-w`).
 Only `C:` is mounted inside InferNode, so files on other drives are
 refused.
 
-Verified on macOS, and on Linux under X11 at 1x and 2x: editing,
-resizing, host plumbing and remote hosts (INFR-522). Under Wayland the
-scale and screen size were checked with a headless compositor. Build the
-Linux emulator with SDL3 (`./install-sdl3.sh`, then
+Verified on macOS, and on Linux (INFR-522): natively under Wayland
+(Weston at scale 1 and 2, windowed and full screen) and under X11 at
+1x and 2x (editing, resizing, host plumbing and remote hosts). Build
+the Linux emulator with SDL3 (`./install-sdl3.sh`, then
 `./build-linux-amd64.sh` or `./build-linux-arm64.sh`): a headless build
-is refused. `xen.ps1` is untested and has no host plumbing.
+is refused.
+
+On Linux SDL runs the emu as a Wayland client when the compositor has
+the `fifo-v1` protocol (current GNOME and KDE), and through XWayland
+otherwise; `SDL_VIDEODRIVER=wayland` or `x11` chooses. Under Wayland
+the window's title bar is drawn by the client, with libdecor:
+`install-sdl3.sh` builds SDL with it, and the desktop needs a libdecor
+plugin (`libdecor-0-plugin-1-gtk`, installed with GNOME). An SDL built
+without it opens a window with no title bar on GNOME, which cannot be
+moved or maximised with the mouse. `xen.ps1` is untested and has no host plumbing.
 
 ## Behaviour
 
@@ -76,8 +85,9 @@ Linux is the same at the desktop's scale: 200% in GNOME or KDE on
 Wayland, or on X11 `Xft.dpi: 192` (or `GDK_SCALE=2`). On X11 the
 window is in pixels, so the emu also makes it that much larger:
 `XEN_GEOM` is in points on every host. The fonts come in 1x and 2x
-only, so a fractional scale is rounded: 150% and above draws at 2x,
-below at 1x.
+only, so a fractional scale (Wayland's 125% or 150%) is rounded:
+150% and above draws at 2x, a third larger than intended, and below
+at 1x, a fifth smaller.
 
 A stand-alone Xenith is pinned to its theme: switching the system theme
 (Settings, or a write to `/lib/lucifer/theme/current`) leaves it alone,
