@@ -53,7 +53,6 @@ Borderwidth:	con 4;
 
 tktop := array[] of {
 	"canvas .c -borderwidth 0 -width 640 -height 480",
-	"pack .Wm_t -fill x",
 	"pack .c -fill both -expand 1",
 	"pack propagate . 0",
 	# Tk delivers <Configure> to pack slaves, not to the toplevel
@@ -1058,16 +1057,20 @@ pump(t: ref Tk->Toplevel)
 					(scrbut, scrfl) = (2, w);
 					continue;
 				}
+				# Tk sees the press first, so the grab the menu
+				# takes holds the button: the menu gets the release
+				tk->pointer(t, *p);
 				if (ctxt.cmd != nil && w.tag == ctxt.cmd.tag)
 					postmenu(".m2c", ctxt.hit2c, p.xy);
 				else
 					postmenu(".m2", ctxt.hit2, p.xy);
-				continue;	# the menu takes the drag and release
+				continue;
 			} else if (b & 4) {
 				if (scr) {
 					(scrbut, scrfl) = (4, w);
 					continue;
 				}
+				tk->pointer(t, *p);
 				postmenu(".m3", ctxt.hit3, p.xy);
 				continue;
 			}

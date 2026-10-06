@@ -248,6 +248,7 @@ dis/grid/regstyxlisten.dis
 dis/gunzip.dis
 dis/gzip.dis
 dis/history.dis
+dis/hostplumb.dis
 dis/idea.dis
 dis/import.dis
 dis/install/applylog.dis
@@ -736,6 +737,7 @@ dis/tests/gpu_test.dis
 dis/tests/handshake_fuzz_test.dis
 dis/tests/hello_test.dis
 dis/tests/hid_test.dis
+dis/tests/hostplumb_test.dis
 dis/tests/html_test.dis
 dis/tests/imap_test.dis
 dis/tests/imgload_test.dis
@@ -795,11 +797,13 @@ dis/tests/refadt_zero_test.dis
 dis/tests/regex_test.dis
 dis/tests/render_registry_test.dis
 dis/tests/rfcomm_test.dis
+dis/tests/rlayout_test.dis
 dis/tests/runner.dis
 dis/tests/sam_test.dis
 dis/tests/scene_test.dis
 dis/tests/sdl3_test.dis
 dis/tests/sdp_test.dis
+dis/tests/sed_test.dis
 dis/tests/secp256k1_test.dis
 dis/tests/secstore_abort_probe.dis
 dis/tests/secstore_crypto_test.dis
@@ -1015,7 +1019,6 @@ dis/xenith/render/charonrender.dis
 dis/xenith/render/htmlfmt.dis
 dis/xenith/render/htmlrender.dis
 dis/xenith/render/imgrender.dis
-dis/xenith/render/mdfmt.dis
 dis/xenith/render/mdrender.dis
 dis/xenith/render/mermaidrender.dis
 dis/xenith/render/pdfrender.dis

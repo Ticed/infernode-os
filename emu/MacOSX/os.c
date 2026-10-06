@@ -102,6 +102,8 @@ pexit(char *msg, int t)
     }
     free(e->user);
     free(p->prog);
+    /* forget p before freeing it: lock() counts into up->nlocks (see kproc-pthreads.c:/^pexit) */
+    pthread_setspecific(prdakey, nil);
     free(p);
     pthread_exit(0);
 }
@@ -194,6 +196,8 @@ trapUSR1(int signo)
 {
     USED(signo);
     
+    if(up == nil)               /* pexit has already forgotten the proc */
+        return;
     if(up->type != Interp)      /* Used to unblock pending I/O */
         return;
     if(up->intwait == 0)        /* Not posted so its a sync error */
