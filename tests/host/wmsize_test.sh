@@ -17,6 +17,7 @@
 # twice the pixels and the scale is 2, checked by hand.
 #
 # Resizing itself needs a real window manager; it was checked by hand on
+# Linux (X11 under openbox, at 1x and Xft.dpi 192) and on
 # macOS (Xenith and Lucifer laid out again on growing, shrinking and full
 # screen). Needs the SDL GUI emulator: SKIP (77) on a headless build,
 # so a CI job that builds only headless does not run it.
@@ -35,7 +36,10 @@ fi
 W=640
 H=400
 out=$(SDL_VIDEODRIVER=dummy with_timeout 30 "$EMU" -c0 -g${W}x${H} -r"$ROOT" /dis/sh.dis -c \
-    "dd -bs 144 -count 1 -if '#i/draw/new' >[2] /dev/null; echo; dd -bs 49 -count 1 -if /dev/wmsize >[2] /dev/null; echo; echo halt > /dev/sysctl" 2>&1)
+    "dd -bs 144 -count 1 -if '#i/draw/new' >[2] /dev/null; echo; dd -bs 49 -count 1 -if /dev/wmsize >[2] /dev/null; echo; echo halt > /dev/sysctl" 2>/dev/null)
+# stdout only: the emu's own notes go to stderr, and one comes first on
+# a Linux host whose file system's device number has its top bit set
+# (LVM, device-mapper: "fs: fsqid: top-bit dev")
 
 fail=0
 # draw/new: client id, image id, chan, repl, then r and clipr

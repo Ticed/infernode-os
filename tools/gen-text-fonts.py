@@ -5,7 +5,8 @@
 # Renders Go, Go Mono (fonts/go) and Noto Serif (fonts/noto) at 14, 16
 # and 18 pixels to the em, and at twice those into k8 subfonts, one per 256-codepoint block,
 # and writes fonts/combined/{go,gomono,serif}.N.font. See
-# docs/THEME-RESEARCH.md for why these faces and sizes.
+# docs/THEME-RESEARCH.md for why these faces and sizes. Go and Go Mono
+# are also built for the fractional scales Wayland desktops use.
 #
 # Renders Go Medium, Bold, Italic and Bold Italic the same way, as
 # fonts/combined/go.{medium,bold,italic,bolditalic}.N.font, at those
@@ -45,6 +46,12 @@ from fontTools.ttLib import TTFont
 # those for 2x displays (Xenith binds them over 14, 16 and 18 when
 # $displayscale is 2)
 TEXT = [14, 16, 18, 28, 32, 36]
+# Go and Go Mono at 1.25x and 1.5x too (17.5, 20, 22.5 and 21, 24, 27;
+# 18 is built already), for 125% and 150% on a Wayland desktop: Xenith
+# binds the build nearest $displayscale times each size over it, so
+# these also serve 175% (24, 28, 32). Noto Serif is not built at them,
+# and takes its nearest size.
+GOTEXT = sorted(TEXT + [20, 21, 22, 24, 27])
 # Go's other weights and slopes, for programs that set a document
 # rather than edit text (Xenith's Render): the text sizes, and 22 (44)
 # for first-level headings. Not offered by Font.
@@ -52,8 +59,8 @@ STYLED = [14, 16, 18, 22, 28, 32, 36, 44]
 FACES = [
 	# name, source, subfont directory, manifest name, DejaVu fallback
 	# family (combined/<family>.N.font), sizes
-	("Go", "go/Go-Regular.ttf", "go/Go", "go", "unicode.sans", TEXT),
-	("GoMono", "go/Go-Mono.ttf", "go/GoMono", "gomono", "unicode.sans", TEXT),
+	("Go", "go/Go-Regular.ttf", "go/Go", "go", "unicode.sans", GOTEXT),
+	("GoMono", "go/Go-Mono.ttf", "go/GoMono", "gomono", "unicode.sans", GOTEXT),
 	("NotoSerif", "noto/NotoSerif-Regular.ttf", "noto/NotoSerif", "serif", "unicode.sans", TEXT),
 	("GoMedium", "go/Go-Medium.ttf", "go/GoMedium", "go.medium", "unicode.sans.bold", STYLED),
 	("GoBold", "go/Go-Bold.ttf", "go/GoBold", "go.bold", "unicode.sans.bold", STYLED),
