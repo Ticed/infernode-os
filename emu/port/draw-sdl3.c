@@ -1059,8 +1059,16 @@ attachscreen(Rectangle *r, ulong *chan, int *d, int *width, int *softscreen)
 	/* Pixels per point, for programs that draw at the display's own
 	 * density (see hidpiwanted); set in the opener's environment. */
 	if (hidpiwanted()) {
+		/* In quarters: Wayland's 125% and 150% are 1.25 and 1.5,
+		 * for which Xenith has fonts of their own; whole scales
+		 * are written as before ("2"), and a reader taking the
+		 * value as an integer gets its whole part. */
+		static char *quarter[] = { "", ".25", ".5", ".75" };
 		char buf[16];
-		snprint(buf, sizeof buf, "%d", (int)(ui_scale + 0.5f));
+		int q = (int)(ui_scale * 4.0f + 0.5f);
+		if (q < 4)
+			q = 4;
+		snprint(buf, sizeof buf, "%d%s", q / 4, quarter[q % 4]);
 		ksetenv("displayscale", buf, 0);
 	}
 #endif

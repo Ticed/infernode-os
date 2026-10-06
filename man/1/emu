@@ -138,7 +138,11 @@ environment variable
 Xenith reads it (see
 .BR tools/xen ),
 the rest of the desktop does not yet, and would come out half size.
-A fractional scale is rounded to the nearest whole number.
+A fractional scale is given in quarters:
+.B 1.25
+at 125%,
+.B 1.5
+at 150%; a program reading it as an integer gets its whole part.
 iOS always has the display's own pixels.
 .TP
 .BI \-f font

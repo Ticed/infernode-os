@@ -84,10 +84,17 @@ only sharp. sam is still drawn in doubled points.
 Linux is the same at the desktop's scale: 200% in GNOME or KDE on
 Wayland, or on X11 `Xft.dpi: 192` (or `GDK_SCALE=2`). On X11 the
 window is in pixels, so the emu also makes it that much larger:
-`XEN_GEOM` is in points on every host. The fonts come in 1x and 2x
-only, so a fractional scale (Wayland's 125% or 150%) is rounded:
-150% and above draws at 2x, a third larger than intended, and below
-at 1x, a fifth smaller.
+`XEN_GEOM` is in points on every host.
+
+A fractional scale, common on Wayland laptops, is drawn in the
+display's own pixels too: the emu reports it in quarters (`1.25`,
+`1.5`), Xenith scales its chrome by it, and Go and Go Mono have builds
+at 1.25x and 1.5x (20, 21, 22, 24, 27) beside the 2x ones, so each
+name is bound to the build nearest its size times the scale; 175%
+takes 24, 28 and 32. Render's bold and italic Go faces have no
+fractional builds and take their nearest size, within a tenth; Noto
+Serif (Font's third face) has none either, and can be up to a sixth
+off.
 
 A stand-alone Xenith is pinned to its theme: switching the system theme
 (Settings, or a write to `/lib/lucifer/theme/current`) leaves it alone,
