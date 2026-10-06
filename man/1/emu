@@ -126,7 +126,11 @@ set (and not
 .BR 0 )
 in the host environment, the screen has the display's own pixels
 instead: a window of 700x400 points is a screen of 1400x800 on a
-Retina display.
+Retina display, on Wayland at 200%, and on X11 at 192 dpi
+.RB ( Xft.dpi
+or
+.BR GDK_SCALE ),
+where the window, which X11 sizes in pixels, is made that much larger.
 Programs must then size themselves to match, so the program that
 opens the display finds the number of pixels to a point in its
 environment variable
@@ -134,6 +138,7 @@ environment variable
 Xenith reads it (see
 .BR tools/xen ),
 the rest of the desktop does not yet, and would come out half size.
+A fractional scale is rounded to the nearest whole number.
 iOS always has the display's own pixels.
 .TP
 .BI \-f font
