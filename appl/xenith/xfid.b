@@ -31,7 +31,7 @@ Smsg0 : import Dat;
 TRUE, FALSE, XXX, BUFSIZE, MAXRPC : import Dat;
 EM_NORMAL, EM_RAW, EM_MASK : import Dat;
 Qdir, Qcons, Qlabel, Qindex, Qeditout : import Dat;
-QWaddr, QWcolors, QWdata, QWevent, QWconsctl, QWctl, QWbody, QWedit, QWeditout, QWimage, QWtag, QWrdsel, QWwrsel : import Dat;
+QWaddr, QWcolors, QWdata, QWevent, QWconsctl, QWctl, QWbody, QWedit, QWeditout, QWimage, QWtag, QWrdsel, QWwrsel, QWerrors, QWxdata : import Dat;
 seq, cxfidfree, ccons, Lock, Ref, Range, Mntdir, ConsMsg, Astring : import dat;
 error, warning, max, min, stralloc, strfree, strncmp : import utils;
 address : import regx;
@@ -241,7 +241,7 @@ Xfid.open(x : self ref Xfid)
 				w.addr = (Range)(0,0);
 				w.limit = (Range)(-1,-1);
 			}
-		QWdata or QWedit =>
+		QWdata or QWxdata or QWedit =>
 			w.nopen[q]++;
 			seq++;
 			t.file.mark();
@@ -353,12 +353,12 @@ Xfid.close(x : self ref Xfid)
 				w.ctlfid = ~0;
 				w.ctllock.unlock();
 			}
-		QWdata or QWaddr or QWedit or QWevent =>	
+		QWdata or QWxdata or QWaddr or QWedit or QWevent =>	
 			# BUG: do we need to shut down Xfid?
-			if (q == QWdata || q == QWedit)
+			if (q == QWdata || q == QWxdata || q == QWedit)
 				w.nomark = FALSE;
 			if(--w.nopen[q] == byte 0){
-				if(q == QWdata || q == QWedit)
+				if(q == QWdata || q == QWxdata || q == QWedit)
 					w.nomark = FALSE;
 				if(q==QWevent && !w.isdir && w.col!=nil){
 					w.filemenu = TRUE;
@@ -446,6 +446,14 @@ Xfid.read(x : self ref Xfid)
 		}
 		w.addr.q0 += x.runeread(w.body, w.addr.q0, w.body.file.buf.nc);
 		w.addr.q1 = w.addr.q0;
+	QWxdata =>
+		# like data, but the read stops at the end of addr
+		# BUG: what should happen if q1 > q0?
+		if(w.addr.q0 > w.body.file.buf.nc){
+			respond(x, fc, Eaddr);
+			break;
+		}
+		w.addr.q0 += x.runeread(w.body, w.addr.q0, w.addr.q1);
 	QWtag =>
 		x.utfread(w.tag, 0, w.tag.file.buf.nc, QWtag);
 	QWcolors =>
@@ -594,6 +602,12 @@ Xfid.write(x : self ref Xfid)
 		fc.count = count(x.fcall);
 		respond(x, fc, nil);
 		break;
+	QWerrors =>
+		# append to this window's +Errors window, which is
+		# locked in place of w (and so unlocked below)
+		w = utils->errorwinforwin(w);
+		t = w.body;
+		bodytag = 1;
 	QWbody or QWwrsel =>
 		if(w.docview)
 			w.docoff();	# writes show in the text
@@ -680,7 +694,7 @@ Xfid.write(x : self ref Xfid)
 					q0 = t.file.buf.nc;
 			}else
 				q0 = t.file.buf.nc;
-			if(qid == QWbody || qid == QWwrsel){
+			if(qid != QWtag){
 				if(!w.nomark){
 					seq++;
 					t.file.mark();
@@ -729,6 +743,13 @@ ctlcmd1(x: ref Xfid, w: ref Window, p: string): (int, int, string, int)
 		t.file.reset();
 		t.file.mod = FALSE;
 		w.dirty = FALSE;
+		return (TRUE, 5, nil, TRUE);
+	}
+	if(strncmp(p, "dirty", 5) == 0){	# mark window 'dirty'
+		t = w.body;
+		# doesn't change sequence number, so "Put" won't appear.  it shouldn't.
+		t.file.mod = TRUE;
+		w.dirty = TRUE;
 		return (TRUE, 5, nil, TRUE);
 	}
 	if(strncmp(p, "show", 4) == 0){	# show dot
@@ -828,6 +849,14 @@ ctlcmd2(x: ref Xfid, w: ref Window, p: string): (int, int, string, int)
 	if(strncmp(p, "mark", 4) == 0){	# mark file
 		seq++;
 		w.body.file.mark();
+		return (TRUE, 4, nil, TRUE);
+	}
+	if(strncmp(p, "nomenu", 6) == 0){	# turn off automatic menu
+		w.filemenu = FALSE;
+		return (TRUE, 6, nil, TRUE);
+	}
+	if(strncmp(p, "menu", 4) == 0){	# enable automatic menu
+		w.filemenu = TRUE;
 		return (TRUE, 4, nil, TRUE);
 	}
 	if(strncmp(p, "noscroll", 8) == 0){	# turn off automatic scrolling

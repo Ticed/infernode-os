@@ -1523,26 +1523,69 @@ waitproc(pid : int, sync: chan of int)
 # so names keep their size, as the mobile boot does for its fonts. The
 # draw device caches a font by name, so this must come before anything
 # opens one.
+#
+# The scale may be fractional (1.25, 1.5 on a Wayland desktop): each
+# name is bound to the build nearest its size times the scale, which
+# for Go and Go Mono is built at 1.25x and 1.5x as well as 2x
+# (tools/gen-text-fonts.py), and for the rest is the nearest there is.
+# A bind takes the file its source names when it is made, so the
+# sizes go in ascending order: each source is bound over only later.
 setscale()
 {
-	s := int utils->getenv("displayscale");
-	if(s <= 1)
+	s := real utils->getenv("displayscale");
+	if(s < 1.1)
 		return;
-	if(s > 4)
-		s = 4;
+	if(s > 4.0)
+		s = 4.0;
 	sys->pctl(Sys->FORKNS, nil);	# the binds are Xenith's own
-	dat->Scrollwid *= s;
-	dat->Scrollgap *= s;
-	dat->Border *= s;
-	dat->Mincolwid *= s;
-	framem->FRTICKW *= s;
-	for(f := list of {"go", "gomono", "serif", "go.medium", "go.bold", "go.italic", "go.bolditalic"}; f != nil; f = tl f)
-		for(z := list of {14, 16, 18, 22}; z != nil; z = tl z){
-			large := sprint("/fonts/combined/%s.%d.font", hd f, s*hd z);
-			(ok, nil) := sys->stat(large);
-			if(ok >= 0)
-				sys->bind(large, sprint("/fonts/combined/%s.%d.font", hd f, hd z), Sys->MREPL);
+	dat->Scrollwid = scaled(dat->Scrollwid, s);
+	dat->Scrollgap = scaled(dat->Scrollgap, s);
+	dat->Border = scaled(dat->Border, s);
+	dat->Mincolwid = scaled(dat->Mincolwid, s);
+	framem->FRTICKW = scaled(framem->FRTICKW, s);
+	text := list of {14, 16, 18};
+	styled := list of {14, 16, 18, 22};
+	for(f := list of {"go", "gomono", "serif"}; f != nil; f = tl f)
+		bindnearest(hd f, text, s);
+	for(f = list of {"go.medium", "go.bold", "go.italic", "go.bolditalic"}; f != nil; f = tl f)
+		bindnearest(hd f, styled, s);
+}
+
+scaled(n: int, s: real): int
+{
+	return int (real n * s + 0.5);
+}
+
+# bind over face.z.font, for each z, the face's build nearest z*s
+bindnearest(face: string, sizes: list of int, s: real)
+{
+	for(; sizes != nil; sizes = tl sizes){
+		z := hd sizes;
+		want := real z * s;
+		r := int (want + 0.5);
+		best := 0;
+		# outward from the size wanted, while nearer it than z itself
+		for(k := 0; best == 0 && real k < want - real z; k++){
+			bestd := 0.0;
+			for(c := list of {r-k, r+k}; c != nil; c = tl c){
+				if(hd c <= z)
+					continue;
+				d := real hd c - want;
+				if(d < 0.0)
+					d = -d;
+				if(best != 0 && d >= bestd)
+					continue;
+				(ok, nil) := sys->stat(sprint("/fonts/combined/%s.%d.font", face, hd c));
+				if(ok >= 0){
+					best = hd c;
+					bestd = d;
+				}
+			}
 		}
+		if(best != 0)
+			sys->bind(sprint("/fonts/combined/%s.%d.font", face, best),
+				sprint("/fonts/combined/%s.%d.font", face, z), Sys->MREPL);
+	}
 }
 
 get(fix : int, save : int, setfont : int, name : string) : ref Reffont

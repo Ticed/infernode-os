@@ -135,6 +135,17 @@ static Uint32 sdl_button_state = 0;
  */
 static float display_scale = 1.0f;
 
+/*
+ * How much larger than at 1x a program that sizes itself (Xenith)
+ * should draw: published as $displayscale under INFERNODE_HIDPI. Not
+ * display_scale: on X11 (and Windows) the window is in pixels already,
+ * so display_scale is 1 however dense the display, and the desktop's
+ * scale (Xft.dpi, GDK_SCALE, the Windows scale setting) is SDL's
+ * content scale. SDL_GetWindowDisplayScale is the two multiplied, so
+ * 2 on a Retina Mac, on Wayland at 200% and on X11 at 192 dpi alike.
+ */
+static float ui_scale = 1.0f;
+
 /* Shutdown request flag - can be set from any thread */
 static volatile int sdl_quit_requested = 0;
 
@@ -506,6 +517,9 @@ init_hidpi(void)
 		display_scale = (float)pix_w / (float)win_w;
 	else
 		display_scale = 1.0f;
+	ui_scale = SDL_GetWindowDisplayScale(sdl_window);
+	if (ui_scale < display_scale)
+		ui_scale = display_scale;
 
 	window_width = pix_w;
 	window_height = pix_h;
@@ -1045,8 +1059,16 @@ attachscreen(Rectangle *r, ulong *chan, int *d, int *width, int *softscreen)
 	/* Pixels per point, for programs that draw at the display's own
 	 * density (see hidpiwanted); set in the opener's environment. */
 	if (hidpiwanted()) {
+		/* In quarters: Wayland's 125% and 150% are 1.25 and 1.5,
+		 * for which Xenith has fonts of their own; whole scales
+		 * are written as before ("2"), and a reader taking the
+		 * value as an integer gets its whole part. */
+		static char *quarter[] = { "", ".25", ".5", ".75" };
 		char buf[16];
-		snprint(buf, sizeof buf, "%d", (int)(display_scale + 0.5f));
+		int q = (int)(ui_scale * 4.0f + 0.5f);
+		if (q < 4)
+			q = 4;
+		snprint(buf, sizeof buf, "%d%s", q / 4, quarter[q % 4]);
 		ksetenv("displayscale", buf, 0);
 	}
 #endif
@@ -1393,6 +1415,26 @@ handle_window_creation(void)
 		fprint(2, "draw-sdl3: SDL_CreateWindow failed: %s\n", SDL_GetError());
 		create_window_result = 0;
 	} else {
+		/*
+		 * With the display's own pixels asked for, the size asked for
+		 * is in points, as on a Mac. Where the window is in pixels
+		 * whatever the display's scale (X11, Windows), grow it by
+		 * that scale: on X11 at 192 dpi, 1400x900 points is 2800x1800
+		 * pixels, the same size on the glass as on a Retina Mac.
+		 * Wayland and macOS do this themselves (pixel density > 1).
+		 */
+		if (hidpiwanted()) {
+			float d = SDL_GetWindowPixelDensity(sdl_window);
+			float f = d > 0.0f ? SDL_GetWindowDisplayScale(sdl_window) / d : 1.0f;
+			if (f > 1.01f && f <= 4.0f) {
+				SDL_SetWindowSize(sdl_window, (int)(sdl_width * f + 0.5f),
+					(int)(sdl_height * f + 0.5f));
+				/* centred again: it was placed at its first size */
+				SDL_SetWindowPosition(sdl_window, SDL_WINDOWPOS_CENTERED,
+					SDL_WINDOWPOS_CENTERED);
+				SDL_SyncWindow(sdl_window);
+			}
+		}
 		init_hidpi();
 		if (!create_renderer_and_texture()) {
 			fprint(2, "draw-sdl3: renderer/texture creation failed: %s\n",

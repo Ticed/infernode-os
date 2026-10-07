@@ -21,12 +21,15 @@ Unlike JSON-RPC protocols (MCP) or REST APIs, Xenith exposes everything as files
 ```
 /mnt/xenith/
 ├── new                  # Create window (write returns ID)
-├── focus                # Current focus window
+├── index                # One line per window: id, sizes, dirty, tag
 └── <id>/
     ├── body             # Window text content
     ├── tag              # Title/command line
     ├── addr             # Text address (selection range)
-    ├── ctl              # Control commands
+    ├── data             # Text at addr, reading on to the end of the file
+    ├── xdata            # Like data, but a read stops at the end of addr
+    ├── errors           # Writes append to this directory's +Errors window
+    ├── ctl              # Control commands (incl. dirty, menu, nomenu)
     ├── event            # Event stream
     ├── colors           # Per-window theming
     └── image            # Image display control
