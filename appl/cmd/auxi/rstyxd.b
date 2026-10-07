@@ -18,6 +18,8 @@ Rstyxd: module
 # grants the right to request a command, not an unbounded share of the node's
 # heap.  This is deliberately much larger than a normal cpu command line.
 Maxargs: con 64*1024;
+Rstyx2: con "!rstyx2";
+Rstyx2ok: con "OK rstyx2\n";
 
 #
 # argv is a list of Inferno supported algorithms from Security->Auth
@@ -36,6 +38,13 @@ init(nil: ref Draw->Context, nil: list of string)
 	args := readargs(fd);
 	if(args == nil)
 		err(sys->sprint("error reading arguments: %r"));
+	wantack := 0;
+	if(hd args == Rstyx2) {
+		wantack = 1;
+		args = tl args;
+		if(args == nil)
+			err("versioned request has no command");
+	}
 
 	cmd := hd args;
 	s := "";
@@ -95,6 +104,16 @@ init(nil: ref Draw->Context, nil: list of string)
 	if(sys->mount(p[0], nil, "/", Sys->MREPL|Sys->MCREATE, "") < 0)
 		err(sys->sprint("cannot mount restricted server namespace: %r"));
 	p[0] = nil;
+
+	# The client must not begin its 9P export until the server has accepted
+	# the request.  The marker makes this opt-in, so legacy clients retain
+	# their original byte stream.  On an authenticated listener this reply
+	# is carried by the negotiated protected channel.
+	if(wantack) {
+		b := array of byte Rstyx2ok;
+		if(sys->write(fd, b, len b) != len b)
+			err(sys->sprint("cannot acknowledge request: %r"));
+	}
 
 	if(sys->mount(fd, nil, "/n/client", Sys->MREPL|Sys->MCREATE, "") < 0)
 		err(sys->sprint("cannot mount connection on /n/client: %r"));

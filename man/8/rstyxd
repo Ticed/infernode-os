@@ -27,6 +27,20 @@ conventions of
 The first argument is the command name.
 The encoded command is limited to 64 KiB; a larger length prefix is rejected
 before allocating its buffer.
+New clients prefix the argument list with the reserved word
+.BR !rstyx2 .
+After parsing the request, loading its command module, and constructing the
+restricted server namespace,
+.I rstyxd
+writes the exact line
+.B OK rstyx2
+over the protected connection.  Only then does the client begin its 9P export.
+If any preparation step fails, the connection closes without the
+acknowledgment and the client reports failure.  Requests without the marker
+retain the original unacknowledged protocol for compatibility with old
+clients.
+The acknowledgment means the request and namespace are ready; it is not a
+completion or exit-status message from the requested command.
 .I Rstyxd
 prepares a modified name space in which
 to run the command.

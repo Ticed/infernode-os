@@ -12,6 +12,8 @@ include "keyring.m";
 include "security.m";
 
 DEFCMD:	con "/dis/sh";
+Rstyx2:	con "!rstyx2";
+Rstyx2ok:	con "OK rstyx2\n";
 
 CPU: module
 {
@@ -26,7 +28,7 @@ badmodule(p: string)
 
 usage()
 {
-	sys->fprint(stderr, "Usage: cpu [-C cryptoalg] [-e exportroot] mach command args...\n");
+	sys->fprint(stderr, "Usage: cpu [-1] [-C cryptoalg] [-e exportroot] mach command args...\n");
 	raise "fail:usage";
 }
 
@@ -53,8 +55,11 @@ init(nil: ref Context, argv: list of string)
 	arg->init(argv);
 	alg := "";
 	exportroot: string;
+	legacy := 0;
 	while ((opt := arg->opt()) != 0) {
-		if (opt == 'C') {
+		if(opt == '1') {
+			legacy = 1;
+		} else if (opt == 'C') {
 			alg = arg->arg();
 		} else if(opt == 'e') {
 			exportroot = arg->arg();
@@ -103,7 +108,7 @@ init(nil: ref Context, argv: list of string)
 	(ok, c) := sys->dial(netmkaddr(mach, "net", "rstyx"), nil);
 	if(ok < 0){
 		sys->fprint(stderr, "Error: cpu: dial: %r\n");
-		return;
+		raise "fail:dial error";
 	}
 
 	ai := kr->readauthinfo(cert);
@@ -132,11 +137,16 @@ init(nil: ref Context, argv: list of string)
 		raise "fail:authentication failure";
 	}
 
-	t := array of byte sys->sprint("%d\n%s\n", len (array of byte args)+1, args);
+	wargs := args;
+	if(!legacy)
+		wargs = Rstyx2 + " " + args;
+	t := array of byte sys->sprint("%d\n%s\n", len (array of byte wargs)+1, wargs);
 	if(sys->write(fd, t, len t) != len t){
 		sys->fprint(stderr, "cpu: export args write error: %r\n");
 		raise "fail:write error";
 	}
+	if(!legacy)
+		expectack(fd);
 
 	# The remote command needs the caller's devices, not its credentials,
 	# home directory and host mounts.  Build a one-use export root containing
@@ -167,6 +177,15 @@ init(nil: ref Context, argv: list of string)
 	if(rc < 0){
 		sys->fprint(stderr, "cpu: export failed: %r\n");
 		raise "fail:export error";
+	}
+}
+
+expectack(fd: ref Sys->FD)
+{
+	b := array[len Rstyx2ok] of byte;
+	if(sys->readn(fd, b, len b) != len b || string b != Rstyx2ok) {
+		sys->fprint(stderr, "cpu: server rejected request before export\n");
+		raise "fail:request rejected";
 	}
 }
 
