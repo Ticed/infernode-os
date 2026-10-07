@@ -423,6 +423,7 @@ timeoutTask(ch: chan of int, ms: int)
 | `tests/host/agentloop_characterization_test.sh` | What the agent loop does against a scripted model, through `lucibridge` (via `/mnt/ui`) and through `/mnt/veltro`, pinned as golden files |
 | `tests/host/xenith_agent_test.sh` | The `Agent` window in a headless Xenith: a message sent, the reply shown |
 | `tests/host/xen_boot_test.sh` | `lib/xen/boot.sh`, the standalone Xenith's entry point: plumber and model up, a plumbed file opened |
+| `tests/host/tools9p_result_test.sh` | Two callers of one tool each read their own result (results are per fid, not per tool) |
 | `tests/host/veltro_cli_test.sh` | The `veltro` command: a task run, its session saved and resumed |
 
 Shell tests also exist in `tests/inferno/` (run inside Inferno) and `tests/host/` (run on the host OS).
