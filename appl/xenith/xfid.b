@@ -241,10 +241,15 @@ Xfid.open(x : self ref Xfid)
 				w.addr = (Range)(0,0);
 				w.limit = (Range)(-1,-1);
 			}
-		QWdata or QWxdata or QWedit =>
+		QWdata or QWxdata =>
 			w.nopen[q]++;
 			seq++;
 			t.file.mark();
+		QWedit =>
+			# No mark here: the edit log marks the file when a
+			# command changes it (elogapply), as Acme's Edit does.
+			# Marking on open left u, written here, nothing to undo.
+			w.nopen[q]++;
 		QWevent =>
 			if(w.nopen[q]++ == byte 0)
 				if(!w.isdir && w.col!=nil){
