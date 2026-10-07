@@ -356,3 +356,7 @@ tools/codex-gate/.venv/
 # files on the card; tools/pi-firmware-manifest.txt pins them by SHA256.
 brcmfmac43455-sdio.*
 cyfmac43455-sdio*
+
+# agentloop_characterization_test.sh scratch (removed when the test exits)
+/usr/agentloop/
+/tests/inferno/.agentloop-char.*
