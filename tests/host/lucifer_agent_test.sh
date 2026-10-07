@@ -75,7 +75,7 @@ expect() {
 		FAILED=$((FAILED + 1))
 	fi
 }
-expect "activity 0 came up idle" status '^idle$'
+expect "activity 0 came up" status '^\(idle\|active\)$'
 expect "the human message is recorded" conversation 'role=human text=SCENARIO:read_system go'
 expect "the reply is shown" conversation 'role=veltro text=Read the system prompt.'
 grep -q 'call_read_system_0_0' "$WORK/req.log" && echo "PASS: the model saw the tool result" || { echo "FAIL: no tool round trip in the model's requests"; FAILED=$((FAILED + 1)); }

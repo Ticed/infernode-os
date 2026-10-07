@@ -2,10 +2,14 @@
 #
 # xenith_agent_test.sh — the Agent window in a headless Xenith.
 #
-# Boots Xenith with no display (SDL dummy driver), starts the agent stack
-# against the scripted model, runs Agent with a first message, and reads
-# the window's body back through Xenith's file interface: the message
-# must have been sent, the tool call made, and the reply shown.
+# Boots Xenith with no display (SDL dummy driver) against the scripted
+# model.  Xenith forks its namespace at start, so its window files are
+# reachable only from commands it runs itself: the test gives it a dump
+# file whose one window is a shell script (Xenith re-runs a window's
+# command on load, as acme does), and that script runs Agent with a
+# first message, finds its window, and reads the body back through
+# /chan into a file the host can see.  The message must have been sent,
+# the tool call made, and the reply shown in the window.
 #
 set -e
 . "$(dirname "$0")/common.sh"
@@ -27,11 +31,18 @@ WORK="$(mktemp -d)"
 SERVER_PID=
 EMU_PID=
 SCRIPT=
+DRIVER=
+OUT="$ROOT/tmp/xenith-agent-test.out"
+DUMP="$ROOT/tmp/xenith-agent-test.dump"
 cleanup() {
 	[ -z "$EMU_PID" ] || kill -9 "$EMU_PID" 2>/dev/null || true
 	[ -z "$SERVER_PID" ] || kill "$SERVER_PID" 2>/dev/null || true
+	[ "${KEEP:-0}" = 1 ] && return 0
 	[ -z "$SCRIPT" ] || rm -f "$SCRIPT"
-	rm -rf "$ROOT/usr/agentloop" "$WORK"
+	[ -z "$DRIVER" ] || rm -f "$DRIVER"
+	rm -rf "$ROOT/usr/agentloop" "$ROOT/tmp/veltro/cow" "$ROOT/tmp/veltro/scratch" "$OUT" "$DUMP" \
+		"$ROOT/tmp/xenith-agent-test.err" "$ROOT/tmp/xenith-agent-test.trace" "$ROOT/tmp/xenith-agent-test.agent" \
+		"$ROOT/tmp/xenith-agent-test.tools9p" "$WORK"
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -42,7 +53,63 @@ while [ ! -s "$WORK/port" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
 [ -s "$WORK/port" ] || { echo "FAIL: mock backend did not start"; exit 1; }
 PORT=$(cat "$WORK/port")
 
-rm -rf "$ROOT/usr/agentloop" "$ROOT/tmp/veltro/cow" "$ROOT/tmp/veltro/scratch"
+rm -rf "$ROOT/usr/agentloop" "$ROOT/tmp/veltro/cow" "$ROOT/tmp/veltro/scratch" "$OUT"
+mkdir -p "$ROOT/tmp"
+
+# What runs inside Xenith: Agent, then the window's body, read back.
+DRIVER="$ROOT/tests/inferno/.xenith-agent-driver.$$.sh"
+cat > "$DRIVER" <<'EOF'
+#!/dis/sh.dis
+load std
+echo start > /tmp/xenith-agent-test.trace
+/xenith/dis/Agent.dis -p /usr/agentloop -t read,list -x SCENARIO:single_read >[2] /tmp/xenith-agent-test.agent &
+id=
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 {
+	if {~ $#id 0} {
+		for w in `{ls /chan} {
+			if {ftest -f $w/tag} {
+				if {grep -s '^/[+]Agent' $w/tag} {
+					id=$w
+				}
+			}
+		}
+		sleep 1
+	}
+}
+echo window $id >> /tmp/xenith-agent-test.trace
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 {
+	if {! grep -s 'Read it.' $id/body} {
+		sleep 1
+	}
+}
+echo reply >> /tmp/xenith-agent-test.trace
+{
+	echo '@@ window' $id
+	echo '@@ tag'
+	cat $id/tag
+	echo
+	echo '@@ body'
+	cat $id/body
+	echo '@@ tools'
+	cat /tool/tools
+	echo '@@ log'
+	cat /mnt/veltro/0/log
+	echo '@@ end'
+	echo DRIVER_DONE
+} > /tmp/xenith-agent-test.out
+EOF
+
+# The dump: a working directory, no fonts, one column, one window
+# running the driver (an 'e' line is an external command's window).
+{
+	printf '/usr/agentloop\n\n\n'
+	printf '%11d \n' 0
+	printf 'e%11d %11d %11d %11d %11d \n' 0 0 0 0 0
+	printf 'ctl\n'
+	printf '/usr/agentloop\n'
+	printf 'sh /tests/inferno/%s\n' "$(basename "$DRIVER")"
+} > "$DUMP"
+
 SCRIPT="$ROOT/tests/inferno/.xenith-agent-test.$$.sh"
 cat > "$SCRIPT" <<EOF
 #!/dis/sh.dis
@@ -54,46 +121,16 @@ ndb/cs
 llmsrv -b openai -u http://127.0.0.1:$PORT/v1 -M mock &
 sleep 1
 bind -bc '#splumber' /chan
-xenith &
-sleep 6
-echo '@@ chan'
-ls /chan
-Agent -p /usr/agentloop -t read,list -x 'SCENARIO:single_read go' &
-id=
-for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 {
-	if {~ \$#id 0} {
-		for w in \`{ls /chan} {
-			if {ftest -f \$w/tag} {
-				if {grep -s '^/+Agent' \$w/tag} {
-					id=\$w
-				}
-			}
-		}
-		sleep 1
-	}
-}
-echo '@@ window' \$id
-for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 {
-	if {! grep -s 'Read it.' \$id/body} {
-		sleep 1
-	}
-}
-echo '@@ tag'
-cat \$id/tag
-echo
-echo '@@ body'
-cat \$id/body
-echo '@@ end'
-echo DRIVER_DONE
+xenith -l /tmp/$(basename "$DUMP") >[2] /tmp/xenith-agent-test.err
 EOF
-chmod +x "$SCRIPT"
+chmod +x "$SCRIPT" "$DRIVER"
 
 SDL_VIDEODRIVER=dummy OPENAI_API_KEY=test "$EMU" -c1 -pheap=512m -pmain=512m -pimage=512m -g1024x768 \
 	-r"$ROOT" /dis/sh.dis "/tests/inferno/$(basename "$SCRIPT")" > "$WORK/emu.log" 2>&1 &
 EMU_PID=$!
 i=0
-while kill -0 "$EMU_PID" 2>/dev/null && [ "$i" -lt 120 ]; do
-	grep -q '^DRIVER_DONE$' "$WORK/emu.log" 2>/dev/null && break
+while kill -0 "$EMU_PID" 2>/dev/null && [ "$i" -lt 180 ]; do
+	grep -q '^DRIVER_DONE$' "$OUT" 2>/dev/null && break
 	sleep 1
 	i=$((i + 1))
 done
@@ -101,9 +138,20 @@ kill -9 "$EMU_PID" 2>/dev/null || true
 wait "$EMU_PID" 2>/dev/null || true
 EMU_PID=
 
-LOG="$WORK/emu.log"
-grep -q '^DRIVER_DONE$' "$LOG" || { echo "FAIL: driver did not finish"; tail -30 "$LOG"; exit 1; }
-section() { awk -v s="@@ $1" '$0 == s {p=1; next} /^@@ / {p=0} p' "$LOG"; }
+if ! { [ -f "$OUT" ] && grep -q '^DRIVER_DONE$' "$OUT"; }; then
+	echo "FAIL: driver did not finish"
+	[ -f "$OUT" ] && cat "$OUT"
+	echo "--- trace:"
+	[ -f "$ROOT/tmp/xenith-agent-test.trace" ] && cat "$ROOT/tmp/xenith-agent-test.trace"
+	echo "--- agent:"
+	[ -f "$ROOT/tmp/xenith-agent-test.agent" ] && cat "$ROOT/tmp/xenith-agent-test.agent"
+	echo "--- xenith:"
+	[ -f "$ROOT/tmp/xenith-agent-test.err" ] && cat "$ROOT/tmp/xenith-agent-test.err"
+	echo "--- emu:"
+	tail -20 "$WORK/emu.log"
+	exit 1
+fi
+section() { awk -v s="@@ $1" '$0 == s {p=1; next} /^@@ / {p=0} p' "$OUT"; }
 FAILED=0
 expect() {
 	if section "$2" | grep -q -- "$3"; then
@@ -113,13 +161,12 @@ expect() {
 		FAILED=$((FAILED + 1))
 	fi
 }
-expect "Agent window opened" window '/chan/[0-9]'
+grep -q '^@@ window /chan/[0-9]' "$OUT" && echo "PASS: Agent window opened" || { echo "FAIL: no Agent window"; FAILED=$((FAILED + 1)); }
 expect "tag has Send" tag 'Send'
 expect "tag has Stop" tag 'Stop'
-expect "body shows the user message" body 'SCENARIO:single_read go'
+expect "body shows the user message" body 'SCENARIO:single_read'
 expect "body shows the reply" body 'Read it.'
-expect "the tool call was made" window '.'
 grep -q 'call_single_read_0_0' "$WORK/req.log" && echo "PASS: the model saw the tool result" || { echo "FAIL: no tool round trip in the model's requests"; FAILED=$((FAILED + 1)); }
 
-[ "$FAILED" -eq 0 ] || { tail -40 "$LOG"; echo "xenith_agent_test: $FAILED failed"; exit 1; }
+[ "$FAILED" -eq 0 ] || { cat "$OUT"; echo "xenith_agent_test: $FAILED failed"; exit 1; }
 echo "xenith_agent_test: PASS"

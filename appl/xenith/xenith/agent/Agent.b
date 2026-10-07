@@ -115,21 +115,31 @@ runcmd(path: string, args: list of string, started: chan of int)
 	<-cmdstop;
 }
 
+# A live tool server has a registry; a stale /tool left on disk by an
+# earlier run has empty files there.
+toolsup(): int
+{
+	return readfile("/tool/_registry") != "";
+}
+
 startservers(paths, tools: string): string
 {
 	if(!exists("/mnt/llm/new"))
 		return "no model at /mnt/llm (start llmsrv first)";
 	started := chan of int;
 	cmdstop = chan of int;
-	if(!exists("/tool/tools")) {
+	if(!toolsup()) {
 		if(tools == "")
 			tools = DEFAULT_TOOLS;
 		(nil, tlist) := sys->tokenize(tools, ",");
 		spawn runcmd(TOOLS9P, "tools9p" :: tlist, started);
 		if(<-started < 0)
 			return "cannot start tools9p";
-		for(i := 0; i < 50 && !exists("/tool/tools"); i++)
+		# tools9p loads every tool module before it mounts; give it time.
+		for(i := 0; i < 300 && !toolsup(); i++)
 			sys->sleep(100);
+		if(!toolsup())
+			return "tools9p did not come up";
 	}
 	args := "veltrosrv" :: nil;
 	if(verbose)

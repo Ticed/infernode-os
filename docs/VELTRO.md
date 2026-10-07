@@ -318,7 +318,7 @@ The verify persona *runs* the check, probes edge cases, and ends with a single
 
 ### Embedded in Lucia
 
-The Lucia launch scripts wire everything up: `tools9p` with the default budget, `lucibridge` as the agent loop, `speech9p` for voice. See [LUCIA.md](LUCIA.md).
+The Lucia launch scripts wire everything up: `tools9p` with the default budget, `lucibridge` as the agent's Lucia client (it starts its own `veltrosrv`), `speech9p` for voice. See [LUCIA.md](LUCIA.md).
 
 ## Hardening checklist
 

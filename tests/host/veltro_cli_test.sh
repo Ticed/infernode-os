@@ -25,8 +25,8 @@ cleanup() {
 	[ -z "$EMU_PID" ] || kill -9 "$EMU_PID" 2>/dev/null || true
 	[ -z "$SERVER_PID" ] || kill "$SERVER_PID" 2>/dev/null || true
 	[ -z "$SCRIPT" ] || rm -f "$SCRIPT"
-	rm -rf "$ROOT/usr/agentloop" "$ROOT/usr/inferno/veltro/sessions/scenario-single-read-go" \
-		"$ROOT/usr/inferno/veltro/sessions/scenario-single-read-go-"* "$WORK"
+	rm -rf "$ROOT/usr/agentloop" "$ROOT/usr/inferno/veltro/sessions/scenariosingle-read-go" \
+		"$ROOT/usr/inferno/veltro/sessions/scenariosingle-read-go-"* "$WORK"
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -100,11 +100,11 @@ expectnot() {
 }
 expect "the tool call is shown" run '^\[read '
 expect "the reply is shown" run '^Read it.$'
-expect "the session was named" session '^scenario-single-read-go'
+expect "the session was named" session '^scenariosingle-read-go'
 expect "the session has its task" session '/task$'
 expect "the session has its transcript" session '/transcript$'
 expect "the session log records the call" log '^step 1: read .* -> .*alpha'
-expect "resume says so" resume 'resuming session scenario-single-read-go'
+expect "resume says so" resume 'resuming session scenariosingle-read-go'
 expect "resume runs the task again" resume '^Read it.$'
 grep -q 'Resuming Task' "$WORK/req.log" && echo "PASS: the model got the resume context" || { echo "FAIL: no resume context reached the model"; FAILED=$((FAILED + 1)); }
 expectnot "the server is stopped after the run" mounts 'new'

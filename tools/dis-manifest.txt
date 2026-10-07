@@ -1036,4 +1036,3 @@ dis/xenith/xfid.dis
 dis/yacc.dis
 dis/zeros.dis
 
-xenith/dis/Agent.dis
