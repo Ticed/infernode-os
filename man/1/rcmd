@@ -4,6 +4,8 @@ rcmd \- remote command execution
 .SH SYNOPSIS
 .B rcmd
 [
+.B -1
+] [
 .B -A
 ] [
 .B -a
@@ -37,6 +39,17 @@ must have enabled the
 .L rstyx
 service (typically started via
 .IR svc (8)).
+.PP
+The default version 2 request waits for an acknowledgment from
+.IR rstyxd (8)
+before exporting caller files.  A server that rejects the transport or command
+therefore gives the command a failing status instead of an ambiguous empty
+success.  The
+.B -1
+option selects the original unacknowledged protocol for compatibility with an
+old server; its status cannot report early server rejection reliably.
+The acknowledgment covers request acceptance, not the eventual exit status of
+the remote program.
 .PP
 For authentication,
 .I rcmd

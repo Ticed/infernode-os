@@ -12,6 +12,8 @@ Rcmd: module
 };
 
 DEFAULTALG := "aes_256_cbc sha256";
+Rstyx2 := "!rstyx2";
+Rstyx2ok := "OK rstyx2\n";
 sys: Sys;
 auth: Auth;
 
@@ -24,11 +26,14 @@ init(nil: ref Draw->Context, argv: list of string)
 	arg->init(argv);
 	alg: string;
 	doauth := 1;
+	legacy := 0;
 	exportpath: string;
 	keyfile: string;
-	arg->setusage("rcmd [-A] [-f keyfile] [-a alg] [-e exportpath] tcp!mach cmd");
+	arg->setusage("rcmd [-1A] [-f keyfile] [-a alg] [-e exportpath] tcp!mach cmd");
 	while((o := arg->opt()) != 0)
 		case o {
+		'1' =>
+			legacy = 1;
 		'a' =>
 			alg = arg->earg();
 		'A' =>
@@ -103,11 +108,16 @@ init(nil: ref Draw->Context, argv: list of string)
 			raise "fail:auth failed";
 		}
 	}
-	t := array of byte sys->sprint("%d\n%s\n", len (array of byte args)+1, args);
+	wargs := args;
+	if(!legacy)
+		wargs = Rstyx2 + " " + args;
+	t := array of byte sys->sprint("%d\n%s\n", len (array of byte wargs)+1, wargs);
 	if(sys->write(fd, t, len t) != len t){
 		sys->fprint(stderr(), "rcmd: cannot write arguments: %r\n");
 		raise "fail:bad arg write";
 	}
+	if(!legacy)
+		expectack(fd);
 
 	private := 0;
 	if(exportpath == nil){
@@ -123,6 +133,13 @@ init(nil: ref Draw->Context, argv: list of string)
 		sys->fprint(stderr(), "rcmd: export: %r\n");
 		raise "fail:export failed";
 	}
+}
+
+expectack(fd: ref Sys->FD)
+{
+	b := array[len Rstyx2ok] of byte;
+	if(sys->readn(fd, b, len b) != len b || string b != Rstyx2ok)
+		error("server rejected request before export");
 }
 
 mkexportroot(): string

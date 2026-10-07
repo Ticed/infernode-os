@@ -249,6 +249,14 @@ the handshake, and everything is slower than local: every change on
 screen crosses the network, several times more slowly over Wi-Fi than
 over a cable.
 
+Current `cpu` waits for `rstyxd` to acknowledge the protected request before
+it exports any local files.  A rejected cipher choice or request is therefore
+a command failure, not an ambiguous successful command with no output.  New
+servers still accept old clients.  When connecting a new client to an old
+server, `cpu -1` selects the original unacknowledged protocol explicitly; do
+not use it as an automatic fallback because its status cannot report early
+server rejection reliably.
+
 ### 3a. The whole desktop, in its own window
 
 Your own desktop is busy drawing itself, so the node's desktop gets **a

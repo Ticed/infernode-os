@@ -16,6 +16,8 @@ DRIVER="$ROOT/tmp/cpu_boundary_test.sh"
 REMOTE="$ROOT/tmp/cpu_boundary_remote.sh"
 ROOTREMOTE="$ROOT/tmp/cpu_boundary_root_remote.sh"
 DEFAULTPORT=$((PORT + 1))
+ACKPORT=$((PORT + 2))
+DEADPORT=$((PORT + 19))
 RCMDREMOTE="$ROOT/tmp/rcmd_boundary_remote.sh"
 
 cat > "$REMOTE" <<'EOF'
@@ -74,6 +76,12 @@ echo CALLER-MARKER > /tmp/cpu-client-secret
 echo 2147483647 | auxi/rstyxd
 echo LENGTH-TEST-DONE
 
+if {cpu 'tcp!127.0.0.1!$DEADPORT' echo DIAL-SHOULD-NOT-RUN} {
+	echo CPU-DIAL-STATUS-WRONG
+} {
+	echo CPU-DIAL-STATUS-REJECTED
+}
+
 # Authenticated dial/listen used to negotiate plaintext by default.  The first
 # call explicitly asks for none and must never reach the command; the second
 # uses both secure defaults and must deliver its payload.
@@ -86,8 +94,38 @@ if {ftest -e /tmp/default-transport-payload} {echo DEFAULT-NONE-ACCEPTED} {echo 
 dial 'tcp!127.0.0.1!$DEFAULTPORT' echo DEFAULT-SECURE-PAYLOAD
 sleep 2
 cat /tmp/default-transport-payload
-listen -a aes_256_cbc -a sha256 'tcp!*!$PORT' auxi/rstyxd &
+listen -R 100 -a aes_256_cbc -a sha256 'tcp!*!$PORT' auxi/rstyxd &
+listen -R 100 -a aes_256_cbc -a sha256 'tcp!*!$ACKPORT' {echo 'NO rstyx2'; cat > /dev/null} &
 sleep 2
+
+# Version 2 does not begin exporting until rstyxd acknowledges that it has
+# accepted the protected request.  A server-side crypto-policy rejection or
+# command-load failure must therefore be a false shell condition, rather than
+# the historical empty-success status.
+if {cpu -C none 'tcp!127.0.0.1!$PORT' echo DOWNGRADE-SHOULD-NOT-RUN} {
+	echo CPU-DOWNGRADE-STATUS-WRONG
+} {
+	echo CPU-DOWNGRADE-STATUS-REJECTED
+}
+if {rcmd -a none 'tcp!127.0.0.1!$PORT' echo DOWNGRADE-SHOULD-NOT-RUN} {
+	echo RCMD-DOWNGRADE-STATUS-WRONG
+} {
+	echo RCMD-DOWNGRADE-STATUS-REJECTED
+}
+if {rcmd 'tcp!127.0.0.1!$PORT' definitely-no-such-command} {
+	echo RCMD-BAD-COMMAND-STATUS-WRONG
+} {
+	echo RCMD-BAD-COMMAND-STATUS-REJECTED
+}
+if {cpu 'tcp!127.0.0.1!$ACKPORT' echo WRONG-ACK-SHOULD-NOT-RUN} {
+	echo CPU-WRONG-ACK-STATUS-WRONG
+} {
+	echo CPU-WRONG-ACK-STATUS-REJECTED
+}
+# New rstyxd retains the original unacknowledged protocol for old clients;
+# -1 is the explicit client-side compatibility switch.
+cpu -1 'tcp!127.0.0.1!$PORT' echo LEGACY-CPU-OK
+rcmd -1 'tcp!127.0.0.1!$PORT' echo LEGACY-RCMD-OK
 
 cpu 'tcp!127.0.0.1!$PORT' sh /tmp/cpu_boundary_remote.sh
 # The older rcmd client speaks the same service protocol and must enforce the
@@ -136,8 +174,16 @@ ok "fresh kernel-device attachment is disabled" DEVICE-BLOCKED
 ok "the caller's device tree is still delegated" DEV-DELEGATED
 ok "an oversized command prefix is rejected before allocation" 'rstyxd: command line exceeds 64 KiB'
 ok "the command-length rejection returns to the caller" LENGTH-TEST-DONE
+ok "cpu reports a dial failure" CPU-DIAL-STATUS-REJECTED
 ok "the authenticated listener default rejects plaintext" DEFAULT-NONE-REJECTED
 ok "the dial/listen defaults negotiate protected transport" DEFAULT-SECURE-PAYLOAD
+ok "cpu reports server-side downgrade rejection" CPU-DOWNGRADE-STATUS-REJECTED
+notok "a rejected cpu command does not run" DOWNGRADE-SHOULD-NOT-RUN
+ok "rcmd reports server-side downgrade rejection" RCMD-DOWNGRADE-STATUS-REJECTED
+ok "rcmd reports command-load rejection" RCMD-BAD-COMMAND-STATUS-REJECTED
+ok "cpu rejects an invalid acceptance acknowledgment" CPU-WRONG-ACK-STATUS-REJECTED
+ok "the explicit legacy cpu protocol remains accepted" LEGACY-CPU-OK
+ok "the explicit legacy rcmd protocol remains accepted" LEGACY-RCMD-OK
 ok "the unmount-root probe returns control to the caller" ROOT-TEST-DONE
 notok "unmounting the restricted root does not reveal the server" BOOT-MARKER
 ok "-e explicitly delegates a wider caller tree" EXPLICIT-MARKER
