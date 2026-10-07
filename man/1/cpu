@@ -4,6 +4,9 @@ cpu \- execute a remote command
 .SH SYNOPSIS
 .B cpu
 [
+.B -1
+]
+[
 .B -C
 .I alg
 ]
@@ -37,6 +40,20 @@ If
 is not given, then
 .B /dis/sh
 is run.
+.PP
+Before exporting any caller files, the client uses the version 2 request
+protocol and waits for an acknowledgment from
+.IR rstyxd (8).
+EOF or any other response is a command failure.  This makes a rejected
+transport choice or request observable to scripts instead of looking like a
+successful command that printed nothing.
+The
+.B -1
+option uses the original unacknowledged request protocol for an old server.
+It should be used only for compatibility: that protocol cannot distinguish
+early server rejection from successful empty output.
+The acknowledgment reports that the server accepted and prepared the request;
+it does not report the eventual exit status of the remote program.
 .PP
 The
 .B -C
