@@ -180,7 +180,7 @@ jobs:
         "$ROOT/tools/verify-dis-build.sh"
 
         # Shared runtime tree
-        for d in dis lib fonts module services locale usr mnt; do
+        for d in dis xenith lib fonts module services locale usr mnt; do
           [ -d "$d" ] && cp -a "$d" "$STAGE/"
         done
 
@@ -466,7 +466,7 @@ jobs:
         "$ROOT/tools/verify-dis-build.sh"
 
         # Runtime tree into resources/
-        for d in dis lib fonts module services locale usr mnt; do
+        for d in dis xenith lib fonts module services locale usr mnt; do
           [ -d "$d" ] && cp -a "$d" "$STAGE/resources/"
         done
         mkdir -p "$STAGE/resources/tmp"
@@ -668,7 +668,7 @@ jobs:
         "$ROOT/tools/verify-dis-build.sh"
 
         # Shared runtime tree
-        for d in dis lib fonts module services locale usr mnt; do
+        for d in dis xenith lib fonts module services locale usr mnt; do
           [ -d "$d" ] && cp -a "$d" "$STAGE/"
         done
 
@@ -952,7 +952,7 @@ jobs:
         "$ROOT/tools/verify-dis-build.sh"
 
         # Runtime tree into resources/
-        for d in dis lib fonts module services locale usr mnt; do
+        for d in dis xenith lib fonts module services locale usr mnt; do
           [ -d "$d" ] && cp -a "$d" "$STAGE/resources/"
         done
         mkdir -p "$STAGE/resources/tmp"
@@ -1156,7 +1156,7 @@ jobs:
         "$ROOT/tools/verify-dis-build.sh"
 
         # Runtime tree goes in Contents/Resources/
-        for d in dis lib fonts module services locale usr mnt; do
+        for d in dis xenith lib fonts module services locale usr mnt; do
           [ -d "$d" ] && cp -a "$d" "$RESOURCES/"
         done
         mkdir -p "$RESOURCES/tmp" "$RESOURCES/usr/inferno/secstore" "$RESOURCES/usr/inferno/tmp"
@@ -1385,7 +1385,7 @@ jobs:
         "$ROOT/tools/verify-dis-build.sh"
 
         # Shared runtime tree
-        for d in dis lib fonts module services locale usr mnt; do
+        for d in dis xenith lib fonts module services locale usr mnt; do
           [ -d "$d" ] && cp -a "$d" "$STAGE/"
         done
 
@@ -1612,7 +1612,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$Stage\Nt\amd64\bin" | Out-Null
           Copy-Item "Nt\amd64\bin\limbo.exe" "$Stage\Nt\amd64\bin\"
           Copy-Item "Nt\amd64\bin\mk.exe"    "$Stage\Nt\amd64\bin\"
-          foreach ($d in @("dis", "lib", "fonts", "module", "services", "locale", "usr", "mnt")) {
+          foreach ($d in @("dis", "xenith", "lib", "fonts", "module", "services", "locale", "usr", "mnt")) {
             if (Test-Path $d) { Copy-Item -Recurse $d "$Stage\$d" }
           }
           New-Item -ItemType Directory -Force -Path "$Stage\tmp" | Out-Null

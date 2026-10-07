@@ -75,13 +75,12 @@ for d in $DIRS; do
 	rm -f "$ROOT/.dis-build-$$.log"
 done
 
-# Scope: dis/ (the runtime, which releases ship) and acme/dis/ (acme's own
-# command directory).  xenith/dis/ is built by appl/xenith/xenith/bin but was
-# never tracked and is not staged into releases, so it is not the manifest's
-# business -- including it would only add two dozen permanent "extra" lines.
+# Scope: dis/ (the runtime, which releases ship), acme/dis/ (acme's own
+# command directory) and xenith/dis/ (Xenith's: what a tag runs, Mail, win,
+# Agent and the rest, staged into releases alongside dis/).
 built="$ROOT/.dis-built-$$.txt"
 want="$ROOT/.dis-want-$$.txt"
-find dis acme/dis -name '*.dis' -type f 2>/dev/null | sed 's|^\./||' | sort > "$built"
+find dis acme/dis xenith/dis -name '*.dis' -type f 2>/dev/null | sed 's|^\./||' | sort > "$built"
 # Sort the manifest here too rather than trusting its committed order: a line
 # added in the wrong place should be a harmless diff, not a CI failure.
 sort "$MANIFEST" > "$want"
