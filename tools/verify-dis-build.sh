@@ -75,9 +75,10 @@ for d in $DIRS; do
 	rm -f "$ROOT/.dis-build-$$.log"
 done
 
-# Scope: dis/ (the runtime, which releases ship), acme/dis/ (acme's own
-# command directory) and xenith/dis/ (Xenith's: what a tag runs, Mail, win,
-# Agent and the rest, staged into releases alongside dis/).
+# Scope: dis/ (the runtime) and the editors' own command directories,
+# acme/dis/ and xenith/dis/ (what a tag runs: win, Mail, Agent and the
+# rest).  Each editor binds its directory before /dis at startup, as
+# upstream Inferno's acme does; releases stage all three.
 built="$ROOT/.dis-built-$$.txt"
 want="$ROOT/.dis-want-$$.txt"
 find dis acme/dis xenith/dis -name '*.dis' -type f 2>/dev/null | sed 's|^\./||' | sort > "$built"

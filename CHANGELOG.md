@@ -25,10 +25,13 @@ All notable changes to InferNode are documented in this file.
   grants it was started with, and mounts only in the client's namespace:
   the agent's tools cannot see `/mnt/veltro`, so it cannot approve or
   widen itself. Compaction is `llmsrv`'s alone.
-- **Xenith's commands ship.** `xenith/dis` — what Xenith runs from a tag:
-  `Mail`, `win`, `Chat`, `adiff`, `Agent` and the rest — was built but never
-  staged into a release, so they worked only in a development tree. Every
-  release job stages it now, and the build manifest covers it.
+- **Acme's and Xenith's commands ship.** Each editor binds its own command
+  directory before `/dis` (`acme/dis`, `xenith/dis`: `win`, `adiff`, `Mail`,
+  `Agent` and the rest), as upstream Inferno's acme does. Releases staged a
+  fixed list of top-level directories that never included `acme/` or
+  `xenith/`, so in a shipped tree neither editor could run its tag
+  commands, and Acme had no colour schemes. Every release job stages both
+  now, and the build manifest covers both command directories.
 - `veltro` session names and logs were built with `string c` on a rune,
   which printed its number; fixed. `-y` answers the approval gate for
   scripts. `xen` starts the model service the way Lucifer's boot does,
