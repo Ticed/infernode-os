@@ -1108,8 +1108,15 @@ Xfid.eventwrite(x : self ref Xfid, w : ref Window)
 	err = nil;
 	nb = sys->utfbytes(data(x.fcall), count(x.fcall));
 	r = string data(x.fcall)[0:nb];
+	# Acme parses events from a C string, whose terminating NUL stops
+	# every scan below. Give r one (two: an event of one character reads
+	# two), so that a short or truncated event is refused as bad, not
+	# read past its end: that raised an array bounds error, which
+	# killed this Xfid and left the writer waiting for ever.
+	nr := len r;
+	r += "\0\0";
 loop :
-	for(n=0; n<len r; n+=m){
+	for(n=0; n<nr; n+=m){
 		p = n;
 		w.owner = r[p++];	# disgusting
 		c = r[p++];
