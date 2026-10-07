@@ -95,12 +95,11 @@ done
 
 case $editor in
 xenith)
-	# A plumber first, as Lucifer's boot starts one, so plumbing works
-	# from the outset and Xenith does not have to start its own.
-	run="bind -bc '#splumber' /chan; plumber /lib/xen/plumbing; "
+	run=
 	# With plan9port present, listen on its plumber's xenith port too
 	# (tools/xen.plumbing), so `plumb file` on the host opens the file
 	# here. The host shell kills its reader once the emu is gone.
+	# hostplumb waits for the plumber, which boot.sh starts below.
 	if nine=$(command -v 9p); then
 		host="'$nine' read plumb/xenith & r=\$!; while kill -0 \$PPID 2>/dev/null; do sleep 1; done; kill \$r"
 		run="${run}os sh -c $(q "$host") | hostplumb & "
@@ -113,7 +112,8 @@ xenith)
 		*)	run="${run}run /lib/xen/mounthost $(q "$h") >[2] /dev/null; " ;;
 		esac
 	done
-	run="${run}xenith -t $(q "${XEN_THEME:-xenith}")$files"
+	# Then the plumber, the model and Xenith, as the apps start them.
+	run="${run}run /lib/xen/boot.sh -t $(q "${XEN_THEME:-xenith}")$files"
 	# The display's own pixels on a Retina screen, not each doubled:
 	# Xenith sizes itself by $displayscale (emu(1)). Not for sam, whose
 	# Tk does not. INFERNODE_HIDPI=0 keeps them doubled.

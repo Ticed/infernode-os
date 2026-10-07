@@ -199,6 +199,25 @@ jobs:
         chmod +x tests/host/llmsrv_session_capability_test.sh
         ROOT=. tests/host/llmsrv_session_capability_test.sh
 
+    - name: Run agent harness checks
+      run: |
+        # The one agent loop, veltrosrv, through its files and through its
+        # clients, against a scripted model (tests/host/agentloop): the
+        # contract of /mnt/veltro, the veltro command, and what the loop
+        # sends back to the model after each tool call, pinned as golden
+        # files.  lucibridge's scenarios drive it through /mnt/ui as the
+        # grind driver does; a subset here, the full set is
+        # `tests/host/agentloop_characterization_test.sh`.
+        chmod +x tests/host/veltrosrv_test.sh tests/host/veltro_cli_test.sh \
+          tests/host/lucibridge_tool_timeout_test.sh \
+          tests/host/agentloop_characterization_test.sh
+        ROOT=. bash tests/host/lucibridge_tool_timeout_test.sh
+        ROOT=. bash tests/host/veltrosrv_test.sh
+        ROOT=. bash tests/host/veltro_cli_test.sh
+        ROOT=. FRONTENDS=veltrosrv bash tests/host/agentloop_characterization_test.sh
+        ROOT=. FRONTENDS=lucibridge bash tests/host/agentloop_characterization_test.sh \
+          single_read two_reads write_then_read error_streak say step_cap
+
     - name: Run memdraw rasteriser and fast-path checks
       run: |
         # libmemdraw/aatest.c: exact coverage, fill rules, strokes, and the

@@ -48,7 +48,8 @@ if ($Sam) {
 	$run = 'wm/wm sh -c ' + (Q ("wm/sam$list; echo halt > /dev/sysctl"))
 } else {
 	$theme = if ($env:XEN_THEME) { $env:XEN_THEME } else { 'xenith' }
-	$run = 'xenith -t ' + (Q $theme) + $list
+	# The plumber, the model and Xenith, as tools/xen and the apps start them.
+	$run = 'run /lib/xen/boot.sh -t ' + (Q $theme) + $list
 }
 $cwd = ToInferno (Get-Location).ProviderPath
 $cmd = if ($cwd) { 'cd ' + (Q $cwd) + '; ' + $run } else { $run }

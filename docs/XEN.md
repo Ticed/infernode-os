@@ -51,7 +51,30 @@ the window's title bar is drawn by the client, with libdecor:
 `install-sdl3.sh` builds SDL with it, and the desktop needs a libdecor
 plugin (`libdecor-0-plugin-1-gtk`, installed with GNOME). An SDL built
 without it opens a window with no title bar on GNOME, which cannot be
-moved or maximised with the mouse. `xen.ps1` is untested and has no host plumbing.
+moved or maximised with the mouse. `xen.ps1` is untested and has no host plumbing. `lib/xen/boot.sh`,
+which all of them run, is tested headless by
+`tests/host/xen_boot_test.sh`.
+
+## The Xenith app
+
+Every release also ships Xenith as an app of its own: `Xenith.app` in
+`xenith-<version>-macos-arm64.dmg`, and `Xenith.exe` in
+`xenith-<version>-windows-amd64.zip`. Each is InferNode's emulator and
+runtime tree with its own name, icon and launcher, and runs what `xen`
+runs, Xenith alone over the whole window, starting in your home
+directory. Both share `~/.infernode` with InferNode, so settings, keys
+and the model configuration are the same in either. Files dropped on
+`Xenith.exe` (or opened with it) are opened in the new instance, on C:
+only; on macOS, open files by plumbing them (below) or from Xenith
+itself.
+
+`xen`, `xen.ps1` and both apps start the same way, through
+`lib/xen/boot.sh`: a plumber, the model service, then Xenith with the
+arguments given. The bundle and launcher sources are
+`MacOSX/Xenith.app` and `emu/Nt/infernode-launcher.c` built with
+`/DXENITH` (`emu/Nt/build-launcher.ps1` builds both launchers); the
+icon is `MacOSX/Xenith.png`, from which `Xenith.icns` and
+`Nt/Xenith.ico` are made.
 
 ## Behaviour
 
@@ -101,6 +124,19 @@ A stand-alone Xenith is pinned to its theme: switching the system theme
 and its `Theme` command (`Theme halo`, or `Theme` alone for the next)
 changes that session only. See [XENITH.md](XENITH.md#themes). sam's
 colours follow the system theme rather than `XEN_THEME`.
+
+## The agent
+
+Middle-click **Agent** in a tag (or run `Agent -p <dir>`) for a window
+on the Veltro agent, granted the directory `xen` was run from unless
+`-p` says otherwise. Type at the end of the body and middle-click
+**Send**; the reply arrives as it is generated, tool calls and all.
+**Stop** cancels the turn, **Reset** starts the model over, **Allow** and
+**Deny** answer a request for approval shown in the body, **Delete**
+ends it. `xen` starts the model service the way Lucifer's boot does
+(`lib/lucifer/llmsrv.sh`, from `/lib/ndb/llm`); `Agent` starts the tool
+server and the agent harness itself. See `man 4 veltrosrv` and
+[VELTRO.md](VELTRO.md).
 
 ## Plumbing
 
