@@ -210,7 +210,10 @@ jobs:
         # `tests/host/agentloop_characterization_test.sh`.
         chmod +x tests/host/veltrosrv_test.sh tests/host/veltro_cli_test.sh \
           tests/host/lucibridge_tool_timeout_test.sh \
-          tests/host/agentloop_characterization_test.sh
+          tests/host/agentloop_characterization_test.sh \
+          tests/host/tools9p_result_test.sh
+        # Concurrent calls to one tool each read their own result.
+        ROOT=. bash tests/host/tools9p_result_test.sh
         ROOT=. bash tests/host/lucibridge_tool_timeout_test.sh
         ROOT=. bash tests/host/veltrosrv_test.sh
         ROOT=. bash tests/host/veltro_cli_test.sh
