@@ -894,7 +894,6 @@ dis/veltro/msg9p.dis
 dis/veltro/msgwatch.dis
 dis/veltro/ninepsrc.dis
 dis/veltro/nsconstruct.dis
-dis/veltro/repl.dis
 dis/veltro/sources/email.dis
 dis/veltro/sources/mockmail.dis
 dis/veltro/sources/sms.dis

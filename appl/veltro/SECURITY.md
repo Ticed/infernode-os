@@ -9,16 +9,16 @@ Veltro uses Inferno OS namespace isolation to create secure environments for AI 
 This document distinguishes:
 
 - **Harness** — the namespace-restriction machinery itself: `nsconstruct`,
-  `tools9p`, and the `veltro`/`repl`/`spawn` entry points. The harness defines
+  `tools9p`, and the `veltro`/`spawn` entry points. The harness defines
   what an agent *can* do and is trusted code.
 - **Coordinator** — the process that owns the model loop and chooses which
-  tool request to send. `veltro` and `repl` restrict their own namespaces.
+  tool request to send. `veltro` restricts its own namespace.
   `lucibridge` is a trusted GUI coordinator: it does not call `restrictns()`;
   model-requested effects cross into a fresh, confined `tools9p` worker for
   every call. Model text is data and never executes in the coordinator.
 - **Agent** — a logical model session plus its capability set. Do not assume
   one agent means one confined process: the enforcement point is either its
-  restricted coordinator (`veltro`/`repl`), its per-call `tools9p` worker, or
+  restricted coordinator (`veltro`), its per-call `tools9p` worker, or
   its spawned child.
 - **Subagent** — an agent created by another agent via the `spawn` tool.
   Subagents inherit an already-restricted namespace and can only narrow it
@@ -95,16 +95,15 @@ factotum only; plaintext key files under `/lib/veltro` are prohibited. Raw
 tools may receive factotum from trusted namespace construction, but generic
 path grants must not hand the credential service to arbitrary tools.
 
-Four model-execution boundaries apply namespace restriction:
+Three model-execution boundaries apply namespace restriction:
 
 | Entry Point | Where | When |
 |-------------|-------|------|
 | `tools9p` invocation | `appl/veltro/tools9p.b` | Per tool call, after `FORKNS`, attenuated to the invoked tool |
-| `repl` init | `appl/veltro/repl.b` | After mount checks, before LLM session |
 | `veltro` init | `appl/veltro/veltro.b` | After tool discovery, before LLM session |
 | `spawn` child | `appl/veltro/tools/spawn.b` | In runchild(), before subagent->runloop() |
 
-All four call `nsconstruct->restrictns(caps)` after `pctl(FORKNS)`. `lucibridge`
+All three call `nsconstruct->restrictns(caps)` after `pctl(FORKNS)`. `lucibridge`
 does not run model-supplied code directly; it relies on the `tools9p` row for
 every model-requested tool effect.
 
@@ -141,7 +140,7 @@ Special handling for `target == "/"`:
 
 ```
 tools9p call:   FORKNS + restrictns()   -- one invoked tool only
-veltro/repl:    FORKNS + restrictns()   -- restrict coordinator namespace
+veltro:         FORKNS + restrictns()   -- restrict coordinator namespace
 subagent spawn: FORKNS + restrictns()   -- inherit + further restrict
 ```
 
@@ -288,9 +287,9 @@ applies `NODEVS` before parsing or running model-supplied command text. Its
 
 After restriction, all async tool execution threads (via `spawn asyncexec()`) inherit the restricted namespace.
 
-### repl and veltro Restriction
+### veltro Restriction
 
-Both command-line coordinators apply `NODEVS` and restriction after discovering
+The command-line coordinator applies `NODEVS` and restriction after discovering
 their tool/path grants but before creating the LLM session:
 
 ```
@@ -409,17 +408,14 @@ Veltro requires tools9p to be started first. The caller chooses which tools to g
 ```sh
 # Inside Inferno (emu):
 
-# Start tool server with specific tools, then launch interactive REPL
-/dis/veltro/tools9p read list find search spawn edit write xenith say; /dis/veltro/repl
-
 # Single-shot task with minimal tools
 /dis/veltro/tools9p read list; /dis/veltro/veltro 'list the files in /appl/cmd'
 
 # Full tool set (trusted use)
-/dis/veltro/tools9p read list find search write edit exec spawn xenith say hear ask diff json webfetch git memory todo websearch grep; /dis/veltro/repl -v
+/dis/veltro/tools9p read list find search write edit exec spawn xenith say hear ask diff json webfetch git memory todo websearch grep; /dis/veltro/veltro -v 'task'
 
 # Expose a host filesystem path to the agent (-p flag, comma-separated)
-/dis/veltro/tools9p read list find grep; /dis/veltro/repl -p /n/local/Users/pdfinn/projects
+/dis/veltro/tools9p read list find grep; /dis/veltro/veltro -p /n/local/Users/pdfinn/projects 'task'
 
 # Multiple paths
 /dis/veltro/tools9p read list write edit; /dis/veltro/veltro -p /n/local/Users/pdfinn/projects,/n/local/Users/pdfinn/docs 'review the docs'
@@ -434,7 +430,7 @@ From within an agent session:
 ```
 spawn tools=read,list -- list the contents of /n and /tmp
 spawn tools=read,list,find agenttype=explore -- find all .b files under /appl
-spawn tools=read agenttype=plan model=sonnet -- plan a refactor of repl.b
+spawn tools=read agenttype=plan model=sonnet -- plan a refactor of veltro.b
 spawn tools=exec shellcmds=cat,ls -- inspect only with the named commands
 ```
 
@@ -504,7 +500,6 @@ tools9p cleanup process can access this tree; restricted agents cannot.
 | `module/nsconstruct.m` | Module interface: capabilities, restriction, verification helpers |
 | `appl/veltro/nsconstruct.b` | Core implementation |
 | `appl/veltro/tools9p.b` | Tool filesystem server with serveloop namespace restriction |
-| `appl/veltro/repl.b` | Interactive REPL with namespace restriction at init |
 | `appl/veltro/veltro.b` | Single-shot coordinator with namespace restriction at init |
 | `appl/cmd/lucibridge.b` | Trusted GUI coordinator; model effects go through tools9p |
 | `appl/veltro/tools/spawn.b` | Secure subagent spawn with FORKNS + restrictns |
@@ -833,7 +828,7 @@ exposing it as a user tool is cheap.
 ### NODEVS Device-Attach Gate
 
 `pctl(NODEVS)` is applied before model-controlled code at every execution
-boundary: `veltro`, `repl`, each ordinary `tools9p` invocation, the exec
+boundary: `veltro`, each ordinary `tools9p` invocation, the exec
 wrapper after its private wait FD is opened, and each spawned child after its
 namespace and keep-list are complete. The kernel device gate is in
 `emu/port/chan.c`;

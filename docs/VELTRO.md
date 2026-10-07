@@ -20,7 +20,6 @@ Three things the agent sees as files: **the LLM, the tools, the host filesystem*
 | Command   | Form                          | Use for                                                               |
 |-----------|-------------------------------|-----------------------------------------------------------------------|
 | `veltro`  | one-shot, `veltro "do X"`     | scripted tasks, batch runs, resumable sessions                        |
-| `repl`    | interactive                   | iterative work; opens a Xenith window if available, terminal otherwise|
 | `spawn`   | inside a tool call            | parallel subagents launched by a parent agent                         |
 | `lucibridge` | embedded in Lucia          | the agent loop driving the [Lucia](LUCIA.md) UI                       |
 
@@ -45,21 +44,6 @@ Flags:
   See [Agent prompts](#agent-prompts).
 
 Sessions persist to `/usr/inferno/veltro/sessions/`. The hard step cap is 200 (the LLM's `end_turn` is the primary stop condition).
-
-### `repl` — interactive
-
-```sh
-; repl
-; repl -v
-; repl -n 80      # raise per-turn step cap (default 50, max 100)
-```
-
-Two modes, picked automatically:
-
-- **Xenith mode** (when `/chan` is available) — a window with **Send · Voice · Clear · Reset · Delete** tag buttons. Voice records via `speech9p` and transcribes with the `hear` tool.
-- **Terminal mode** — line-oriented stdin/stdout fallback.
-
-Both establish a persistent LLM session for the duration of the REPL invocation. Each turn injects the current namespace into the system prompt so the agent always knows what tools and paths it actually has.
 
 ### `spawn` (subagents)
 
@@ -193,7 +177,7 @@ System prompts and per-type prompts live in `lib/veltro/`:
 
 | File                          | Role |
 |-------------------------------|------|
-| `lib/veltro/system.txt`       | Default system prompt for `veltro`/`repl`. |
+| `lib/veltro/system.txt`       | Default system prompt for `veltro` and `lucibridge`. |
 | `lib/veltro/meta.txt`         | "Chief of Staff" prompt used by Lucia: never executes, always delegates via `task`. |
 | `lib/veltro/agents/default.txt`  | Subagent baseline. Pre-loaded tools, machine-parseable output, terminate with `DONE`. |
 | `lib/veltro/agents/explore.txt`  | Read-only codebase analysis. No speculation; report file paths and dependencies. |
@@ -233,8 +217,6 @@ Two distinct stores:
 - **`memory` tool** — agent-controlled key/value store. `memory save K V`, `memory load K`, `memory list`, `memory clear`. Persists to `/tmp/veltro/memory/{agentid}/`.
 - **Sessions** — full conversation transcripts for `veltro`, written to `/usr/inferno/veltro/sessions/`. Resume with `veltro -r name` or `veltro -r last`.
 
-`repl` does **not** persist conversations across REPL restarts; use `veltro` for that.
-
 ## Common workflows
 
 ### One-shot scripted task
@@ -246,10 +228,9 @@ Two distinct stores:
 ### Iterative exploration
 
 ```sh
-; repl
-> walk me through how spawn enforces capability attenuation
-> show me where MREPL is used in nsconstruct.b
-> are there tests for this?
+; veltro "walk me through how spawn enforces capability attenuation"
+; veltro -r last "show me where MREPL is used in nsconstruct.b"
+; veltro -r last "are there tests for this?"
 ```
 
 ### Parallel delegation
