@@ -20,7 +20,8 @@ import sys
 SUBS = [
     (re.compile(r"/tmp/veltro/scratch/[^\s\"')]+"), "<scratch>"),
     (re.compile(r"/tmp/activity/\d+/scratch/[^\s\"')]+"), "<scratch>"),
-    (re.compile(r"native-[0-9]+-[0-9]+"), "native-<id>"),
+    (re.compile(r"native-[0-9a-f]+-[0-9]+"), "native-<id>"),
+    (re.compile(r"\b[0-9a-f]{32}\b"), "<llm>"),
 ]
 
 

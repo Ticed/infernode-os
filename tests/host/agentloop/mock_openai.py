@@ -70,6 +70,12 @@ SCENARIOS = {
         {"tools": [tool("say", "spoken words")]},
         {"content": "Said it."},
     ],
+    # A mutating call and a read of its result in one batch: the batch
+    # must run in order, so the read sees the write.
+    "write_then_read": [
+        {"tools": [tool("write", FIX + "/c.txt gamma"), tool("read", FIX + "/c.txt")]},
+        {"content": "Wrote and read."},
+    ],
     "approval_deny": [
         {"tools": [tool("write", "/dis/agentloop-probe.txt probe")]},
         {"content": "Write was handled."},

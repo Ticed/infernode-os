@@ -27,7 +27,7 @@ set -u
 
 [ -x "$EMU" ] || { echo "SKIP: emulator not found at $EMU"; exit 77; }
 command -v python3 >/dev/null 2>&1 || { echo "SKIP: python3 not found"; exit 77; }
-for f in dis/veltro/veltro.dis dis/veltro/tools9p.dis dis/lucibridge.dis dis/luciuisrv.dis dis/llmsrv.dis; do
+for f in dis/veltro/veltro.dis dis/veltro/veltrosrv.dis dis/veltro/tools9p.dis dis/lucibridge.dis dis/luciuisrv.dis dis/llmsrv.dis; do
 	[ -f "$ROOT/$f" ] || { echo "SKIP: $f not built"; exit 77; }
 done
 
@@ -36,7 +36,7 @@ GOLDEN="$HERE/golden"
 UPDATE=${UPDATE:-0}
 
 SCENARIOS="text_only single_read text_and_tool two_reads dup_read dup_in_batch
-big_output unknown_tool error_streak say approval_deny step_cap"
+big_output unknown_tool error_streak say write_then_read approval_deny step_cap"
 [ $# -gt 0 ] && SCENARIOS="$*"
 
 TOOLS="read list write say"
@@ -105,9 +105,44 @@ echo DRIVER_DONE
 EOF
 }
 
+# The harness itself, through its files.  An approver in the background
+# denies whatever the gate asks about, as the lucibridge driver does.
+veltrosrv_driver() {	# port scenario
+	prelude "$1"
+	cat <<EOF
+/dis/veltro/veltrosrv.dis -p /usr/agentloop
+id=\`{cat /mnt/veltro/new}
+echo 'SCENARIO:$2 go' > /mnt/veltro/\$id/input
+{
+	for i in 1 2 3 4 5 {
+		a=\`{cat /mnt/veltro/\$id/approve}
+		if {! ~ \$#a 0} {
+			echo deny \$a(1) > /mnt/veltro/\$id/approve
+		}
+	}
+} &
+cat /mnt/veltro/\$id/text > /dev/null
+echo '--- BEGIN $2'
+cat /mnt/veltro/\$id/text
+echo '== log'
+cat /mnt/veltro/\$id/log
+echo '--- END $2'
+echo DRIVER_DONE
+EOF
+}
+
 lucibridge_driver() {	# port scenario
 	prelude "$1"
 	cat <<EOF
+# lucibridge's configuration gate reads /lib/ndb/llm; stage one naming the
+# scripted backend, as the grind driver does, so it starts instead of
+# showing the setup wizard.
+mkdir -p /tmp/charndb
+echo 'mode=local' > /tmp/charndb/llm
+echo 'backend=openai' >> /tmp/charndb/llm
+echo 'url=http://127.0.0.1:$1/v1' >> /tmp/charndb/llm
+echo 'model=mock' >> /tmp/charndb/llm
+bind -bc /tmp/charndb /lib/ndb
 luciuisrv
 sleep 1
 echo 'activity create Characterize' > /mnt/ui/ctl
@@ -143,7 +178,8 @@ EOF
 }
 
 FAILED=0
-for fe in veltro lucibridge; do
+FRONTENDS=${FRONTENDS:-lucibridge}
+for fe in $FRONTENDS; do
 	for sc in $SCENARIOS; do
 		: > "$WORK/req.log"
 		rm -f "$WORK/port"
