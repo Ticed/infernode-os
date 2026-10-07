@@ -37,7 +37,29 @@ refused.
 
 Verified on macOS. Linux uses the same script and is yet to be checked
 on a Linux host (INFR-522); `xen.ps1` is untested and has no host
-plumbing.
+plumbing. `lib/xen/boot.sh`, which all of them run, is tested headless
+by `tests/host/xen_boot_test.sh`.
+
+## The Xenith app
+
+Every release also ships Xenith as an app of its own: `Xenith.app` in
+`xenith-<version>-macos-arm64.dmg`, and `Xenith.exe` in
+`xenith-<version>-windows-amd64.zip`. Each is InferNode's emulator and
+runtime tree with its own name, icon and launcher, and runs what `xen`
+runs, Xenith alone over the whole window, starting in your home
+directory. Both share `~/.infernode` with InferNode, so settings, keys
+and the model configuration are the same in either. Files dropped on
+`Xenith.exe` (or opened with it) are opened in the new instance, on C:
+only; on macOS, open files by plumbing them (below) or from Xenith
+itself.
+
+`xen`, `xen.ps1` and both apps start the same way, through
+`lib/xen/boot.sh`: a plumber, the model service, then Xenith with the
+arguments given. The bundle and launcher sources are
+`MacOSX/Xenith.app` and `emu/Nt/infernode-launcher.c` built with
+`/DXENITH` (`emu/Nt/build-launcher.ps1` builds both launchers); the
+icon is `MacOSX/Xenith.png`, from which `Xenith.icns` and
+`Nt/Xenith.ico` are made.
 
 ## Behaviour
 

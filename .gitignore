@@ -167,6 +167,7 @@ emu/*/o.emu
 emu/*/o.*
 emu/*/InferNode
 emu/*/InferNode.exe
+emu/*/Xenith.exe
 emu/*/SDL3.dll
 
 # Build logs and transient artefacts at repo root

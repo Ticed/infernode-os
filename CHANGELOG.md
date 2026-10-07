@@ -37,6 +37,17 @@ All notable changes to InferNode are documented in this file.
   scripts. `xen` starts the model service the way Lucifer's boot does,
   through `lib/lucifer/llmsrv.sh`, now one script for both.
 
+### Xenith
+
+- **Xenith ships as an app of its own**, alongside InferNode in every
+  release: `Xenith.app` (a signed, notarized `xenith-<version>-macos-arm64.dmg`)
+  and `Xenith.exe` (`xenith-<version>-windows-amd64.zip`), with their own
+  icon. Each is the same emulator and runtime tree as InferNode, running
+  Xenith alone as `tools/xen` does, and shares `~/.infernode` with it.
+  `xen`, `xen.ps1` and both apps start through one script,
+  `lib/xen/boot.sh` (docs/XEN.md). `xen.ps1` now starts the plumber and the
+  model service, as `xen` does.
+
 ## [0.5.0] - 2026-09-28
 
 InferNode runs on bare metal. This release adds a native kernel for the
