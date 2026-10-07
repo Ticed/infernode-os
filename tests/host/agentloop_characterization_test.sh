@@ -143,6 +143,13 @@ echo 'backend=openai' >> /tmp/charndb/llm
 echo 'url=http://127.0.0.1:$1/v1' >> /tmp/charndb/llm
 echo 'model=mock' >> /tmp/charndb/llm
 bind -bc /tmp/charndb /lib/ndb
+# Past the first launch: the welcome document shown and the tour offered,
+# so neither comes before the scenario (both markers are per install,
+# untracked, and absent from a fresh checkout).
+mkdir -p /tmp/charveltro
+echo > /tmp/charveltro/welcome_shown
+echo > /tmp/charveltro/tour_offered
+bind -bc /tmp/charveltro /lib/veltro
 luciuisrv
 sleep 1
 echo 'activity create Characterize' > /mnt/ui/ctl
