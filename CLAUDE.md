@@ -401,6 +401,7 @@ timeoutTask(ch: chan of int, ms: int)
 | `edit_test.b` | Edit operations |
 | `xenith_concurrency_test.b` | Xenith concurrent operations |
 | `xenith_exit_test.b` | Xenith exit handling |
+| `xenith_frame_test.b` | Xenith's frame (text layout and drawing) against a simulated screen: insert, delete, select, wrap, tabs, overflow, random edits; the suite is `xenith_framesuite.b` |
 | `sdl3_test.b` | SDL3 GUI backend |
 | `secp256k1_test.b` | secp256k1 curve, ECDSA, recovery |
 | `ethcrypto_test.b` | RLP, EIP-155 spec vector, address derivation, strict amounts |
