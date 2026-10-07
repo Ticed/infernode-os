@@ -79,7 +79,7 @@ prelude() {	# port
 	cat <<EOF
 #!/dis/sh.dis
 load std
-rm -rf /usr/agentloop
+rm -r /usr/agentloop >[2] /dev/null
 mkdir -p /usr/agentloop
 echo alpha > /usr/agentloop/a.txt
 echo beta > /usr/agentloop/b.txt
@@ -190,6 +190,10 @@ for fe in $FRONTENDS; do
 		[ -s "$WORK/port" ] || { echo "FAIL: mock backend did not start"; exit 1; }
 		PORT=$(cat "$WORK/port")
 
+		# The fixture, and the agent's staged writes (cowfs overlays and
+		# scratch live under /tmp/veltro, which is on the host and would
+		# otherwise carry one scenario's writes into the next).
+		rm -rf "$ROOT/usr/agentloop" "$ROOT/tmp/veltro/cow" "$ROOT/tmp/veltro/scratch"
 		SCRIPT="$ROOT/tests/inferno/.agentloop-char.$$.sh"
 		${fe}_driver "$PORT" "$sc" > "$SCRIPT"
 		if ! runemu "$SCRIPT" "$WORK/emu.log" 120; then

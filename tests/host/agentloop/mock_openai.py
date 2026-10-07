@@ -76,6 +76,18 @@ SCENARIOS = {
         {"tools": [tool("write", FIX + "/c.txt gamma"), tool("read", FIX + "/c.txt")]},
         {"content": "Wrote and read."},
     ],
+    # The agent probes for the harness's own mount: it must not exist in
+    # the tool's namespace.
+    # A read of something every agent namespace carries, for a stack
+    # booted with its own grants (the full Lucifer boot).
+    "read_system": [
+        {"tools": [tool("read", "/lib/veltro/system.txt")]},
+        {"content": "Read the system prompt."},
+    ],
+    "probe_mount": [
+        {"tools": [tool("list", "/mnt/veltro")]},
+        {"content": "Probed."},
+    ],
     "approval_deny": [
         {"tools": [tool("write", "/dis/agentloop-probe.txt probe")]},
         {"content": "Write was handled."},

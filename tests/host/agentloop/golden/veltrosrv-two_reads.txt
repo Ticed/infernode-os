@@ -17,7 +17,8 @@ tool-result call_two_reads_0_1:
   | == user
   | SCENARIO:two_reads go
   | == veltro
-  | Read both.== log
+  | Read both.
+  | == log
   | session <llm>, prompt 14058 bytes
   | step 1: writing 21 bytes to LLM
   | stream: reading /mnt/llm/<llm>/stream
@@ -28,7 +29,9 @@ tool-result call_two_reads_0_1:
   | TOOL:call_two_reads_0_0:read:{"args"\: "/usr/agentloop/a.txt"}
   | TOOL:call_two_reads_0_1:read:{"args"\: "/usr/agentloop/b.txt"}
   | 
+  | tool read: args {"args": "/usr/agentloop/a.txt"}
   | tool read: calling with 32 bytes
+  | tool read: args {"args": "/usr/agentloop/b.txt"}
   | tool read: calling with 32 bytes
   | tool read: done,     1	alpha
   | 

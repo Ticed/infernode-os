@@ -9,16 +9,17 @@ Veltro uses Inferno OS namespace isolation to create secure environments for AI 
 This document distinguishes:
 
 - **Harness** — the namespace-restriction machinery itself: `nsconstruct`,
-  `tools9p`, and the `veltro`/`spawn` entry points. The harness defines
+  `tools9p`, and the `veltrosrv`/`spawn` entry points. The harness defines
   what an agent *can* do and is trusted code.
 - **Coordinator** — the process that owns the model loop and chooses which
-  tool request to send. `veltro` restricts its own namespace.
-  `lucibridge` is a trusted GUI coordinator: it does not call `restrictns()`;
-  model-requested effects cross into a fresh, confined `tools9p` worker for
-  every call. Model text is data and never executes in the coordinator.
+  tool request to send. There is one: `veltrosrv`, which restricts its own
+  namespace before it serves. `veltro`, `lucibridge` and Xenith's `Agent`
+  are its clients, outside the agent's namespace; model-requested effects
+  cross into a fresh, confined `tools9p` worker for every call. Model text
+  is data and never executes in the coordinator.
 - **Agent** — a logical model session plus its capability set. Do not assume
   one agent means one confined process: the enforcement point is either its
-  restricted coordinator (`veltro`), its per-call `tools9p` worker, or
+  restricted coordinator (`veltrosrv`), its per-call `tools9p` worker, or
   its spawned child.
 - **Subagent** — an agent created by another agent via the `spawn` tool.
   Subagents inherit an already-restricted namespace and can only narrow it
@@ -100,11 +101,11 @@ Three model-execution boundaries apply namespace restriction:
 | Entry Point | Where | When |
 |-------------|-------|------|
 | `tools9p` invocation | `appl/veltro/tools9p.b` | Per tool call, after `FORKNS`, attenuated to the invoked tool |
-| `veltro` init | `appl/veltro/veltro.b` | After tool discovery, before LLM session |
+| `veltrosrv` serve | `appl/veltro/veltrosrv.b` | In the serving process, after tool discovery, before it serves |
 | `spawn` child | `appl/veltro/tools/spawn.b` | In runchild(), before subagent->runloop() |
 
 All three call `nsconstruct->restrictns(caps)` after `pctl(FORKNS)`. `lucibridge`
-does not run model-supplied code directly; it relies on the `tools9p` row for
+and the other clients do not run model-supplied code; they rely on the `tools9p` row for
 every model-requested tool effect.
 
 ## How It Works
@@ -140,7 +141,7 @@ Special handling for `target == "/"`:
 
 ```
 tools9p call:   FORKNS + restrictns()   -- one invoked tool only
-veltro:         FORKNS + restrictns()   -- restrict coordinator namespace
+veltrosrv:      FORKNS + restrictns()   -- restrict coordinator namespace
 subagent spawn: FORKNS + restrictns()   -- inherit + further restrict
 ```
 
@@ -287,9 +288,9 @@ applies `NODEVS` before parsing or running model-supplied command text. Its
 
 After restriction, all async tool execution threads (via `spawn asyncexec()`) inherit the restricted namespace.
 
-### veltro Restriction
+### veltrosrv Restriction
 
-The command-line coordinator applies `NODEVS` and restriction after discovering
+The coordinator applies `NODEVS` and restriction after discovering
 their tool/path grants but before creating the LLM session:
 
 ```
@@ -500,8 +501,9 @@ tools9p cleanup process can access this tree; restricted agents cannot.
 | `module/nsconstruct.m` | Module interface: capabilities, restriction, verification helpers |
 | `appl/veltro/nsconstruct.b` | Core implementation |
 | `appl/veltro/tools9p.b` | Tool filesystem server with serveloop namespace restriction |
-| `appl/veltro/veltro.b` | Single-shot coordinator with namespace restriction at init |
-| `appl/cmd/lucibridge.b` | Trusted GUI coordinator; model effects go through tools9p |
+| `appl/veltro/veltrosrv.b` | The coordinator: the agent loop served at `/mnt/veltro`, restricted before it serves |
+| `appl/veltro/veltro.b` | Command-line client of `veltrosrv` |
+| `appl/cmd/lucibridge.b` | Lucia's client of `veltrosrv`; model effects go through tools9p |
 | `appl/veltro/tools/spawn.b` | Secure subagent spawn with FORKNS + restrictns |
 | `appl/veltro/subagent.b` | Subagent runloop (runs in restricted namespace) |
 | `lib/veltro/agents/*.txt` | Agent type prompts (default, explore, plan, task) |
@@ -828,7 +830,7 @@ exposing it as a user tool is cheap.
 ### NODEVS Device-Attach Gate
 
 `pctl(NODEVS)` is applied before model-controlled code at every execution
-boundary: `veltro`, each ordinary `tools9p` invocation, the exec
+boundary: `veltrosrv`, each ordinary `tools9p` invocation, the exec
 wrapper after its private wait FD is opened, and each spawned child after its
 namespace and keep-list are complete. The kernel device gate is in
 `emu/port/chan.c`;

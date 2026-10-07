@@ -98,6 +98,9 @@ xenith)
 	# A plumber first, as Lucifer's boot starts one, so plumbing works
 	# from the outset and Xenith does not have to start its own.
 	run="bind -bc '#splumber' /chan; plumber /lib/xen/plumbing; "
+	# The model, the way Lucifer's boot starts it, so the Agent window
+	# (xenith/dis/Agent) finds /mnt/llm.
+	run="${run}{run /lib/lucifer/llmsrv.sh} >[2] /dev/null & "
 	# With plan9port present, listen on its plumber's xenith port too
 	# (tools/xen.plumbing), so `plumb file` on the host opens the file
 	# here. The host shell kills its reader once the emu is gone.

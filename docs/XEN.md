@@ -73,6 +73,19 @@ and its `Theme` command (`Theme halo`, or `Theme` alone for the next)
 changes that session only. See [XENITH.md](XENITH.md#themes). sam's
 colours follow the system theme rather than `XEN_THEME`.
 
+## The agent
+
+Middle-click **Agent** in a tag (or run `Agent -p <dir>`) for a window
+on the Veltro agent, granted the directory `xen` was run from unless
+`-p` says otherwise. Type at the end of the body and middle-click
+**Send**; the reply arrives as it is generated, tool calls and all.
+**Stop** cancels the turn, **Reset** starts the model over, **Allow** and
+**Deny** answer a request for approval shown in the body, **Delete**
+ends it. `xen` starts the model service the way Lucifer's boot does
+(`lib/lucifer/llmsrv.sh`, from `/lib/ndb/llm`); `Agent` starts the tool
+server and the agent harness itself. See `man 4 veltrosrv` and
+[VELTRO.md](VELTRO.md).
+
 ## Plumbing
 
 Inside Xenith, plumbing works as in acme: button 3 (Cmd+click) on a file

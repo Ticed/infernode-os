@@ -945,6 +945,7 @@ dis/veltro/tools/window.dis
 dis/veltro/tools/write.dis
 dis/veltro/tools/xenith.dis
 dis/veltro/tools9p.dis
+dis/veltro/veltrosrv.dis
 dis/veltro/veltro.dis
 dis/veltro/wallet9p.dis
 dis/veltro/wiki9p.dis
@@ -1034,3 +1035,5 @@ dis/xenith/xenith.dis
 dis/xenith/xfid.dis
 dis/yacc.dis
 dis/zeros.dis
+
+xenith/dis/Agent.dis
