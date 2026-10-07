@@ -231,6 +231,16 @@ jobs:
         # above, so a skip (77) here is a failure.
         ROOT=. sh tests/host/aa_test.sh
 
+    - name: Run sh script-execution check
+      run: |
+        # A script without the execute bit must be reported as such,
+        # not as a missing .dis module (what Xenith's B2 showed), and
+        # must not hide a command later on the path. 77 = skip (no emu).
+        chmod +x tests/host/sh_noexec_script_test.sh
+        rc=0
+        ROOT=. bash tests/host/sh_noexec_script_test.sh || rc=$?
+        [ "$rc" = 0 ] || [ "$rc" = 77 ] || exit "$rc"
+
     - name: Run dossrv badent alias check
       run: |
         # dossrv must decide "damaged entry" from the on-disk name, not
@@ -1401,6 +1411,16 @@ jobs:
         # anti-aliased glyph black under gcc.  The libraries are built
         # above, so a skip (77) here is a failure.
         ROOT=. sh tests/host/aa_test.sh
+
+    - name: Run sh script-execution check
+      run: |
+        # A script without the execute bit must be reported as such,
+        # not as a missing .dis module (what Xenith's B2 showed), and
+        # must not hide a command later on the path. 77 = skip (no emu).
+        chmod +x tests/host/sh_noexec_script_test.sh
+        rc=0
+        ROOT=. bash tests/host/sh_noexec_script_test.sh || rc=$?
+        [ "$rc" = 0 ] || [ "$rc" = 77 ] || exit "$rc"
 
     - name: Run test suite
       run: |
