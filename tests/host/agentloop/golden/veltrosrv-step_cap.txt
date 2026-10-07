@@ -8,8 +8,7 @@ tools: list read write
 tools: list read write
 assistant-call call_step_cap_0_0 list {"args": "\/usr\/agentloop"}
 tool-result call_step_cap_0_0:
-  | 4 entries:
-  | f       5B c.txt
+  | 3 entries:
   | f       6B a.txt
   | f       5B b.txt
   | f       8K big.txt
@@ -43,13 +42,12 @@ tool-result call_step_cap_98_0:
   | 
   | tool list: args {"args": "/usr/agentloop"}
   | tool list: calling with 26 bytes
-  | tool list: done, 4 entries:
-  | f       5B c.txt
+  | tool list: done, 3 entries:
   | f       6B a.txt
   | f       5B b.txt
   | f       8K big.txt
   | 
-  | step 2: writing 117 bytes to LLM
+  | step 2: writing 100 bytes to LLM
   | stream: reading /mnt/llm/<llm>/stream
   | stream: done (0 chunks, 0 bytes)
   | step 2: waiting for LLM response...

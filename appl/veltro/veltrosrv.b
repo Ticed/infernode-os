@@ -1380,20 +1380,30 @@ navigator(navops: chan of ref Navop)
 	}
 }
 
-serveloop(tchan: chan of ref Tmsg, pidc: chan of int, caps: ref NsConstruct->Capabilities)
+serveloop(tchanc: chan of chan of ref Tmsg, errc: chan of string, caps: ref NsConstruct->Capabilities)
 {
 	# The agent's namespace, from here on: what was granted, nothing else.
-	if(sys->pctl(Sys->FORKNS, nil) < 0)
-		fatal(sys->sprint("cannot fork namespace: %r"));
-	if(sys->pctl(Sys->NODEVS, nil) < 0)
-		fatal(sys->sprint("cannot disable device attachment: %r"));
+	# A failure is reported to init, which fails; nothing is served.
+	if(sys->pctl(Sys->FORKNS, nil) < 0) {
+		errc <-= sys->sprint("cannot fork namespace: %r");
+		return;
+	}
+	if(sys->pctl(Sys->NODEVS, nil) < 0) {
+		errc <-= sys->sprint("cannot disable device attachment: %r");
+		return;
+	}
 	nserr := nsconstruct->restrictns(caps);
-	if(nserr != nil)
-		fatal("namespace restriction failed: " + nserr);
+	if(nserr != nil) {
+		errc <-= "namespace restriction failed: " + nserr;
+		return;
+	}
 	nsconstruct->emitmanifest(caps, "/tmp/veltro/.ns/manifest");
 	if(verbose)
 		sys->fprint(stderr, "veltrosrv: namespace restricted\n");
-	pidc <-= sys->pctl(0, nil);
+	errc <-= nil;
+	tchan := <-tchanc;
+	if(tchan == nil)
+		return;
 
 Serve:
 	for(;;) alt {
@@ -1641,8 +1651,6 @@ init(nil: ref Draw->Context, args: list of string)
 		osname = on;
 	ndbtemp = readndbfield("/lib/ndb/llm", "temperature");
 
-	if(sys->open("/mnt/llm/new", Sys->OREAD) == nil)
-		fatal("/mnt/llm not served (start llmsrv first)");
 	if(!exists(toolmount) || !exists(toolmount + "/tools"))
 		sys->fprint(stderr, "veltrosrv: warning: %s not mounted (run tools9p first); chat only\n", toolmount);
 
@@ -1705,21 +1713,32 @@ init(nil: ref Draw->Context, args: list of string)
 	caps := ref NsConstruct->Capabilities(
 		toollist, pathlist, nil, nil, nil, nil, 0, xgrant, -1, nil, nil);
 
-	fds := array[2] of ref Sys->FD;
-	if(sys->pipe(fds) < 0)
-		fatal(sys->sprint("cannot create pipe: %r"));
+	# The grants are checked, and the namespace restricted, before
+	# anything else is started or required: a bad grant is refused as
+	# such, and leaves nothing running.
+	evc = chan[64] of ref Ev;
+	errc := chan of string;
+	tchanc := chan of chan of ref Tmsg;
+	spawn serveloop(tchanc, errc, caps);
+	if((err := <-errc) != nil)
+		fatal(err);
+	if(sys->open("/mnt/llm/new", Sys->OREAD) == nil) {
+		tchanc <-= nil;
+		fatal("/mnt/llm not served (start llmsrv first)");
+	}
 
+	fds := array[2] of ref Sys->FD;
+	if(sys->pipe(fds) < 0) {
+		tchanc <-= nil;
+		fatal(sys->sprint("cannot create pipe: %r"));
+	}
 	navops := chan of ref Navop;
 	spawn navigator(navops);
 	tchan: chan of ref Tmsg;
 	(tchan, srv) = Styxserver.new(fds[0], Navigator.new(navops), MKPATH(0, Qroot));
 	srv.msize = 65536 + Styx->IOHDRSZ;
 	fds[0] = nil;
-
-	evc = chan[64] of ref Ev;
-	pidc := chan of int;
-	spawn serveloop(tchan, pidc, caps);
-	<-pidc;
+	tchanc <-= tchan;
 
 	sys->create(mountpt, Sys->OREAD, 8r755 | Sys->DMDIR);
 	if(sys->mount(fds[1], nil, mountpt, Sys->MREPL, nil) < 0)
