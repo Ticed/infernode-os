@@ -21,7 +21,7 @@ jobs:
         for d in lib9 libbio libmp libsec libmath limbo libinterp libkeyring libmemdraw libmemlayer libdraw libtk; do (cd $d && mk install > /dev/null) || exit 1; done
         (cd emu/MacOSX && SYSTARG=MacOSX SHELL=/bin/sh mk GUIBACK=headless > /dev/null) || exit 1
         PATH="$ROOT/MacOSX/amd64/bin:$PATH" ./tools/verify-dis-build.sh > /dev/null
-        sysctl -n machdep.cpu.brand_string; sw_vers; file emu/MacOSX/o.emu
+        /usr/sbin/sysctl -n machdep.cpu.brand_string; /usr/bin/sw_vers; /usr/bin/file emu/MacOSX/o.emu; /usr/bin/otool -L emu/MacOSX/o.emu
     - name: probes
       run: |
         t() { echo "=== $*"; perl -e 'alarm shift; exec @ARGV' 25 "$@" 2>&1 | tail -15; echo "rc=${PIPESTATUS[0]}"; }
