@@ -2955,7 +2955,13 @@ compile(Module *m, int size, Modlink *ml)
 		return 0;
 
 	base = nil;
-	patch = mallocz((size+1)*sizeof(*patch), 0);
+	/*
+	 * Cleared: pass 0 encodes base+patch[i+1] before patch[i+1] is
+	 * set, and con64's length depends on the value, so a stale entry
+	 * that put the sum below 4GB made pass 0 shorter than pass 1, and
+	 * the module failed to compile ("phase error").
+	 */
+	patch = mallocz((size+1)*sizeof(*patch), 1);
 	tinit = mallocz(m->ntype*sizeof(*tinit), 0);
 	tmpsize = (ulong)size * 64;
 	if(tmpsize < 8192)
@@ -3032,18 +3038,17 @@ compile(Module *m, int size, Modlink *ml)
 	code = base;
 
 	{
-	int nn = 0;
 	for(i = 0; i < size; i++) {
 		s = code;
 		comp(&m->prog[i]);
-		if(patch[i] != nn) {
-			print("amd64 jit phase error: instr %d %D: pass0=%lud pass1=%d\n",
-				i, &m->prog[i], patch[i], nn);
+		/* name the instruction whose size changed, not the next one */
+		if(patch[i] + (code - s) != patch[i+1]) {
+			print("amd64 jit phase error: instr %d %D: pass0=%lud bytes pass1=%d\n",
+				i, &m->prog[i], patch[i+1] - patch[i], (int)(code - s));
 			urk();
 		}
-		nn += code - s;
 		if(cflag > 4) {
-			print("[%d] +0x%lux: %D\n", i, (ulong)nn, &m->prog[i]);
+			print("[%d] +0x%lux: %D\n", i, patch[i+1], &m->prog[i]);
 			das(s, code-s);
 		}
 	}
