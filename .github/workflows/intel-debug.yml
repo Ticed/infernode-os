@@ -22,13 +22,23 @@ jobs:
         (cd emu/MacOSX && SYSTARG=MacOSX SHELL=/bin/sh mk GUIBACK=headless > /dev/null) || exit 1
         PATH="$ROOT/MacOSX/amd64/bin:$PATH" ./tools/verify-dis-build.sh > /dev/null
         /usr/sbin/sysctl -n machdep.cpu.brand_string; /usr/bin/sw_vers; /usr/bin/file emu/MacOSX/o.emu; /usr/bin/otool -L emu/MacOSX/o.emu
-    - name: probes
+    - name: lldb halt
       run: |
-        t() { echo "=== $*"; perl -e 'alarm shift; exec @ARGV' 25 "$@" 2>&1 | tail -15; echo "rc=${PIPESTATUS[0]}"; }
-        E=./emu/MacOSX/o.emu
-        t $E -c0 -r. /dis/echo.dis hello
-        t $E -c0 -r. /dis/sh.dis -c 'echo sh ok'
-        t $E -c0 -r. /dis/sh.dis -c 'echo before halt; echo halt > /dev/sysctl'
-        t $E -c1 -r. /dis/sh.dis -c 'echo jit ok; ls /dis | wc -l; echo halt > /dev/sysctl'
-        t $E -c1 -r. /dis/cat.dis /NOTICE
-        ROOT=. perl -e 'alarm 120; exec @ARGV' sh tests/host/jit_fault_test.sh 2>&1 | tail -5
+        cat > /tmp/l.cmds <<'X'
+        process handle SIGSEGV -s true -p false -n true
+        process handle SIGBUS -s true -p false -n true
+        process handle SIGUSR1 -s false -p true -n false
+        process handle SIGPIPE -s false -p true -n false
+        run
+        thread backtrace all
+        register read
+        kill
+        quit
+        X
+        perl -e 'alarm 120; exec @ARGV' lldb --batch -s /tmp/l.cmds -- ./emu/MacOSX/o.emu -c0 -r. /dis/sh.dis -c 'echo before halt; echo halt > /dev/sysctl' 2>&1 | tail -150 || true
+    - name: halt without SDL-linked device init
+      run: |
+        perl -e 'alarm 25; exec @ARGV' ./emu/MacOSX/o.emu -c0 -r. /dis/echo.dis x 2>&1; echo rc=$?
+        perl -e 'alarm 25; exec @ARGV' ./emu/MacOSX/o.emu -s -c0 -r. /dis/sh.dis -c 'echo halt > /dev/sysctl' 2>&1; echo "rc(-s)=$?"
+        ls -t ~/Library/Logs/DiagnosticReports/ 2>/dev/null | head -3
+        f=$(ls -t ~/Library/Logs/DiagnosticReports/*.ips 2>/dev/null | head -1); [ -n "$f" ] && head -c 6000 "$f"
