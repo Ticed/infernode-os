@@ -2428,7 +2428,7 @@ maccolr(void)
 {
 	modrm32(Oincrm, O(Heap, ref)-sizeof(Heap), RDI, 0);
 	con64((uvlong)&mutator, RAX);
-	modrm(Oldw, 0, RAX, RAX);
+	modrm32(Oldw, 0, RAX, RAX);
 	modrm32(Ocmpw, O(Heap, color)-sizeof(Heap), RDI, RAX);
 	gen2(Ojneb, 0x01);
 	genb(Oret);
@@ -2436,7 +2436,13 @@ maccolr(void)
 	modrm32(Ostw, O(Heap, color)-sizeof(Heap), RDI, RAX);
 	genb(Opushq+RDI);
 	con64((uvlong)&nprop, RDI);
-	modrm(Ostw, 0, RDI, RAX);
+	/*
+	 * nprop and mutator are ints: a 64-bit store here zeroed the low
+	 * half of whatever global the linker put after nprop.  Built by
+	 * clang for macOS that was the collector's sweep pointer, and the
+	 * next collection faulted at 0x100000000.
+	 */
+	modrm32(Ostw, 0, RDI, RAX);
 	genb(Opopq+RDI);
 	genb(Oret);
 }
