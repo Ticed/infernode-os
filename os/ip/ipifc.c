@@ -500,7 +500,6 @@ ipifcadd(Ipifc *ifc, char **argv, int argc, int tentative, Iplifc *lifcp)
 		v4addroute(f, tifc, rem+IPv4off, mask+IPv4off, rem+IPv4off, type);
 	else
 		v6addroute(f, tifc, rem, mask, rem, type);
-	ipifcstale(f);
 
 	addselfcache(f, ifc, lifc, ip, Runi);
 
@@ -607,39 +606,23 @@ ipifcremlifc(Ipifc *ifc, Iplifc *lifc)
 			v6delroute(f, v6allnodesL, v6allnodesLmask, 1);
 	}
 
-	ipifcstale(f);
+	/*
+	 *  Routes cached on this interface are stale now.  A route keeps the
+	 *  interface it last resolved to while that interface's ifcid is
+	 *  unchanged, and ifcid changed only on bind and unbind.  Two
+	 *  interfaces on one network share that network's route (Requals,
+	 *  refcounted), so when one gave up its address the route kept
+	 *  sending the network's traffic out of it: on the bench Pi a cable
+	 *  pulled took Wi-Fi off the network with it, until the cable came
+	 *  back.  Bumped, the route resolves again, to the interface that
+	 *  still has an address there.  Only this interface: bumping every
+	 *  one (every route re-resolved, loopback's included) broke
+	 *  connections to 127.0.0.1.
+	 */
+	ifc->ifcid++;
 	free(lifc);
 	return nil;
 
-}
-
-/*
- *  An address came or went: every route's cached interface is stale.
- *
- *  A route keeps the interface it last resolved to and trusts it while
- *  that interface's ifcid is unchanged, and ifcid changed only on bind
- *  and unbind.  Two interfaces on one network share that network's
- *  route (refcounted, Requals), so when one gave up its address the
- *  route kept sending the network's traffic out of it: on the bench Pi,
- *  a cable pulled took Wi-Fi off the network with it, until the cable
- *  came back.  And an address added was not used by routes already
- *  resolved elsewhere, so traffic that had moved to Wi-Fi stayed there.
- *  Bumping every interface's ifcid makes each route resolve again, to
- *  an interface that has the address now.  Addresses change rarely;
- *  ARP entries, which hold an ifcid too, are re-resolved with them.
- */
-void
-ipifcstale(Fs *f)
-{
-	Conv **cp, **e;
-	Ipifc *ifc;
-
-	e = &f->ipifc->conv[f->ipifc->nc];
-	for(cp = f->ipifc->conv; cp < e; cp++)
-		if(*cp != nil){
-			ifc = (Ipifc*)(*cp)->ptcl;
-			ifc->ifcid++;
-		}
 }
 
 /*
