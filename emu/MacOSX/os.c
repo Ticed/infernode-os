@@ -409,6 +409,11 @@ segflush(void *va, ulong len)
     if(len)
         sys_icache_invalidate(va, len);
     return 0;
+#elif defined(__x86_64__)
+    /* x86 instruction fetch is coherent with stores */
+    USED(va);
+    USED(len);
+    return 0;
 #else
     kern_return_t   err;
     vm_machine_attribute_val_t value = MATTR_VAL_ICACHE_FLUSH;
