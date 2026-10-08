@@ -321,9 +321,22 @@ trapSEGV(int signo, siginfo_t *info, void *context)
 }
 
 void
-trapFPE(int signo)
+trapFPE(int signo, siginfo_t *info, void *context)
 {
     USED(signo);
+#if defined(__x86_64__)
+    /*
+     * x86's integer divide traps on a zero divisor.  In compiled code
+     * that is the program's "zero divide", raised at the divide, as on
+     * Linux (see emu/Linux/os.c:/^trapFPE).
+     */
+    if(info != nil && info->si_code == FPE_INTDIV && context != nil &&
+       jitfault((uintptr)((ucontext_t*)context)->uc_mcontext->__ss.__rip))
+        disfault(nil, exZdiv);
+#else
+    USED(info);
+    USED(context);
+#endif
     disfault(nil, "Floating point exception");
 }
 
@@ -355,7 +368,7 @@ setsigs(void)
         act.sa_sigaction = trapSEGV;
         act.sa_flags = SA_SIGINFO;
         sigaction(SIGSEGV, &act, nil);
-        act.sa_handler = trapFPE;
+        act.sa_sigaction = trapFPE;
         sigaction(SIGFPE, &act, nil);
         if(signal(SIGINT, SIG_IGN) != SIG_IGN)
             signal(SIGINT, cleanexit);
