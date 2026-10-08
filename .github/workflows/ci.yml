@@ -321,7 +321,7 @@ jobs:
         START=$SECONDS
         while kill -0 $EMU_PID 2>/dev/null; do
           grep -q "^Total:" test-output.txt 2>/dev/null && break
-          [ $((SECONDS-START)) -ge ${{ matrix.backstop }} ] && { echo "Backstop hit (${{ matrix.backstop }}s) with no Total: line — possible hang."; break; }
+          [ $((SECONDS-START)) -ge 480 ] && { echo "Backstop hit (480s) with no Total: line — possible hang."; break; }
           sleep 2
         done
         kill -9 $EMU_PID 2>/dev/null || true
@@ -1460,7 +1460,7 @@ jobs:
         START=$SECONDS
         while kill -0 $EMU_PID 2>/dev/null; do
           grep -q "^Total:" test-output.txt 2>/dev/null && break
-          [ $((SECONDS-START)) -ge 480 ] && { echo "Backstop hit (480s) with no Total: line — possible hang."; break; }
+          [ $((SECONDS-START)) -ge ${{ matrix.backstop }} ] && { echo "Backstop hit (${{ matrix.backstop }}s) with no Total: line — possible hang."; break; }
           sleep 2
         done
         kill -9 $EMU_PID 2>/dev/null || true
