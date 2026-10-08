@@ -624,18 +624,17 @@ init(nil: ref Draw->Context, argv: list of string)
 		#
 		netconfig();
 		#
-		# The control endpoint stays open for the link watcher, which
-		# drops it when the adapter goes (a failed transfer), so a
-		# second run for the same device -- unplugged and plugged back
-		# -- finds it free, as it did when this closed it here. It is
-		# exclusive-open, and leaving it open after the driver was done
-		# with it had refused that second run with "already in use".
+		# Close the control endpoint, explicitly. It is a global of
+		# this module, and the module lives as long as any process of
+		# it does -- the DHCP, ping and time readers, and now the link
+		# watcher -- so without this the endpoint, which is
+		# exclusive-open, stayed open and a second run for the same
+		# device was refused with "already in use". The watcher opens
+		# it for each poll.
 		#
-		if(ipifc == nil){
-			ep0 = nil;
-			return;
-		}
-		spawn linkwatch(ipifcno);
+		ep0 = nil;
+		if(ipifc != nil)
+			spawn linkwatch(ipifcno);
 		return;
 	}
 	# a kernel with no #l has no Ethernet: there is nothing to fall back to
@@ -1060,12 +1059,17 @@ ifcup(first: int, ifcno: string): int
 # was up -- and a cable plugged in later, or put back, was never
 # configured at all. Only a reboot brought the wire back.
 #
-# So the driver stays, keeps its control endpoint, and polls the link.
-# Down: the address goes, and its subnet with it, so the radio's
-# interface carries the traffic. Up: DHCP again, the address and the
-# default route back, wired preferred; no answer is tried again at the
-# next poll. A control transfer that fails means the adapter itself has
-# gone, and the watcher ends, releasing the endpoint for the next run.
+# So the driver stays and polls the link. Down: the address goes, and
+# its subnet with it, so the radio's interface carries the traffic. Up:
+# DHCP again, the address and the default route back, wired preferred;
+# no answer is tried again at the next poll.
+#
+# The control endpoint is exclusive-open, and a second run for the same
+# adapter (unplugged and plugged back) has to have it: holding it here
+# refused that run. So it is opened for each poll and closed again, and
+# the watcher ends when it cannot have it (another run does, or the
+# adapter has gone) or when its interface is no longer bound to
+# /net/ether0 (a new run unbound it as stale).
 #
 Linkpoll:	con 2000;
 
@@ -1074,10 +1078,19 @@ linkwatch(ifcno: string)
 	up := !nocarrier && ipaddr != nil;
 	for(;;){
 		sys->sleep(Linkpoll);
+		if(!ours(ifcno)){
+			sys->print("etherusb: ipifc %s is no longer this run's; link watch ended\n", ifcno);
+			return;
+		}
+		ep0 = sys->open("/usb/usb/" + dev + "/data", Sys->ORDWR);
+		if(ep0 == nil){
+			sys->print("etherusb: link watch ended: %r\n");
+			return;
+		}
 		st := linkstate();
+		ep0 = nil;
 		if(st < 0){
 			sys->print("etherusb: link watch ended: %r\n");
-			ep0 = nil;
 			return;
 		}
 		if(st == up && (!up || ipaddr != nil))
@@ -1093,6 +1106,14 @@ linkwatch(ifcno: string)
 			ifcdown();
 		}
 	}
+}
+
+# is ipifc n still bound to /net/ether0 (the first line of its status)
+ours(n: string): int
+{
+	st := readfile("/net/ipifc/" + n + "/status");
+	want := "device /net/ether0 ";
+	return len st >= len want && st[0:len want] == want;
 }
 
 ifcdown()

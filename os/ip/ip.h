@@ -672,6 +672,7 @@ extern int	ipifccheckin(Ipifc *ifc, Medium *med);
 extern void	ipifccheckout(Ipifc *ifc);
 extern int	ipifcgrab(Ipifc *ifc);
 extern void	ipifcaddroute(Fs*, int, uchar*, uchar*, uchar*, int);
+extern void	ipifcstale(Fs*);
 extern void	ipifcremroute(Fs*, int, uchar*, uchar*);
 extern void	ipifcremmulti(Conv *c, uchar *ma, uchar *ia);
 extern void	ipifcaddmulti(Conv *c, uchar *ma, uchar *ia);
