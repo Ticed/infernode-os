@@ -3590,6 +3590,84 @@ else
 fi
 
 #
+#     Hot plugging the wired link (etherusb's link watcher).
+#
+#     The link was read once at start and never again: a cable pulled
+#     left its address on a port that could not carry it -- with the
+#     radio on the same subnet, that subnet kept going out of the dead
+#     port -- and a cable put back, or plugged in after a boot without
+#     one, was never configured. The watcher polls the link: down
+#     removes the address, up asks DHCP again and puts the address and
+#     the default route back. QEMU's usb-net reports its link only with
+#     tests/host/qemu/usbnet-link-status.patch, so the check is made
+#     only where the patches are in.
+#
+if [[ "${BAREMETAL_QEMU_PATCHED:-}" == 1 ]]; then
+    cp "$SDIMG" "$BUILD/$PLAT-hotplug-sd.img"
+    HPOUT="$(python3 - "$QEMU" "$BUILD/$PLAT-kernel.img" "$BUILD/$PLAT-hotplug-sd.img" <<'PYEOF'
+import subprocess, socket, time, json, os, sys, threading
+qemu, img, sd = sys.argv[1], sys.argv[2], sys.argv[3]
+PORT = int(os.environ["QMPBASE"]) + 14   # per-run base: two harnesses on one host must not share QEMU's QMP sockets
+p = subprocess.Popen([qemu, "-M", "raspi3b", "-netdev", "user,id=n0", "-device", "usb-net,netdev=n0,id=usbnet0",
+                      "-drive", "file=%s,if=sd,format=raw" % sd, "-kernel", img, "-display", "none",
+                      "-qmp", "tcp:127.0.0.1:%d,server=on,wait=off" % PORT, "-serial", "null", "-serial", "stdio"],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+buf = bytearray()
+def rd():
+    while True:
+        d = p.stdout.read(1)
+        if not d: return
+        buf.extend(d)
+threading.Thread(target=rd, daemon=True).start()
+def waitfor(t, deadline):
+    end = time.time() + deadline
+    while time.time() < end:
+        if t.encode() in buf: return True
+        time.sleep(0.3)
+    return False
+def setlink(up):
+    s = socket.create_connection(("127.0.0.1", PORT), timeout=5); f = s.makefile("rw")
+    f.readline(); f.write(json.dumps({"execute": "qmp_capabilities"}) + "\n"); f.flush(); f.readline()
+    f.write(json.dumps({"execute": "set_link", "arguments": {"name": "usbnet0", "up": up}}) + "\n"); f.flush(); f.readline()
+    s.close()
+try:
+    if waitfor("etherusb: default route via", 180):
+        print("HP-ADDRESS-AT-BOOT")
+        setlink(False)
+        if waitfor("etherusb: link down; 10.0.2.15 removed", 30):
+            print("HP-REMOVED-ON-DOWN")
+        mark = len(buf)
+        setlink(True)
+        end = time.time() + 90
+        while time.time() < end:
+            tail = bytes(buf[mark:])
+            if b"etherusb: link up" in tail and b"etherusb: default route via" in tail:
+                print("HP-RESTORED-ON-UP"); break
+            time.sleep(0.3)
+finally:
+    p.kill()
+sys.stdout.write(buf.decode(errors="replace").replace("\r", ""))
+PYEOF
+)"
+    if ! grep -q '^HP-ADDRESS-AT-BOOT$' <<<"$HPOUT"; then
+        fail "hot plug: ether0 got no address at boot, so the link could not be pulled"
+    else
+        if grep -q '^HP-REMOVED-ON-DOWN$' <<<"$HPOUT"; then
+            pass "hot plug: a wired link that goes down gives up its address, so another interface can carry the subnet"
+        else
+            fail "hot plug: the address stayed on a dead link -- $(grep -a 'etherusb: link' <<<"$HPOUT" | head -2 | tr '\n' ' ')"
+        fi
+        if grep -q '^HP-RESTORED-ON-UP$' <<<"$HPOUT"; then
+            pass "hot plug: a wired link that comes back gets its address and default route again from DHCP"
+        else
+            fail "hot plug: the link came back and was not configured -- $(grep -a 'etherusb: link' <<<"$HPOUT" | tail -2 | tr '\n' ' ')"
+        fi
+    fi
+else
+    echo "      (wired hot plug not checked: BAREMETAL_QEMU_PATCHED is unset; see tests/host/qemu/README.md)"
+fi
+
+#
 #     The same again on FAT32, which is a different filesystem.
 #
 #     Not a variation on a theme: FAT32 announces itself by leaving the

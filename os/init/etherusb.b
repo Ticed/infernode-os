@@ -286,6 +286,9 @@ dev: string;
 ntpserver: string;			# "ep3.0"
 ctl: ref Sys->FD;		# #u/usb/<dev>/ctl
 ep0: ref Sys->FD;		# #u/usb/<dev>/data -- the control endpoint
+ipifc: ref Sys->FD;		# the ipifc netconfig bound /net/ether0 to; the link watcher's
+ipaddr, ipmask: string;		# the address on it now; nil when there is none
+ipifcno: string;		# its number, for the messages
 reqid := 1;
 
 init(nil: ref Draw->Context, argv: list of string)
@@ -621,15 +624,18 @@ init(nil: ref Draw->Context, argv: list of string)
 		#
 		netconfig();
 		#
-		# Close the control endpoint, explicitly. It is a global of
-		# this module, and the module lives as long as any process of
-		# it does -- the DHCP, ping and time readers block for a good
-		# while after this returns -- so without this the endpoint,
-		# which is exclusive-open, stayed open long after the driver
-		# was done with it and a second run for the same device was
-		# refused with "already in use".
+		# The control endpoint stays open for the link watcher, which
+		# drops it when the adapter goes (a failed transfer), so a
+		# second run for the same device -- unplugged and plugged back
+		# -- finds it free, as it did when this closed it here. It is
+		# exclusive-open, and leaving it open after the driver was done
+		# with it had refused that second run with "already in use".
 		#
-		ep0 = nil;
+		if(ipifc == nil){
+			ep0 = nil;
+			return;
+		}
+		spawn linkwatch(ipifcno);
 		return;
 	}
 	# a kernel with no #l has no Ethernet: there is nothing to fall back to
@@ -923,6 +929,8 @@ netconfig()
 		sys->print("etherusb: bind ether failed: %r\n");
 		return;
 	}
+	ipifc = ifc;
+	ipifcno = ifcno;
 	#
 	# An address is needed before DHCP can be spoken, because the
 	# stack will not send from an interface that has none. 0.0.0.0 is
@@ -936,16 +944,37 @@ netconfig()
 	# machine with an empty ethernet socket could not get an address
 	# at all.
 	#
+	# the family's own word on the link, where it has one: lanphy has
+	# already asked a LAN78xx, but an RNDIS adapter was never asked
+	if(!nocarrier && linkstate() == 0)
+		nocarrier = 1;
 	if(nocarrier){
-		sys->print("etherusb: no carrier; leaving /net/ether0 unconfigured\n");
+		sys->print("etherusb: no carrier; leaving /net/ether0 unconfigured until a link comes up\n");
 		return;
 	}
+	ifcup(1, ifcno);
+}
+
+#
+# The address, from DHCP, and the default route through it. At boot
+# (first) a network with no DHCP server is taken to be QEMU's user
+# network and given its fixed addresses, and the clock is set and the
+# path checked; when a cable comes back (linkwatch) none of that: no
+# answer means try again at the next poll, never an invented address.
+#
+ifcup(first: int, ifcno: string): int
+{
+	ifc := ipifc;
 	if(sys->fprint(ifc, "add 0.0.0.0 0.0.0.0") < 0){
 		sys->print("etherusb: add 0.0.0.0 failed: %r\n");
-		return;
+		return -1;
 	}
 	(addr, mask, gw) := dhcp();
 	if(addr == nil){
+		if(!first){
+			sys->fprint(ifc, "remove 0.0.0.0 0.0.0.0");
+			return -1;
+		}
 		sys->print("etherusb: no DHCP answer; falling back to QEMU's addresses\n");
 		addr = "10.0.2.15";
 		mask = "255.255.255.0";
@@ -955,8 +984,10 @@ netconfig()
 	sys->fprint(ifc, "remove 0.0.0.0 0.0.0.0");
 	if(sys->fprint(ifc, "add %s %s", addr, mask) < 0){
 		sys->print("etherusb: add address failed: %r\n");
-		return;
+		return -1;
 	}
+	ipaddr = addr;
+	ipmask = mask;
 	sys->print("etherusb: %s mask %s on ipifc %s\n", addr, mask, ifcno);
 
 	if(gw != ""){
@@ -988,6 +1019,8 @@ netconfig()
 	# address, because there is no resolver on this machine and a
 	# clock that is right matters more than avoiding a literal.
 	#
+	if(!first)
+		return 0;
 	setclock(getenv("ntpserver") :: ntpserver :: gw :: Pubntp :: nil);
 
 	#
@@ -1014,6 +1047,99 @@ netconfig()
 	if(gw != "")
 		pingout(gw);
 	pingout("8.8.8.8");
+	return 0;
+}
+
+#
+# Hot plugging a cable.
+#
+# The link was read once, at start, and never again: a cable pulled
+# left its address on an interface that could not carry it -- and with
+# the radio on the same subnet, the stack kept routing that subnet out
+# of the dead port, so the machine fell off the network although Wi-Fi
+# was up -- and a cable plugged in later, or put back, was never
+# configured at all. Only a reboot brought the wire back.
+#
+# So the driver stays, keeps its control endpoint, and polls the link.
+# Down: the address goes, and its subnet with it, so the radio's
+# interface carries the traffic. Up: DHCP again, the address and the
+# default route back, wired preferred; no answer is tried again at the
+# next poll. A control transfer that fails means the adapter itself has
+# gone, and the watcher ends, releasing the endpoint for the next run.
+#
+Linkpoll:	con 2000;
+
+linkwatch(ifcno: string)
+{
+	up := !nocarrier && ipaddr != nil;
+	for(;;){
+		sys->sleep(Linkpoll);
+		st := linkstate();
+		if(st < 0){
+			sys->print("etherusb: link watch ended: %r\n");
+			ep0 = nil;
+			return;
+		}
+		if(st == up && (!up || ipaddr != nil))
+			continue;
+		if(st){
+			if(!up)
+				sys->print("etherusb: link up\n");
+			up = 1;
+			if(ipaddr == nil && ifcup(0, ifcno) < 0)
+				continue;	# no lease yet; asked again next poll
+		}else{
+			up = 0;
+			ifcdown();
+		}
+	}
+}
+
+ifcdown()
+{
+	if(ipaddr == nil){
+		sys->print("etherusb: link down\n");
+		return;
+	}
+	if(sys->fprint(ipifc, "remove %s %s", ipaddr, ipmask) < 0)
+		sys->print("etherusb: link down; removing %s failed: %r\n", ipaddr);
+	else
+		sys->print("etherusb: link down; %s removed from /net/ether0\n", ipaddr);
+	ipaddr = ipmask = nil;
+}
+
+#
+# 1 up, 0 down, -1 the adapter cannot be asked (gone, or a family that
+# cannot say -- then there is nothing to watch).
+#
+Oidconnect:	con 16r00010114;	# OID_GEN_MEDIA_CONNECT_STATUS: 0 connected, 1 not
+
+linkstate(): int
+{
+	case family.name {
+	"lan78xx" =>
+		# BMSR latches link-down: the first read clears a stale
+		# drop, the second is now (lanphy says the same)
+		(e, nil) := lanmiird(Mbmsr);
+		if(e < 0)
+			return -1;
+		sr: int;
+		(e, sr) = lanmiird(Mbmsr);
+		if(e < 0)
+			return -1;
+		if(sr & Mbmsrlink)
+			return 1;
+		return 0;
+	"rndis" =>
+		v := array[4] of byte;
+		if(rndisquery(Oidconnect, v) < 0)
+			return -1;
+		if(get4(v, 0) == big 0)
+			return 1;
+		return 0;
+	}
+	sys->werrstr("no link state for " + family.name);
+	return -1;
 }
 
 #
