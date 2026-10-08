@@ -321,7 +321,7 @@ jobs:
         START=$SECONDS
         while kill -0 $EMU_PID 2>/dev/null; do
           grep -q "^Total:" test-output.txt 2>/dev/null && break
-          [ $((SECONDS-START)) -ge 480 ] && { echo "Backstop hit (480s) with no Total: line — possible hang."; break; }
+          [ $((SECONDS-START)) -ge ${{ matrix.backstop }} ] && { echo "Backstop hit (${{ matrix.backstop }}s) with no Total: line — possible hang."; break; }
           sleep 2
         done
         kill -9 $EMU_PID 2>/dev/null || true
@@ -1250,7 +1250,7 @@ jobs:
   macos:
     name: macOS ${{ matrix.label }} Build & Test
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 40
+    timeout-minutes: 50
     permissions:
       contents: read
     strategy:
@@ -1260,11 +1260,13 @@ jobs:
           - arch: arm64
             label: ARM64
             runner: macos-15
+            backstop: 480
           # Intel Macs (#786).  macos-15-intel is GitHub's last Intel
           # macOS image; the job goes when it does.
           - arch: amd64
             label: AMD64
             runner: macos-15-intel
+            backstop: 900  # an i7-8700B: the suite outruns 480s
     env:
       ROOT: ${{ github.workspace }}
       OBJTYPE: ${{ matrix.arch }}
