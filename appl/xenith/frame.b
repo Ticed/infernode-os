@@ -328,7 +328,7 @@ frdelete(f : ref Frame, p0 : int, p1 : int) : int
 	return n - f.nlines;
 }
 
-xfrredraw(f : ref Frame, pt : Point)
+xfrredraw(f : ref Frame, pt : Point, text : ref Image)
 {
 	nb : int;
 
@@ -336,7 +336,7 @@ xfrredraw(f : ref Frame, pt : Point)
 		b := f.box[nb];
 		pt = xfrcklinewrap(f, pt, b);
 		if(!f.noredraw && b.nrune >= 0)
-			graph->stringx(f.b, pt, f.font, b.ptr, f.cols[TEXT]);
+			graph->stringx(f.b, pt, f.font, b.ptr, text);
 		pt.x += b.wid;
 	}
 }
@@ -670,7 +670,7 @@ frinsert(f : ref Frame, rp : string, l : int, p0 : int)
 	s, n, n0, nn0, y : int;
 	r : Rect;
 	npts : int;
-	col : ref Image;
+	col, tcol : ref Image;
 
 	if(p0 > f.nchars || l == 0 || f.b == nil)
 		return;
@@ -818,12 +818,15 @@ frinsert(f : ref Frame, rp : string, l : int, p0 : int)
 		}
 	}
 	# insertion can extend the selection, so the condition here is different 
-	if(f.p0<p0 && p0<=f.p1)
+	if(f.p0<p0 && p0<=f.p1){
 		col = f.cols[HIGH];
-	else
+		tcol = f.cols[HTEXT];
+	}else{
 		col = f.cols[BACK];
+		tcol = f.cols[TEXT];
+	}
 	frselectpaint(f, ppt0, ppt1, col);
-	xfrredraw(frame, ppt0);
+	xfrredraw(frame, ppt0, tcol);
 	xfraddbox(f, nn0, frame.nbox);
 	for(n=0; n<frame.nbox; n++)
 		*f.box[nn0+n] = *frame.box[n];

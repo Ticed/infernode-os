@@ -401,6 +401,7 @@ timeoutTask(ch: chan of int, ms: int)
 | `edit_test.b` | Edit operations |
 | `xenith_concurrency_test.b` | Xenith concurrent operations |
 | `xenith_exit_test.b` | Xenith exit handling |
+| `xenith_frame_test.b` | Xenith's frame (text layout and drawing) against a simulated screen: insert, delete, select, wrap, tabs, overflow, random edits; the suite is `xenith_framesuite.b` |
 | `sdl3_test.b` | SDL3 GUI backend |
 | `secp256k1_test.b` | secp256k1 curve, ECDSA, recovery |
 | `ethcrypto_test.b` | RLP, EIP-155 spec vector, address derivation, strict amounts |
@@ -428,6 +429,8 @@ timeoutTask(ch: chan of int, ms: int)
 | `tests/host/veltro_cli_test.sh` | The `veltro` command: a task run, its session saved and resumed |
 
 Shell tests also exist in `tests/inferno/` (run inside Inferno) and `tests/host/` (run on the host OS).
+
+Xenith's 9P interface is tested inside a headless Xenith: `tests/host/xenith_inside.sh` runs a `tests/inferno/` script where it can see `/mnt/xenith` (`xenith_acme_files_test.sh`: the window files from canonical Acme; `xenith_edit_test.sh`: addresses, regular expressions and the sam command language, through `addr`, `xdata` and `edit`; `xenith_event_test.sh`: the event protocol, both ways). They need the SDL GUI emulator and skip on a headless build.
 
 ## Project Structure
 
