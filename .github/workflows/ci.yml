@@ -264,6 +264,13 @@ jobs:
         # fixture directory), under a second.
         chmod +x tests/host/pi_firmware_test.sh
         ROOT=. bash tests/host/pi_firmware_test.sh
+        # A wstat's "don't change" fields must change nothing on a
+        # 64-bit host: mv inside InferNode used to leave a host file
+        # mode 777 with a modification time in 2106. 77 = skip (no emu).
+        chmod +x tests/host/wstat_nulldir_test.sh
+        rc=0
+        ROOT=. bash tests/host/wstat_nulldir_test.sh || rc=$?
+        [ "$rc" = 0 ] || [ "$rc" = 77 ] || exit "$rc"
 
     - name: Run WPA2 supplicant vector checks
       run: |
