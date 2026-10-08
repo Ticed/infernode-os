@@ -4951,6 +4951,73 @@ vcheck "a nil dereference in JIT code is the program's exception, not a panic" "
 vcheck "page zero is not mapped: a nil ref's later field faults too (#735)" "niltest: OFFSET CAUGHT dereference of nil"
 vcheck "DHCP answers over virtio-net"              "etherusb: 10.0.2.15 mask"
 vcheck "a default route is installed"              "etherusb: default route via 10.0.2.2"
+# Hot plugging over a kernel link driver: etherusb -k's link watcher
+# reads the link from the netif (/net/ether0/stats), which virtio-net now
+# keeps from the device's own status (VIRTIO_NET_F_STATUS); it was set
+# up once and never changed. QEMU's virtio-net reports set_link without a
+# patch. The same watcher covers GENET (Pi 4) and GEM (PolarFire), whose
+# drivers already kept nif.link from their PHYs.
+cp "$VSD" "$BUILD/$PLAT-hotplug-sd.img"
+VHPOUT="$(python3 - "$QEMU" "$BUILD/$PLAT-kernel.img" "$VIRTARGS" "$BUILD/$PLAT-hotplug-sd.img" <<'PYEOF'
+import subprocess, socket, time, json, os, sys, threading
+qemu, img, extra, sd = sys.argv[1:5]
+PORT = int(os.environ["QMPBASE"]) + 16   # per-run base: two harnesses on one host must not share QEMU's QMP sockets
+p = subprocess.Popen([qemu] + extra.split() + ["-kernel", img, "-display", "none", "-serial", "stdio",
+                      "-drive", "file=%s,if=none,format=raw,id=sd" % sd, "-device", "virtio-blk-device,drive=sd",
+                      "-netdev", "user,id=n0", "-device", "virtio-net-device,netdev=n0",
+                      "-qmp", "tcp:127.0.0.1:%d,server=on,wait=off" % PORT],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+buf = bytearray()
+def rd():
+    while True:
+        d = p.stdout.read(1)
+        if not d: return
+        buf.extend(d)
+threading.Thread(target=rd, daemon=True).start()
+def waitfor(t, deadline):
+    end = time.time() + deadline
+    while time.time() < end:
+        if t.encode() in buf: return True
+        time.sleep(0.3)
+    return False
+def setlink(up):
+    s = socket.create_connection(("127.0.0.1", PORT), timeout=5); f = s.makefile("rw")
+    f.readline(); f.write(json.dumps({"execute": "qmp_capabilities"}) + "\n"); f.flush(); f.readline()
+    f.write(json.dumps({"execute": "set_link", "arguments": {"name": "n0", "up": up}}) + "\n"); f.flush(); f.readline()
+    s.close()
+try:
+    if waitfor("etherusb: default route via", 180):
+        print("VHP-ADDRESS-AT-BOOT")
+        setlink(False)
+        if waitfor("etherusb: link down; 10.0.2.15 removed", 30):
+            print("VHP-REMOVED-ON-DOWN")
+        mark = len(buf)
+        setlink(True)
+        end = time.time() + 90
+        while time.time() < end:
+            tail = bytes(buf[mark:])
+            if b"etherusb: link up" in tail and b"etherusb: default route via" in tail:
+                print("VHP-RESTORED-ON-UP"); break
+            time.sleep(0.3)
+finally:
+    p.kill()
+sys.stdout.write(buf.decode(errors="replace").replace("\r", ""))
+PYEOF
+)"
+if ! grep -q '^VHP-ADDRESS-AT-BOOT$' <<<"$VHPOUT"; then
+    fail "virt: hot plug: ether0 got no address at boot, so the link could not be pulled"
+else
+    if grep -q '^VHP-REMOVED-ON-DOWN$' <<<"$VHPOUT"; then
+        pass "virt: hot plug: a kernel driver's link that goes down gives up its address"
+    else
+        fail "virt: hot plug: the address stayed on a dead link -- $(grep -a -E 'etherusb: link|virtio-net link' <<<"$VHPOUT" | head -2 | tr '\n' ' ')"
+    fi
+    if grep -q '^VHP-RESTORED-ON-UP$' <<<"$VHPOUT"; then
+        pass "virt: hot plug: a kernel driver's link that comes back gets its address and default route again"
+    else
+        fail "virt: hot plug: the link came back and was not configured -- $(grep -a -E 'etherusb: link|virtio-net link' <<<"$VHPOUT" | tail -2 | tr '\n' ' ')"
+    fi
+fi
 vcheck "the framebuffer is configured through fw_cfg" "fb:   ramfb 1280x720x32"
 vcheck "the keyboard and the tablet are found"     "(absolute pointer)"
 vcheck "keys typed on the virtio keyboard reach the shell" "Virtio-Keys"

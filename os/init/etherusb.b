@@ -289,6 +289,7 @@ ep0: ref Sys->FD;		# #u/usb/<dev>/data -- the control endpoint
 ipifc: ref Sys->FD;		# the ipifc netconfig bound /net/ether0 to; the link watcher's
 ipaddr, ipmask: string;		# the address on it now; nil when there is none
 ipifcno: string;		# its number, for the messages
+kernelnif := 0;			# -k: the link is a kernel driver's, reported in its stats
 reqid := 1;
 
 init(nil: ref Draw->Context, argv: list of string)
@@ -885,7 +886,10 @@ kernellink()
 		return;
 	}
 	sys->print("etherusb: serving /net/ether0 (kernel link driver, %s)\n", a);
+	kernelnif = 1;
 	netconfig();
+	if(ipifc != nil)
+		spawn linkwatch(ipifcno);
 }
 
 hexval(c: int): int
@@ -1082,10 +1086,12 @@ linkwatch(ifcno: string)
 			sys->print("etherusb: ipifc %s is no longer this run's; link watch ended\n", ifcno);
 			return;
 		}
-		ep0 = sys->open("/usb/usb/" + dev + "/data", Sys->ORDWR);
-		if(ep0 == nil){
-			sys->print("etherusb: link watch ended: %r\n");
-			return;
+		if(!kernelnif){
+			ep0 = sys->open("/usb/usb/" + dev + "/data", Sys->ORDWR);
+			if(ep0 == nil){
+				sys->print("etherusb: link watch ended: %r\n");
+				return;
+			}
 		}
 		st := linkstate();
 		ep0 = nil;
@@ -1116,6 +1122,21 @@ ours(n: string): int
 	return len st >= len want && st[0:len want] == want;
 }
 
+# "link: 1" in the kernel driver's netif stats
+niflink(): int
+{
+	st := readfile("/net/ether0/stats");
+	if(st == nil){
+		sys->werrstr("no /net/ether0/stats");
+		return -1;
+	}
+	for(i := 0; i + 6 < len st; i++)
+		if((i == 0 || st[i-1] == '\n') && st[i:i+6] == "link: ")
+			return st[i+6] == '1';
+	sys->werrstr("no link line in /net/ether0/stats");
+	return -1;
+}
+
 ifcdown()
 {
 	if(ipaddr == nil){
@@ -1137,6 +1158,9 @@ Oidconnect:	con 16r00010114;	# OID_GEN_MEDIA_CONNECT_STATUS: 0 connected, 1 not
 
 linkstate(): int
 {
+	# a kernel driver (GENET, GEM, virtio) keeps it in the netif
+	if(kernelnif)
+		return niflink();
 	case family.name {
 	"lan78xx" =>
 		# BMSR latches link-down: the first read clears a stale
