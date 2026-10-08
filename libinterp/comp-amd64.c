@@ -113,7 +113,18 @@ jitmalloc(size_t size)
 	}
 	return NULL;
 }
-#elif !defined(__APPLE__)
+#else
+/*
+ * MAP_JIT is what the hardened runtime's allow-jit entitlement admits
+ * on macOS; Intel Macs do not enforce its write protection, but the
+ * pthread_jit_write_protect_np calls below are kept as on arm64.
+ */
+#ifdef __APPLE__
+#define	MAP_JITMEM	MAP_JIT
+#else
+#define	MAP_JITMEM	0
+#endif
+
 static void
 jitfree(void *p, size_t size)
 {
@@ -135,7 +146,7 @@ jitmalloc(size_t size)
 			break;
 		p = mmap((void*)try, size,
 		         PROT_READ|PROT_WRITE|PROT_EXEC,
-		         MAP_PRIVATE|MAP_ANON, -1, 0);
+		         MAP_PRIVATE|MAP_ANON|MAP_JITMEM, -1, 0);
 		if(p != MAP_FAILED) {
 			vlong diff = (vlong)((uvlong)p - base_addr);
 			if(diff < 0) diff = -diff;
@@ -148,7 +159,7 @@ jitmalloc(size_t size)
 		try = base_addr + (uvlong)i * 0x10000ULL;
 		p = mmap((void*)try, size,
 		         PROT_READ|PROT_WRITE|PROT_EXEC,
-		         MAP_PRIVATE|MAP_ANON, -1, 0);
+		         MAP_PRIVATE|MAP_ANON|MAP_JITMEM, -1, 0);
 		if(p != MAP_FAILED) {
 			vlong diff = (vlong)((uvlong)p - base_addr);
 			if(diff < 0) diff = -diff;
@@ -2119,20 +2130,13 @@ preamble(void)
 	if(comvec)
 		return;
 
-#ifdef __APPLE__
-	comvec = mmap(0, 128, PROT_READ|PROT_WRITE|PROT_EXEC,
-	              MAP_PRIVATE|MAP_ANON|MAP_JIT, -1, 0);
-	if(comvec == MAP_FAILED) {
-		comvec = nil;
-		return;
-	}
-	pthread_jit_write_protect_np(0);
-#else
 	comvec = jitmalloc(128);
 	if(comvec == NULL) {
 		comvec = nil;
 		return;
 	}
+#ifdef __APPLE__
+	pthread_jit_write_protect_np(0);
 #endif
 
 	code = (uchar*)comvec;
@@ -2731,15 +2735,6 @@ typecom_alloc(int n, ulong *sizep)
 		return p;
 	}
 	if(typecom_slab == nil || typecom_slab_used > TYPECOM_SLAB_SIZE-aligned) {
-#ifdef __APPLE__
-		typecom_slab = mmap(0, TYPECOM_SLAB_SIZE,
-			PROT_READ|PROT_WRITE|PROT_EXEC,
-			MAP_PRIVATE|MAP_ANON|MAP_JIT, -1, 0);
-		if(typecom_slab == MAP_FAILED) {
-			typecom_slab = nil;
-			return nil;
-		}
-#else
 #ifdef _WIN32
 		/* typecom init/destroy snippets are called directly from C
 		 * (via t->initialize / t->destroy function pointers), not
@@ -2752,6 +2747,9 @@ typecom_alloc(int n, ulong *sizep)
 #endif
 		if(typecom_slab == nil)
 			return nil;
+		/* not under MAP_JIT, whose write protection may be on here;
+		 * fresh anonymous memory is zero already */
+#ifndef __APPLE__
 		memset(typecom_slab, 0, TYPECOM_SLAB_SIZE);
 #endif
 		typecom_slab_used = 0;
@@ -3008,22 +3006,15 @@ compile(Module *m, int size, Modlink *ml)
 
 	nlit *= sizeof(uvlong);
 
-#ifdef __APPLE__
-	base = mmap(0, n + nlit, PROT_READ|PROT_WRITE|PROT_EXEC,
-	            MAP_PRIVATE|MAP_ANON|MAP_JIT, -1, 0);
-	if(base == MAP_FAILED) {
-		base = nil;
-		goto bad;
-	}
-	pthread_jit_write_protect_np(0);
-#else
 	base = jitmalloc(n + nlit);
 	if(base == NULL) {
 		base = nil;
 		goto bad;
 	}
-	memset(base, 0, n + nlit);
+#ifdef __APPLE__
+	pthread_jit_write_protect_np(0);
 #endif
+	memset(base, 0, n + nlit);
 
 	if(cflag > 3)
 		print("dis=%5d %5d amd64=%5d asm=%.16llux lit=%d: %s\n",
